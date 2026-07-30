@@ -5,7 +5,7 @@
  */
 
 import { beforeEach, describe, expect, test } from 'bun:test'
-import { containsSecret, keyPairFromSeed, randomSeed, type MockNode } from '@kei/core'
+import { containsSecret, keyPairFromSeed, randomSeed, type MockNode } from '@keicoin/core'
 import { Kei as KeiFacade } from 'kei-transaction'
 import { assertServerOnly, looksLikeBrowser } from 'kei-transaction'
 
@@ -74,7 +74,7 @@ describe('one signer per operation (SPEC §6.3)', () => {
     const attacker = await keyPairFromSeed('E'.repeat(64))
     const victim = await keyPairFromSeed('F'.repeat(64))
     const { hashBlock, generateWork, workRoot, signHash, tierFor, MOCK_THRESHOLDS, ZERO_HASH } =
-      await import('@kei/core')
+      await import('@keicoin/core')
 
     const body = {
       type: 'state' as const,

@@ -18,7 +18,7 @@ import type {
   RevealPolicy,
   Role,
   WorkProvider,
-} from '@kei/core'
+} from '@keicoin/core'
 import {
   HttpNode,
   KEI_DECIMALS,
@@ -28,8 +28,8 @@ import {
   keyPairFromSeed,
   normalizeSeed,
   randomSeed,
-} from '@kei/core'
-import { createClaims, type ClaimsApi } from '@kei/claims'
+} from '@keicoin/core'
+import { createClaims, type ClaimsApi } from '@keicoin/claims'
 import {
   createIssuerItems,
   createPlayerItems,
@@ -43,9 +43,9 @@ import {
   type ItemCommitEntry,
   type PlayerItemsApi,
   type PlayerToken,
-} from '@kei/tokens'
-import { createWorkProvider } from '@kei/work'
-import { createWallet, type WalletApi } from '@kei/wallet'
+} from '@keicoin/tokens'
+import { createWorkProvider } from '@keicoin/work'
+import { createWallet, type WalletApi } from '@keicoin/wallet'
 
 import { assertServerOnly } from './environment.js'
 import { defaultSeedStore, environmentSeed, seedStoreKey, type SeedStore } from './storage.js'

@@ -10,10 +10,10 @@
  * the same reason `token.issue()` is idempotent per (issuer, symbol).
  */
 
-import type { AssetId, AssetInfo, KeiClient, TransferPolicy } from '@kei/core'
-import { assertAddress, blake2b, bytesToHex, deriveAssetId, fail, utf8 } from '@kei/core'
-import { buildCommit } from '@kei/claims'
-import type { BuiltCommit } from '@kei/claims'
+import type { AssetId, AssetInfo, KeiClient, TransferPolicy } from '@keicoin/core'
+import { assertAddress, blake2b, bytesToHex, deriveAssetId, fail, utf8 } from '@keicoin/core'
+import { buildCommit } from '@keicoin/claims'
+import type { BuiltCommit } from '@keicoin/claims'
 
 import { MockIpfsUploader, type ImageSource, type IpfsUploader } from './ipfs.js'
 import { issueToken, wrapIssuerToken, type IssuerToken } from './tokens.js'

@@ -1,8 +1,26 @@
 {
-  "name": "@kei/claims",
+  "name": "@keicoin/claims",
   "version": "0.1.0",
   "description": "Merkle-rooted claims for Kei: root building, proofs, and player-signed claim blocks.",
   "license": "MIT",
+  "author": "Sano",
+  "homepage": "https://keicoin.org#claims",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keicoin-org/kei-transaction.git",
+    "directory": "packages/claims"
+  },
+  "bugs": {
+    "url": "https://github.com/keicoin-org/kei-transaction/issues"
+  },
+  "keywords": [
+    "kei",
+    "merkle",
+    "airdrop",
+    "loot",
+    "claims",
+    "proofs"
+  ],
   "type": "module",
   "exports": {
     ".": {
@@ -15,7 +33,14 @@
     "dist",
     "src"
   ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
-    "@kei/core": "workspace:*"
+    "@keicoin/core": "^0.1.0"
   }
 }

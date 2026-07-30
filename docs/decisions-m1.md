@@ -11,7 +11,7 @@ As with [`decisions-m0.md`](decisions-m0.md), nothing here overrides SPEC.md.
 
 ## 1. The mock node is served over HTTP
 
-**New: `mockRpcHandler` in `@kei/core`.**
+**New: `mockRpcHandler` in `@keicoin/core`.**
 
 SPEC §6.3 puts the player in a browser and forbids the issuer seed from ever
 reaching one, so a real game is *always* two processes. Two processes cannot
@@ -19,7 +19,7 @@ share a `MockNode` object. They can share a URL.
 
 `mockRpcHandler({ node })` is a plain `Request → Response` function implementing
 [`docs/rpc.md`](rpc.md), and it starts no server itself — no `Bun.serve`, no
-`node:http` — so `@kei/core` stays runtime-agnostic and the caller decides what
+`node:http` — so `@keicoin/core` stays runtime-agnostic and the caller decides what
 listens. It answers browser preflight and sets `access-control-allow-origin: *`,
 because a mock node exists to be reached from a game on some other dev port.
 

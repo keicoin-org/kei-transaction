@@ -11,8 +11,8 @@
  * press "claim" for every sword will hate it (SPEC §5.5, cost 3).
  */
 
-import type { AssetId, KeiClient } from '@kei/core'
-import { assertRoot, fail, fromRaw, isHex } from '@kei/core'
+import type { AssetId, KeiClient } from '@keicoin/core'
+import { assertRoot, fail, fromRaw, isHex } from '@keicoin/core'
 
 import type { ClaimBundle } from './tree.js'
 

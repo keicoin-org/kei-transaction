@@ -1,8 +1,26 @@
 {
-  "name": "@kei/tokens",
+  "name": "@keicoin/tokens",
   "version": "0.1.0",
   "description": "Kei native tokens and items: issue, mint, burn, transfer, balanceOf, policy flags, commits.",
   "license": "MIT",
+  "author": "Sano",
+  "homepage": "https://keicoin.org#tokens",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keicoin-org/kei-transaction.git",
+    "directory": "packages/tokens"
+  },
+  "bugs": {
+    "url": "https://github.com/keicoin-org/kei-transaction/issues"
+  },
+  "keywords": [
+    "kei",
+    "tokens",
+    "items",
+    "nft",
+    "game-currency",
+    "balanceof"
+  ],
   "type": "module",
   "exports": {
     ".": {
@@ -15,8 +33,15 @@
     "dist",
     "src"
   ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
-    "@kei/claims": "workspace:*",
-    "@kei/core": "workspace:*"
+    "@keicoin/claims": "^0.1.0",
+    "@keicoin/core": "^0.1.0"
   }
 }

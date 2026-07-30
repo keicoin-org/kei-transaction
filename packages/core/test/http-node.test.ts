@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { HttpNode } from '@kei/core'
+import { HttpNode } from '@keicoin/core'
 
 interface Call {
   action: string

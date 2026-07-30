@@ -21,7 +21,7 @@ familiar to anyone who has touched a token before, and far finer than the
 sub-cent payments the pitch rests on (0.001 Kei is 10^15 raw).
 
 **Provisional: this is the genesis block's number to fix at M2.** It lives in one
-place (`KEI_DECIMALS` in `@kei/core`) precisely so changing it is one edit.
+place (`KEI_DECIMALS` in `@keicoin/core`) precisely so changing it is one edit.
 
 ## 2. Block hashing is canonical JSON under a versioned preamble
 
@@ -179,15 +179,15 @@ proposals. The mock's stance is the spec's failure mode: **nothing moves.**
 
 ## Package boundaries, and the one exception
 
-SPEC §10.1: `@kei/core` depends on nothing else in the tree, and every other
+SPEC §10.1: `@keicoin/core` depends on nothing else in the tree, and every other
 package depends on core and ideally nothing else. Two packages depend on more:
 
-- **`@kei/tokens` → `@kei/claims`**, because `gems.commit()` is a token
+- **`@keicoin/tokens` → `@keicoin/claims`**, because `gems.commit()` is a token
   operation whose implementation is Merkle machinery.
-- **`@kei/wallet` → `@kei/tokens` and `@kei/claims`**, because a wallet panel
+- **`@keicoin/wallet` → `@keicoin/tokens` and `@keicoin/claims`**, because a wallet panel
   shows balances, inventory, and pending claims (SPEC §6.5).
 
-Both are the intended shape rather than a leak. `@kei/core` still depends on
+Both are the intended shape rather than a leak. `@keicoin/core` still depends on
 nothing, which is the rule that matters.
 
-`@kei/market` does not exist yet: offers and settlement are M5.
+`@keicoin/market` does not exist yet: offers and settlement are M5.

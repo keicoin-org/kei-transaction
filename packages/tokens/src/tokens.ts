@@ -8,7 +8,7 @@
  * adjustable.
  */
 
-import type { AssetId, AssetInfo, KeiClient, SwapPolicy, TransferPolicy } from '@kei/core'
+import type { AssetId, AssetInfo, KeiClient, SwapPolicy, TransferPolicy } from '@keicoin/core'
 import {
   ISSUANCE_BURN,
   KEI_DECIMALS,
@@ -19,9 +19,9 @@ import {
   fromRaw,
   normalizeSymbol,
   toRaw,
-} from '@kei/core'
-import { buildCommit, type CommitEntry } from '@kei/claims'
-import type { BuiltCommit } from '@kei/claims'
+} from '@keicoin/core'
+import { buildCommit, type CommitEntry } from '@keicoin/claims'
+import type { BuiltCommit } from '@keicoin/claims'
 
 export interface IssueOptions {
   name: string

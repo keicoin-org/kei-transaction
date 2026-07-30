@@ -6,8 +6,8 @@
  *   const kei = await Kei.start()          // wallet created, persisted, funded
  *   await kei.send('kei_3abc...', 0.001)   // sub-cent, instant, feeless
  *
- * Sub-packages (`@kei/core`, `@kei/tokens`, `@kei/claims`, `@kei/work`,
- * `@kei/wallet`) exist for people who care about bundle size, not as a puzzle
+ * Sub-packages (`@keicoin/core`, `@keicoin/tokens`, `@keicoin/claims`, `@keicoin/work`,
+ * `@keicoin/wallet`) exist for people who care about bundle size, not as a puzzle
  * everyone must solve (SPEC §10.1).
  */
 
@@ -46,7 +46,7 @@ export {
   publicKeyFromAddress,
   randomSalt,
   randomSeed,
-} from '@kei/core'
+} from '@keicoin/core'
 export type {
   AccountInfo,
   AssetId,
@@ -66,12 +66,12 @@ export type {
   SwapPolicy,
   TransferPolicy,
   WorkTier,
-} from '@kei/core'
+} from '@keicoin/core'
 
-export { buildCommit } from '@kei/claims'
-export type { ClaimBundle, ClaimResult, ClaimsApi, CommitEntry, PendingClaim } from '@kei/claims'
+export { buildCommit } from '@keicoin/claims'
+export type { ClaimBundle, ClaimResult, ClaimsApi, CommitEntry, PendingClaim } from '@keicoin/claims'
 
-export { MockIpfsUploader, itemSymbolFor, looksLikeItem } from '@kei/tokens'
+export { MockIpfsUploader, itemSymbolFor, looksLikeItem } from '@keicoin/tokens'
 export type {
   CreateItemOptions,
   ImageSource,
@@ -83,8 +83,8 @@ export type {
   PlayerToken,
   PublishedCommit,
   TokenTransfer,
-} from '@kei/tokens'
+} from '@keicoin/tokens'
 
-export { LocalWorkProvider, WorkServerProvider, createWorkProvider } from '@kei/work'
-export { createWallet } from '@kei/wallet'
-export type { ItemHolding, TokenBalance, WalletApi, WalletSummary } from '@kei/wallet'
+export { LocalWorkProvider, WorkServerProvider, createWorkProvider } from '@keicoin/work'
+export { createWallet } from '@keicoin/wallet'
+export type { ItemHolding, TokenBalance, WalletApi, WalletSummary } from '@keicoin/wallet'

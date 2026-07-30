@@ -1,8 +1,25 @@
 {
-  "name": "@kei/wallet",
+  "name": "@keicoin/wallet",
   "version": "0.1.0",
   "description": "In-game wallet for Kei: headless balance, inventory and claim summaries. The mountable panel lands at M6.",
   "license": "MIT",
+  "author": "Sano",
+  "homepage": "https://keicoin.org#wallet",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keicoin-org/kei-transaction.git",
+    "directory": "packages/wallet"
+  },
+  "bugs": {
+    "url": "https://github.com/keicoin-org/kei-transaction/issues"
+  },
+  "keywords": [
+    "kei",
+    "wallet",
+    "inventory",
+    "game",
+    "balances"
+  ],
   "type": "module",
   "exports": {
     ".": {
@@ -15,9 +32,16 @@
     "dist",
     "src"
   ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
-    "@kei/claims": "workspace:*",
-    "@kei/core": "workspace:*",
-    "@kei/tokens": "workspace:*"
+    "@keicoin/claims": "^0.1.0",
+    "@keicoin/core": "^0.1.0",
+    "@keicoin/tokens": "^0.1.0"
   }
 }

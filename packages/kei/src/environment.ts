@@ -4,7 +4,7 @@
  * So `Kei.server()` detects a browser, refuses to run, and says why.
  */
 
-import { fail } from '@kei/core'
+import { fail } from '@keicoin/core'
 
 export function looksLikeBrowser(): boolean {
   const scope = globalThis as {

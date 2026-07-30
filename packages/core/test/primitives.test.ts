@@ -27,7 +27,7 @@ import {
   toRaw,
   verifyProof,
   workRoot,
-} from '@kei/core'
+} from '@keicoin/core'
 
 const SEED_A = 'A'.repeat(64)
 
