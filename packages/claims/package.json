@@ -1,0 +1,21 @@
+{
+  "name": "@kei/claims",
+  "version": "0.1.0",
+  "description": "Merkle-rooted claims for Kei: root building, proofs, and player-signed claim blocks.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "dependencies": {
+    "@kei/core": "workspace:*"
+  }
+}

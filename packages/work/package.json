@@ -1,0 +1,21 @@
+{
+  "name": "@kei/work",
+  "version": "0.1.0",
+  "description": "Proof-of-work for Kei blocks: difficulty tiers, local generation, work-server client.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "dependencies": {
+    "@kei/core": "workspace:*"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/work" },
+    { "path": "packages/claims" },
+    { "path": "packages/tokens" },
+    { "path": "packages/wallet" },
+    { "path": "packages/kei" }
+  ]
+}

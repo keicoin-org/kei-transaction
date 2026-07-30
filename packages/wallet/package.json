@@ -1,0 +1,23 @@
+{
+  "name": "@kei/wallet",
+  "version": "0.1.0",
+  "description": "In-game wallet for Kei: headless balance, inventory and claim summaries. The mountable panel lands at M6.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "dependencies": {
+    "@kei/claims": "workspace:*",
+    "@kei/core": "workspace:*",
+    "@kei/tokens": "workspace:*"
+  }
+}

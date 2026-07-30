@@ -1,0 +1,22 @@
+{
+  "name": "@kei/tokens",
+  "version": "0.1.0",
+  "description": "Kei native tokens and items: issue, mint, burn, transfer, balanceOf, policy flags, commits.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "dependencies": {
+    "@kei/claims": "workspace:*",
+    "@kei/core": "workspace:*"
+  }
+}

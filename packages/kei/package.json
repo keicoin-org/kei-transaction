@@ -1,0 +1,25 @@
+{
+  "name": "kei-transaction",
+  "version": "0.1.0",
+  "description": "Real currencies and items for browser games. One install, no payment infrastructure.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "dependencies": {
+    "@kei/claims": "workspace:*",
+    "@kei/core": "workspace:*",
+    "@kei/tokens": "workspace:*",
+    "@kei/wallet": "workspace:*",
+    "@kei/work": "workspace:*"
+  }
+}

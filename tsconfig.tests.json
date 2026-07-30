@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "types": ["bun"],
+    // Workspace links resolve with a different drive-letter casing than the
+    // project root on Windows, which is a path artifact and not a code problem.
+    "forceConsistentCasingInFileNames": false
+  },
+  "include": ["packages/*/test/**/*.ts"]
+}

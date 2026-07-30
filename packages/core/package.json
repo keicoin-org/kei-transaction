@@ -1,0 +1,21 @@
+{
+  "name": "@kei/core",
+  "version": "0.1.0",
+  "description": "Kei wallet, amounts, addresses, blocks, node clients, and the in-memory mock node.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "dependencies": {
+    "@bananocoin/bananojs": "^2.10.10"
+  }
+}
