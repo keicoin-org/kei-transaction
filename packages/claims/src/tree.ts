@@ -7,7 +7,7 @@
  * which is what stops the issuer becoming a global write lock.
  */
 
-import type { AssetId } from '@kei/core'
+import type { AssetId } from '@keicoin/core'
 import {
   assertAddress,
   combineHashes,
@@ -17,7 +17,7 @@ import {
   randomSalt,
   saltLeaf,
   toRaw,
-} from '@kei/core'
+} from '@keicoin/core'
 
 export interface CommitEntry {
   to: string

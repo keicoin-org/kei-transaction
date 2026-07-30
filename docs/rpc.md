@@ -6,7 +6,7 @@ other side. The node fork (M2) has to serve exactly this; M3 changes what is
 behind the URL and nothing else.
 
 ```js
-import { MockNode, mockRpcHandler } from '@kei/core'
+import { MockNode, mockRpcHandler } from '@keicoin/core'
 
 Bun.serve({ port: 7777, fetch: mockRpcHandler({ node: await MockNode.create() }) })
 ```

@@ -1,6 +1,6 @@
 /**
  * Merkle-rooted claims (SPEC §5.5). The node verifies proofs, so leaf hashing
- * and proof folding live here; tree building lives in `@kei/claims`.
+ * and proof folding live here; tree building lives in `@keicoin/claims`.
  *
  * Leaves and internal nodes are domain-separated, and internal pairs are sorted
  * so a proof is a bare list of siblings with no direction bits to get wrong.

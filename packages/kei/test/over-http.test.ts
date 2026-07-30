@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { HttpNode, MockNode, mockRpcHandler, randomSeed } from '@kei/core'
+import { HttpNode, MockNode, mockRpcHandler, randomSeed } from '@keicoin/core'
 import { Kei } from 'kei-transaction'
 
 /** One node, reachable only by URL. Every client here is a separate process's worth of state. */

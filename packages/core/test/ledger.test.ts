@@ -23,7 +23,7 @@ import {
   type Block,
   type BlockBody,
   type KeyPair,
-} from '@kei/core'
+} from '@keicoin/core'
 
 let node: MockNode
 let issuer: KeyPair

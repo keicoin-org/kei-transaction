@@ -7,7 +7,7 @@
  * a URL is passed straight through.
  */
 
-import { blake2b, bytesToHex, utf8 } from '@kei/core'
+import { blake2b, bytesToHex, utf8 } from '@keicoin/core'
 
 export interface IpfsUploader {
   upload(image: ImageSource): Promise<string>

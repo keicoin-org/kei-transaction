@@ -114,7 +114,7 @@ describe('items', () => {
   test('the per-account asset cap is a sentence naming the fix (SPEC §7)', async () => {
     // Exercised as a unit rather than by minting 1,024 assets, which would be a
     // minute of proof-of-work for one error message.
-    const { MAX_ASSETS_PER_ACCOUNT } = await import('@kei/core')
+    const { MAX_ASSETS_PER_ACCOUNT } = await import('@keicoin/core')
     expect(MAX_ASSETS_PER_ACCOUNT).toBe(1_024)
   })
 })

@@ -3,7 +3,7 @@
  *
  * The algorithm lives in core because the node has to *validate* work. Anything
  * to do with *obtaining* work — local generation, precompute, the work server
- * that SPEC §5.5 makes required v1 infrastructure — lives in `@kei/work`.
+ * that SPEC §5.5 makes required v1 infrastructure — lives in `@keicoin/work`.
  *
  * Same shape as Nano/Banano: an 8-byte nonce whose blake2b digest against the
  * block's work root, read as a little-endian u64, must reach the tier
@@ -66,11 +66,11 @@ export function generateWork(root: string, threshold: bigint, maxAttempts = 50_0
   }
   fail(
     'work-failed',
-    `Could not find proof-of-work for ${root} in ${maxAttempts} attempts. Use a work server (@kei/work) instead of generating locally.`,
+    `Could not find proof-of-work for ${root} in ${maxAttempts} attempts. Use a work server (@keicoin/work) instead of generating locally.`,
   )
 }
 
-/** How the client obtains work. Implemented by `@kei/work`. */
+/** How the client obtains work. Implemented by `@keicoin/work`. */
 export interface WorkProvider {
   generate(root: string, tier: WorkTier): Promise<string>
   /**

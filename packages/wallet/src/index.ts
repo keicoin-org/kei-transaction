@@ -8,10 +8,10 @@
  * at M6, along with the `kei.pay()` confirmation dialog that §6.8 moved here.
  */
 
-import type { AssetId, KeiClient } from '@kei/core'
-import { KEI_DECIMALS, fromRaw } from '@kei/core'
-import { looksLikeItem } from '@kei/tokens'
-import type { ClaimsApi, PendingClaim } from '@kei/claims'
+import type { AssetId, KeiClient } from '@keicoin/core'
+import { KEI_DECIMALS, fromRaw } from '@keicoin/core'
+import { looksLikeItem } from '@keicoin/tokens'
+import type { ClaimsApi, PendingClaim } from '@keicoin/claims'
 
 export interface TokenBalance {
   asset: AssetId

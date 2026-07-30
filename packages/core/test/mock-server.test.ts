@@ -17,7 +17,7 @@ import {
   mockRpcHandler,
   randomSeed,
   type Block,
-} from '@kei/core'
+} from '@keicoin/core'
 
 /** An `HttpNode` and the `MockNode` behind it, joined by the handler alone. */
 async function connected(): Promise<{ http: HttpNode; mock: MockNode }> {

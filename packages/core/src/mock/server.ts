@@ -9,7 +9,7 @@
  * This is the smallest thing that makes that true — a plain `Request → Response`
  * handler speaking docs/rpc.md, which is also the first time that document gets
  * executed rather than described. It is deliberately not a server: no `Bun.serve`,
- * no `node:http`, no listener, so `@kei/core` stays runtime-agnostic and the
+ * no `node:http`, no listener, so `@keicoin/core` stays runtime-agnostic and the
  * caller decides what listens. `button/server/main.ts` is nine lines because of
  * this.
  *

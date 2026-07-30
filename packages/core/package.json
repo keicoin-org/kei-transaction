@@ -1,8 +1,27 @@
 {
-  "name": "@kei/core",
+  "name": "@keicoin/core",
   "version": "0.1.0",
   "description": "Kei wallet, amounts, addresses, blocks, node clients, and the in-memory mock node.",
   "license": "MIT",
+  "author": "Sano",
+  "homepage": "https://keicoin.org#core",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keicoin-org/kei-transaction.git",
+    "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/keicoin-org/kei-transaction/issues"
+  },
+  "keywords": [
+    "kei",
+    "blockchain",
+    "wallet",
+    "nano",
+    "banano",
+    "feeless",
+    "block-lattice"
+  ],
   "type": "module",
   "exports": {
     ".": {
@@ -15,6 +34,13 @@
     "dist",
     "src"
   ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@bananocoin/bananojs": "^2.10.10"
   }

@@ -3,6 +3,30 @@
   "version": "0.1.0",
   "description": "Real currencies and items for browser games. One install, no payment infrastructure.",
   "license": "MIT",
+  "author": "Sano",
+  "homepage": "https://keicoin.org",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keicoin-org/kei-transaction.git",
+    "directory": "packages/kei"
+  },
+  "bugs": {
+    "url": "https://github.com/keicoin-org/kei-transaction/issues"
+  },
+  "keywords": [
+    "kei",
+    "blockchain",
+    "game",
+    "gamedev",
+    "currency",
+    "items",
+    "nft",
+    "micropayments",
+    "feeless",
+    "wallet",
+    "browser-game",
+    "web3"
+  ],
   "type": "module",
   "exports": {
     ".": {
@@ -15,11 +39,15 @@
     "dist",
     "src"
   ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
-    "@kei/claims": "workspace:*",
-    "@kei/core": "workspace:*",
-    "@kei/tokens": "workspace:*",
-    "@kei/wallet": "workspace:*",
-    "@kei/work": "workspace:*"
+    "@keicoin/claims": "^0.1.0",
+    "@keicoin/core": "^0.1.0",
+    "@keicoin/tokens": "^0.1.0",
+    "@keicoin/wallet": "^0.1.0",
+    "@keicoin/work": "^0.1.0"
   }
 }

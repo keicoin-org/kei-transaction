@@ -8,8 +8,8 @@
  * already in hand before the player asks for it.
  */
 
-import type { KeiNode, WorkProvider, WorkTier } from '@kei/core'
-import { KeiError, fail, generateWork } from '@kei/core'
+import type { KeiNode, WorkProvider, WorkTier } from '@keicoin/core'
+import { KeiError, fail, generateWork } from '@keicoin/core'
 
 export interface LocalWorkOptions {
   /** Overrides the node's advertised thresholds. Mostly for tests. */

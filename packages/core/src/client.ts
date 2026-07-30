@@ -4,7 +4,7 @@
  * frontiers, work, and the receive step.
  *
  * It is deliberately not the public `Kei` class. `kei-transaction` composes this
- * with the token, claim and wallet namespaces (SPEC §10.1 keeps `@kei/core`
+ * with the token, claim and wallet namespaces (SPEC §10.1 keeps `@keicoin/core`
  * depending on nothing else in the tree).
  */
 
@@ -296,7 +296,7 @@ export class KeiClient {
 
   // ------------------------------------------------------------- block plumbing
 
-  /** Submit an asset operation. Used by `@kei/tokens` and `@kei/claims`. */
+  /** Submit an asset operation. Used by `@keicoin/tokens` and `@keicoin/claims`. */
   async submitAsset(op: AssetOp, keiDelta = 0n): Promise<{ hash: string }> {
     return this.submit((draft) => ({
       type: 'asset',
