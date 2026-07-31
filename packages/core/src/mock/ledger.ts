@@ -8,7 +8,7 @@
  *   - one chain per account, asset ops alongside Kei ops (§5.6.1)
  *   - derived asset ids, so issuance idempotency is structural (§5.6.1)
  *   - assets arrive as receivable and are collected by the recipient (§5.6.3)
- *   - work tiers (§5.6.4), issuance burns 1,000 Kei (§5.6.5)
+ *   - work tiers (§5.6.4), the nth asset an account issues burns n Kei (§5.6.5)
  *   - maxSupply caps circulating supply, so burning frees headroom (§5.6.6)
  *   - transfer policy enforced by the ledger, not requested by the SDK (§5.4)
  *   - holdings and holders indexed both ways, zero entries deleted (§7)
@@ -17,7 +17,7 @@
  */
 
 import { NULL_REPRESENTATIVE, addressFromPublicKey, assertAddress, publicKeyFromAddress } from '../address.js'
-import { ISSUANCE_BURN, KEI_DECIMALS, KEI_TOTAL_SUPPLY } from '../amount.js'
+import { issuanceBurn, KEI_DECIMALS, KEI_TOTAL_SUPPLY } from '../amount.js'
 import type {
   AssetBlockBody,
   AssetId,
@@ -139,6 +139,13 @@ export class MockLedger {
   private readonly holders = new Map<string, bigint>()
   private readonly holdersByAsset = new Map<AssetId, Set<string>>()
 
+  /**
+   * SPEC §5.6.5: how many assets each account has issued, which prices its
+   * next one. Its own map rather than a field on the account record, because
+   * `commitBlock` rebuilds that record from the block and would drop it.
+   */
+  private readonly issuedByAccount = new Map<string, number>()
+
   private readonly receivables = new Map<string, StoredReceivable>()
   private readonly receivablesByAccount = new Map<string, Set<string>>()
 
@@ -250,6 +257,7 @@ export class MockLedger {
       balance: account.balance.toString(),
       representative: account.representative,
       receivableCount: this.receivablesByAccount.get(address)?.size ?? 0,
+      issuedCount: this.issuedByAccount.get(address) ?? 0,
     }
   }
 
@@ -489,16 +497,20 @@ export class MockLedger {
     const op = body.op
 
     if (op.kind === 'issue') {
-      if (newBalance !== previousBalance - ISSUANCE_BURN) {
-        fail(
-          'bad-issuance-burn',
-          `Issuing an asset burns 1,000 Kei (SPEC §5.6.5), so this block must leave a balance of ${previousBalance - ISSUANCE_BURN}.`,
-        )
-      }
-      if (newBalance < 0n) {
+      // The nth asset an account issues burns n Kei (SPEC §5.6.5). Checked
+      // against the count before this block, which is what the signer read.
+      const ordinal = (this.issuedByAccount.get(body.account) ?? 0) + 1
+      const burn = issuanceBurn(ordinal - 1)
+      if (previousBalance < burn) {
         fail(
           'insufficient-kei',
-          `Issuing an asset burns 1,000 Kei — this account holds ${formatKei(previousBalance)}. Fund it first; on testnet call faucet().`,
+          `This is ${body.account}'s asset number ${ordinal}, which burns ${formatKei(burn)} — it holds ${formatKei(previousBalance)}. Fund it first; on testnet call faucet().`,
+        )
+      }
+      if (newBalance !== previousBalance - burn) {
+        fail(
+          'bad-issuance-burn',
+          `The nth asset an account issues burns n Kei (SPEC §5.6.5). This is number ${ordinal}, so this block burns ${formatKei(burn)} and must leave a balance of ${previousBalance - burn}.`,
         )
       }
     } else if (newBalance !== previousBalance) {
@@ -552,6 +564,9 @@ export class MockLedger {
           ...(op.metadata?.kind === undefined ? {} : { kind: op.metadata.kind }),
           circulating: 0n,
         })
+        // Priced the burn above; record it, so this account's next asset costs
+        // one Kei more than this one did (SPEC §5.6.5).
+        this.issuedByAccount.set(body.account, (this.issuedByAccount.get(body.account) ?? 0) + 1)
         return
       }
 

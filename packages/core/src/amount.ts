@@ -16,8 +16,31 @@ export const KEI_NAME = 'Kei'
 /** 1,000,000,000,000 Kei, fixed at genesis (SPEC §5.7). */
 export const KEI_TOTAL_SUPPLY = 1_000_000_000_000n * 10n ** BigInt(KEI_DECIMALS)
 
-/** Issuing an asset burns 1,000 Kei (SPEC §5.6.5). */
-export const ISSUANCE_BURN = 1_000n * 10n ** BigInt(KEI_DECIMALS)
+/**
+ * The nth asset an account issues burns n Kei (SPEC §5.6.5): the first costs 1
+ * Kei, the tenth costs 10.
+ *
+ * It escalates per account rather than sitting flat because what has to be
+ * expensive is one account creating a great many permanent records — not one
+ * account creating its first, which is the one a developer meets. Linear per
+ * asset, so a catalogue's running total is quadratic: a currency plus five
+ * hundred item types burns 125,751 Kei, where the flat 1,000 this replaced
+ * charged 501,000, while a million assets from one account would cost five
+ * times the circulating supply. It is not a doubling.
+ *
+ * `issuedAlready` comes from `accountInfo().issuedCount`. A signer cannot
+ * construct a valid `issue` block without it, because the burn is a balance
+ * decrease that the block has to state exactly.
+ */
+export function issuanceBurn(issuedAlready: number): bigint {
+  if (!Number.isInteger(issuedAlready) || issuedAlready < 0) {
+    fail(
+      'bad-issued-count',
+      `issuedAlready is how many assets the account has issued already, so it is a whole number of zero or more — got ${String(issuedAlready)}.`,
+    )
+  }
+  return BigInt(issuedAlready + 1) * 10n ** BigInt(KEI_DECIMALS)
+}
 
 /** Expand a JS number into a plain decimal string, exponent notation included. */
 function decimalString(value: number): string {

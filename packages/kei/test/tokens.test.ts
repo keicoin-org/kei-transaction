@@ -57,16 +57,30 @@ describe('issuing', () => {
     expect(await game.balance()).toBe(balanceAfterFirst)
   })
 
-  test('burns exactly 1,000 Kei — the one non-free operation (SPEC §5.6.5)', async () => {
+  test('a first token burns 1 Kei — the one non-free operation (SPEC §5.6.5)', async () => {
     const before = await game.balance()
     await game.token.issue({ name: 'Gems', symbol: 'GEM' })
-    expect(await game.balance()).toBe(before - 1_000)
+    expect(await game.balance()).toBe(before - 1)
+  })
+
+  // The nth asset an account issues burns n Kei, so a catalogue's running total
+  // is quadratic rather than linear. This is the whole anti-spam mechanism.
+  test('each further token costs one Kei more than the last', async () => {
+    const before = await game.balance()
+    await game.token.issue({ name: 'Gems', symbol: 'GEM' })
+    await game.token.issue({ name: 'Ore', symbol: 'ORE' })
+    await game.token.issue({ name: 'Wood', symbol: 'WOOD' })
+    // 1 + 2 + 3, not 3 x 1.
+    expect(await game.balance()).toBe(before - 6)
+
+    const info = await node.accountInfo(game.address)
+    expect(info?.issuedCount).toBe(3)
   })
 
   test('an unfunded issuer is told what it costs and how to fix it', async () => {
     const poor = await Kei.server({ seed: 'D'.repeat(64), node })
     await expect(poor.token.issue({ name: 'Gems', symbol: 'GEM' })).rejects.toThrow(
-      /burns 1,000 Kei.*holds 0 Kei.*faucet/s,
+      /asset number 1, which burns 1 Kei.*holds 0 Kei.*faucet/s,
     )
     poor.close()
   })

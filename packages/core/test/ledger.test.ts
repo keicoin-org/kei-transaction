@@ -6,7 +6,7 @@
 
 import { beforeEach, describe, expect, test } from 'bun:test'
 import {
-  ISSUANCE_BURN,
+  issuanceBurn,
   KEI_ASSET,
   MOCK_THRESHOLDS,
   MockNode,
@@ -84,7 +84,7 @@ describe('one chain per account (SPEC §5.6.1)', () => {
       account: issuer.address,
       previous: context.previous,
       representative: context.representative,
-      balance: (BigInt(context.balance) - ISSUANCE_BURN).toString(),
+      balance: (BigInt(context.balance) - issuanceBurn(0)).toString(),
       op: {
         kind: 'issue',
         name: 'Gems',
@@ -100,7 +100,7 @@ describe('one chain per account (SPEC §5.6.1)', () => {
     expect(after?.height).toBe((before?.height ?? 0) + 1)
     // An asset block carries the Kei balance, so a tool that ignores the asset
     // payload still tracks Kei correctly (SPEC §5.6.8).
-    expect(BigInt(after?.balance ?? '0')).toBe(BigInt(before?.balance ?? '0') - ISSUANCE_BURN)
+    expect(BigInt(after?.balance ?? '0')).toBe(BigInt(before?.balance ?? '0') - issuanceBurn(0))
   })
 
   test('a block on a stale frontier is a fork, and says how to fix it', async () => {
@@ -126,7 +126,7 @@ describe('one chain per account (SPEC §5.6.1)', () => {
       account: issuer.address,
       previous: context.previous,
       representative: context.representative,
-      balance: (BigInt(context.balance) - ISSUANCE_BURN).toString(),
+      balance: (BigInt(context.balance) - issuanceBurn(0)).toString(),
       op: { kind: 'issue', name: 'Gems', symbol: 'GEM', decimals: 0, maxSupply: null, transfer: 'open', swap: 'off' },
     })
 
@@ -341,7 +341,7 @@ async function issueGem(): Promise<string> {
     account: issuer.address,
     previous: context.previous,
     representative: context.representative,
-    balance: (BigInt(context.balance) - ISSUANCE_BURN).toString(),
+    balance: (BigInt(context.balance) - issuanceBurn(0)).toString(),
     op: { kind: 'issue', name: 'Gems', symbol: 'GEM', decimals: 0, maxSupply: null, transfer: 'open', swap: 'off' },
   })
   return deriveAssetId(issuer.publicKey, 'GEM')

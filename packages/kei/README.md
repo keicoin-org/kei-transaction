@@ -91,9 +91,12 @@ permissionless market can and eventually will appear, whatever you would prefer.
 they genuinely cannot, which is the trade. `none` is soulbound: units can only be
 burned.
 
-**Issuing burns 1,000 Kei.** It is the one operation that is not free, because an
-asset record is permanent state on every node forever. Transactions — sending,
-transferring, minting, claiming — are free, always.
+**Your first token burns 1 Kei.** The nth asset an account issues burns n Kei —
+the tenth costs 10, the five hundredth costs 500 — and it is the one operation
+that is not free, because an asset record is permanent state on every node
+forever. It escalates per account because what has to be expensive is one
+account creating a great many records, not one account creating its first.
+Transactions — sending, transferring, minting, claiming — are free, always.
 
 ## Items are tokens
 

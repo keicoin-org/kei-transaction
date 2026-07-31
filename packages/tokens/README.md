@@ -27,8 +27,10 @@ await gems.balanceOf(playerAddress)   // 500 — one call
 ```
 
 `transfer` is immutable and protocol-enforced: it is the only real mechanism for a
-closed economy. Issuing burns 1,000 Kei, because an asset record is permanent state
-on every node forever — transactions stay free.
+closed economy. Issuing burns n Kei for an account's nth asset — 1 for its first —
+because an asset record is permanent state on every node forever, and because the
+cost has to land on a large catalogue rather than on a first token. Transactions
+stay free.
 
 ## Status
 
