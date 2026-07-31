@@ -109,15 +109,57 @@ one player. Minting per player makes the issuer's chain a global write lock
 (SPEC §5.5), and the point of writing it this way in a scaffold is that the code
 does not change when there are a thousand claimants instead of one.
 
+## 7. A deploy pointed at testnet is refused, not warned
+
+**New: `Kei.server()` fails with `testnet-in-deployment`.**
+
+M9 makes the testnet public, which is the first point at which a developer can
+ship a game against a real Kei network — and the first point at which they can
+ship one against the *wrong* real Kei network. Testnet Kei is worth nothing and
+that chain can be reset without notice (SPEC §5.9), so a game that reaches
+players there has an economy with an expiry date nobody chose.
+
+The signal is the environment rather than the code: `NODE_ENV=production`, or a
+variable the platform sets by itself — `FLY_APP_NAME`, `RAILWAY_ENVIRONMENT`,
+`K_SERVICE`, and the rest. The platform markers are the ones that matter, because
+a developer who never set `NODE_ENV` is exactly the developer this is for. The
+message names whichever one tripped it: a guard that fires for undisclosed
+reasons gets switched off rather than read.
+
+It refuses rather than warns because a warning here is a line in a startup log
+during the one minute nobody is reading startup logs, and because the cost of
+being wrong is asymmetric — a false refusal costs one environment variable, and a
+false pass costs every coin a player earned. It runs at boot, on the server half,
+before the seed is touched, which is the last moment the fix is still one word.
+
+Two things it does not block. A mock, deployed or not, because a mock never
+pretended to be money. And `KEI_ALLOW_TESTNET=1` for a public testnet demo
+somebody meant to run — read from the environment rather than an option in code,
+because it is a property of a deployment and not of a game.
+
+The move it names is `network: 'mainnet'`, which does not work yet: mainnet is
+blocked on validator distribution, threshold modelling, and the legal
+conversation (SPEC §15). So the pair of errors has to be read together — the
+refusal says move to mainnet, and `no-mainnet` says when mainnet arrives and what
+to do until then. Pointing at a network that is not open is uncomfortable and it
+is the honest state of the project; the alternative is a guard that says nothing
+and lets the shipping happen.
+
 ## What is left of M9
 
-- **Publishing.** Nothing in this tree is on npm — `kei-transaction`,
-  every `@keicoin/*`, and `create-kei-game` all 404. The generated
-  `package.json` therefore asks for a version the registry cannot serve, and
-  `npm create kei-game` cannot work for anybody outside this checkout until that
-  changes. It needs npm credentials, which is a human step, not a code one.
-  Everything else here was verified against the workspace through a link, which
-  is what SPEC §10.5 prescribes for local development anyway.
+- **Publishing.** Still nothing on npm — `kei-transaction`, every `@keicoin/*`,
+  and `create-kei-game` all 404, so the generated `package.json` asks for a
+  version the registry cannot serve. All seven pack cleanly and the `@keicoin`
+  org exists, so what is left is authentication and it is narrower than "npm
+  credentials": npm now refuses a token publish outright unless the token
+  bypasses 2FA, and it is [retiring that bypass](https://github.blog/changelog/2026-07-08-npm-install-time-security-and-gat-bypass2fa-deprecation/)
+  — account operations in August 2026, direct publishing around January 2027.
+  Trusted publishing (OIDC) is the successor and cannot do this job, because npm
+  requires a package to exist before a trusted publisher can be configured for
+  it. So the first publish of all seven is a human at a terminal with an
+  authenticator, and every publish after it can be automated. Everything else
+  here was verified against the workspace through a link, which is what SPEC
+  §10.5 prescribes for local development anyway.
 - **Skills** (§11.2) — one per task, distributed alongside `AGENTS.md` and
   `llms.txt`. Not started.
 - **The public testnet** — M2 and M3, and not this repository's.

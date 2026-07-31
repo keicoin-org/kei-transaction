@@ -110,6 +110,28 @@ const kei = await Kei.start({ node: 'https://…', network: 'testnet' })
 
 Nothing else changes. That is the whole point of building against the mock.
 
+## Shipping it
+
+Testnet is where you build and the wrong place to finish. Its Kei is worth
+nothing and that chain can be reset without notice, so a game that reaches real
+players on testnet has an economy with an expiry date nobody chose.
+
+`Kei.server()` knows the difference. On a host that looks like a deployment —
+`NODE_ENV=production`, or a platform variable like `FLY_APP_NAME` — it refuses
+to start against testnet and tells you to move to mainnet:
+
+```ts
+const game = await startGame({ seed: process.env.GAME_SEED!, node: 'https://…', network: 'mainnet' })
+```
+
+Kei mainnet is not open yet, so today that refusal means *not yet*: keep the game
+in front of testers who know the money is play money. It opens when enough
+independent validators run the chain for value to be safe on it.
+
+Running a public testnet demo on purpose is a real thing to want. Set
+`KEI_ALLOW_TESTNET=1` where you deploy — in the deploy's environment rather than
+in this repository, so the decision is made where the deploy is.
+
 ---
 
 Made with [`create-kei-game`](https://keicoin.org). The SDK is

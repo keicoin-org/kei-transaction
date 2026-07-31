@@ -190,6 +190,31 @@ Not enough Kei — balance is 0.4, tried to send 1.2.
 
 `AGENTS.md` and `llms.txt` ship at M9.
 
+## Shipping
+
+Testnet is where you build, and the wrong place to finish. Its Kei is worth
+nothing and that chain can be reset without notice, so a game that reaches real
+players on testnet has an economy with an expiry date nobody chose (SPEC §5.9).
+
+So `Kei.server()` refuses to start against testnet from a host that looks like a
+deployment — `NODE_ENV=production`, or a platform variable nobody sets on
+purpose like `FLY_APP_NAME`, `RAILWAY_ENVIRONMENT`, or `K_SERVICE` — and the
+refusal names the move:
+
+```
+This looks like a deployment (NODE_ENV=production) and your game is pointed at
+testnet. […] move to mainnet before real players arrive: network: 'mainnet'.
+```
+
+Mainnet is not open yet, so today that refusal means *not yet*: keep the game in
+front of testers who know the money is play money. It opens when enough
+independent validators run the chain that value is safe on it (SPEC §15).
+
+Two things it deliberately does not block. A mock, deployed or not, because a
+mock was never pretending to be money. And a public testnet demo you meant to
+run: `KEI_ALLOW_TESTNET=1`, set in the deploy's environment rather than in a
+commit, because that is where the decision is actually made.
+
 ## Where this is
 
 M1 of eleven, complete. What exists:
@@ -202,7 +227,7 @@ M1 of eleven, complete. What exists:
 | **The demo** | [Button](../button) — playable single-player, every number on the chain and none in a database |
 | **The market** | M5 — `@keicoin/market` does not exist yet |
 | **The wallet panel** | M6 — the headless summary is here, `WalletPanel.mount()` is not |
-| **The harness** | `npm create kei-game` works against the workspace. Nothing is on npm yet, so the generated `package.json` names a version the registry cannot serve — M9 |
+| **The harness** | `npm create kei-game` — published, and the project it writes installs `kei-transaction` from the registry rather than from this checkout |
 
 The mock is not a stub of the API: it enforces one chain per account, derived
 asset ids, receivable arrivals, work tiers, the issuance burn, circulating-supply
@@ -246,7 +271,7 @@ has to move when this API moves; it versions with the tree for the same reason.
 
 ```sh
 bun install
-bun test          # 161 tests
+bun test          # 173 tests
 bun run build     # tsc --build, emits dist/ and .d.ts across the workspace
 ```
 
