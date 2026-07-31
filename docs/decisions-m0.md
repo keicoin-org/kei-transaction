@@ -23,9 +23,9 @@ sub-cent payments the pitch rests on (0.001 Kei is 10^15 raw).
 **Provisional: this is the genesis block's number to fix at M2.** It lives in one
 place (`KEI_DECIMALS` in `@keicoin/core`) precisely so changing it is one edit.
 
-## 2. Block hashing is canonical JSON under a versioned preamble
+## 2. Block hashing was canonical JSON under a versioned preamble
 
-`hashBlock()` hashes `blake2b-256("kei-block-v0\n" + canonicalJson(body))`.
+At M0, `hashBlock()` hashed `blake2b-256("kei-block-v0\n" + canonicalJson(body))`.
 
 This is **not** a wire format, and it is not proposed as one. The byte layout of
 `asset` blocks is a consensus decision belonging to the node fork, and inventing
@@ -34,8 +34,29 @@ deterministic, injective over the fields, and impossible to confuse with a later
 version — the preamble carries the version so `v1` blocks can never collide with
 these.
 
-**M2 replaces this** with the real serialisation. The SDK touches hashing in
-exactly one function.
+**M2 has replaced this** with the real serialisation. `wire.ts` encodes the §7
+field layout and hashes it under `blake2b-256("kei-block-v1")` followed by the
+block type, which is what kei-node computes, so a signature made here verifies
+there. `kei-node/util/keihash.py` prints fixed vectors that both implementations
+assert, because "the two agree" was otherwise a claim neither could check.
+
+The prediction that the SDK touches hashing in exactly one function was wrong,
+and the reason is worth keeping. The node's layout is flat — one `op` byte, one
+`asset_id`, one `amount`, one `link` — where this SDK's `AssetOp` is a tagged
+union whose members carry different fields. Mapping one onto the other is the
+work; the hash itself is four lines of it.
+
+Two kinds of block have no layout to encode, and they keep the JSON hash under
+`kei-block-local-v0` — a domain no node computes, so such a block is rejected
+rather than accepted with a field silently dropped:
+
+- `commit`, `commit_close` and `claim`, which are SPEC §5.6.4 operations landing
+  with M4 and M5 and are deliberately not in `nano::asset_op` yet.
+- A memo on a `state` block. decisions-m2 §8 carries memos on the asset block, so
+  the layout has no field for one here — but `send()` still accepts a memo and
+  puts it there, which means a memo'd Kei payment is currently unrepresentable on
+  chain. That is a protocol gap, not a hashing one, and it blocks
+  definition-of-done (6) until the node answers it.
 
 ## 3. `asset_receive` is an operation the spec's table does not name
 
