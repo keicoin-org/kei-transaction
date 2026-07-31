@@ -202,6 +202,7 @@ M1 of eleven, complete. What exists:
 | **The demo** | [Button](../button) — playable single-player, every number on the chain and none in a database |
 | **The market** | M5 — `@keicoin/market` does not exist yet |
 | **The wallet panel** | M6 — the headless summary is here, `WalletPanel.mount()` is not |
+| **The harness** | `npm create kei-game` works against the workspace. Nothing is on npm yet, so the generated `package.json` names a version the registry cannot serve — M9 |
 
 The mock is not a stub of the API: it enforces one chain per account, derived
 asset ids, receivable arrivals, work tiers, the issuance burn, circulating-supply
@@ -234,11 +235,18 @@ for people who care about bundle size, not as a puzzle everyone must solve.
 
 `@keicoin/core` depends on nothing else in the tree.
 
+One package in the tree is not part of the SDK: **`create-kei-game`** is the
+harness behind `npm create kei-game` (SPEC §11.3). It writes a working
+single-player game — wallet, currency, purchasable item, Babylon.js scene, and a
+mock node to develop against — and exits. It has no dependencies, and nothing it
+generates depends on it. It lives here because it emits code against this API and
+has to move when this API moves; it versions with the tree for the same reason.
+
 ## Development
 
 ```sh
 bun install
-bun test          # 113 tests
+bun test          # 161 tests
 bun run build     # tsc --build, emits dist/ and .d.ts across the workspace
 ```
 

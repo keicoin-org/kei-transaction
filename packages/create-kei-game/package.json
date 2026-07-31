@@ -1,0 +1,52 @@
+{
+  "name": "create-kei-game",
+  "version": "0.1.0",
+  "description": "Scaffold a browser game with a real currency and real items. Writes files and exits.",
+  "license": "MIT",
+  "author": "Sano",
+  "homepage": "https://keicoin.org#harness",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keicoin-org/kei-transaction.git",
+    "directory": "packages/create-kei-game"
+  },
+  "bugs": {
+    "url": "https://github.com/keicoin-org/kei-transaction/issues"
+  },
+  "keywords": [
+    "kei",
+    "create",
+    "scaffold",
+    "starter",
+    "game",
+    "gamedev",
+    "babylonjs",
+    "browser-game"
+  ],
+  "type": "module",
+  "bin": {
+    "create-kei-game": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "templates"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@keicoin/core": "^0.1.0"
+  }
+}

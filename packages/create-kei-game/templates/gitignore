@@ -1,0 +1,10 @@
+node_modules/
+public/build/
+dist/
+*.tsbuildinfo
+.DS_Store
+
+# The issuer's seed is the game's money. It never belongs in a commit.
+.env
+.env.*
+!.env.example
