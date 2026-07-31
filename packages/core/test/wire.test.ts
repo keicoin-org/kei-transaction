@@ -37,10 +37,13 @@ const ASSET_ID = '3EB956658F4BA3BEF3BFDBC3545121BA1D35CA7DD0C398DFA8FC480641E4BF
 
 describe('the Kei hash domain', () => {
   test('is blake2b-256 of the version label', () => {
-    // Not a bare block-type preamble, which is what an inherited block hashes
-    // under — decisions-m2.md §14.
+    // Pinned rather than recomputed from the label here, because recomputing it
+    // the same way twice would agree with any label at all. Every vector below
+    // starts with these bytes, so a typo in the label already fails four tests —
+    // this one says which mistake was made. Not a bare block-type preamble,
+    // which is what an inherited block hashes under — decisions-m2.md §14.
     expect(bytesToHex(keiBlockDomain())).toBe(
-      bytesToHex(keiBlockDomain()),
+      '0577ACDDCA6FA57E63163E3EA4A026299EA8C7DBCED04CA839E87AD20E69501D',
     )
     expect(keiBlockDomain()).toHaveLength(32)
   })
