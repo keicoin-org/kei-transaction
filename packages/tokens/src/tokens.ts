@@ -10,8 +10,8 @@
 
 import type { AssetId, AssetInfo, KeiClient, SwapPolicy, TransferPolicy } from '@keicoin/core'
 import {
-  ISSUANCE_BURN,
   KEI_DECIMALS,
+  issuanceBurn,
   assertAddress,
   deriveAssetId,
   fail,
@@ -110,7 +110,9 @@ function factsOf(info: AssetInfo): TokenFacts {
 /**
  * Idempotent per (issuer, symbol): asset ids are derived, so re-issuing the same
  * symbol from the same account returns the token that already exists rather than
- * burning another 1,000 Kei (SPEC §5.6.1, §6.7).
+ * paying for another one (SPEC §5.6.1, §6.7). That matters more than it used to:
+ * the nth asset an account issues burns n Kei, so a duplicate would not merely
+ * cost again, it would cost more.
  */
 export async function issueToken(client: KeiClient, options: IssueOptions): Promise<IssuerToken> {
   if (client.role !== 'issuer') {
@@ -124,11 +126,17 @@ export async function issueToken(client: KeiClient, options: IssueOptions): Prom
   const existing = await client.node.assetInfo(deriveAssetId(client.publicKey, symbol))
   if (existing) return wrapIssuerToken(client, existing, options.rate)
 
+  // The nth asset an account issues burns n Kei (SPEC §5.6.5), so the price of
+  // this one depends on how many came before it. The node is the only thing
+  // that knows, and the block has to state the burn exactly.
+  const issuer = await client.node.accountInfo(client.address)
+  const ordinal = (issuer?.issuedCount ?? 0) + 1
+  const burn = issuanceBurn(ordinal - 1)
   const balance = await client.balanceRaw()
-  if (balance < ISSUANCE_BURN) {
+  if (balance < burn) {
     fail(
       'insufficient-kei',
-      `Issuing ${symbol} burns 1,000 Kei (SPEC §5.6.5) and this account holds ${formatRaw(balance, KEI_DECIMALS)} Kei. Fund ${client.address} first; on testnet call faucet().`,
+      `${symbol} is this account's asset number ${ordinal}, which burns ${formatRaw(burn, KEI_DECIMALS)} Kei (SPEC §5.6.5), and it holds ${formatRaw(balance, KEI_DECIMALS)} Kei. Fund ${client.address} first; on testnet call faucet().`,
     )
   }
 
@@ -151,7 +159,7 @@ export async function issueToken(client: KeiClient, options: IssueOptions): Prom
             },
           }),
     },
-    -ISSUANCE_BURN,
+    -burn,
   )
 
   const info = await client.node.assetInfo(deriveAssetId(client.publicKey, symbol))

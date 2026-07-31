@@ -10,7 +10,7 @@ export {
 } from './address.js'
 
 export {
-  ISSUANCE_BURN,
+  issuanceBurn,
   KEI_DECIMALS,
   KEI_NAME,
   KEI_SYMBOL,

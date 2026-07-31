@@ -48,11 +48,18 @@ never transacted is `{ "account": null }`, not a 404.
   "height": 12,
   "balance": "5000000000000000000",
   "representative": "kei_3xyz...",
-  "receivableCount": 0
+  "receivableCount": 0,
+  "issuedCount": 2
 } }
 ```
 
 `null` for an account with no chain yet.
+
+`issuedCount` is how many assets this account has issued, and it prices the next
+one: **the nth asset an account issues burns n Kei** (SPEC §5.6.5). A signer
+cannot construct a valid `issue` block without it, because the burn is a balance
+decrease the block has to state exactly — so this is a read the SDK makes before
+every issuance, not a statistic.
 
 ### `account_history`
 

@@ -19,6 +19,11 @@ export interface AccountInfo {
   balance: string
   representative: string
   receivableCount: number
+  /**
+   * How many assets this account has issued, which prices its next one — the
+   * nth burns n Kei (SPEC §5.6.5). Needed to construct a valid `issue` block.
+   */
+  issuedCount: number
 }
 
 export interface AssetInfo {

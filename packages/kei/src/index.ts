@@ -30,7 +30,7 @@ export type { SeedStore } from './storage.js'
 export {
   ADDRESS_PREFIX,
   HttpNode,
-  ISSUANCE_BURN,
+  issuanceBurn,
   KEI_ASSET,
   KEI_DECIMALS,
   KEI_TOTAL_SUPPLY,
