@@ -90,10 +90,23 @@ async function dispatch(node: KeiNode, action: string, body: RpcRequest): Promis
     case 'account_info':
       return { account: await node.accountInfo(text(body.account, 'account')) }
 
-    case 'account_history':
+    // A real Kei node serves two shapes here and picks by `shape`, because it
+    // inherited Nano's answer under this name. This node has only the
+    // contract's shape and could serve it unasked — but then a client that
+    // forgot the parameter would pass against the mock and read Nano's history
+    // entries as blocks against kei-node, which is the failure the parameter
+    // exists to prevent. So the reference implementation holds callers to it.
+    case 'account_history': {
+      if (body.shape !== 'block') {
+        throw new KeiError(
+          'bad-request',
+          'account_history needs "shape": "block". Without it a Kei node answers in the shape it inherited from Nano — history entries, not blocks. See docs/rpc.md.',
+        )
+      }
       return {
         history: await node.accountHistory(text(body.account, 'account'), { limit: count(body.count, 100) }),
       }
+    }
 
     case 'block_info':
       return { block: await node.blockInfo(text(body.hash, 'hash')) }
