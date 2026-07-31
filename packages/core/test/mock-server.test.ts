@@ -58,6 +58,51 @@ describe('the mock node over HTTP', () => {
     expect(await http.hasClaimed(keys.address, 'B'.repeat(64))).toBe(false)
   })
 
+  test('history comes back as blocks, not as entries describing them', async () => {
+    const { http, mock } = await connected()
+    const keys = await keyPairFromSeed(randomSeed())
+    const faucet = mock.ledger.genesisAddresses().community
+
+    // The faucet account has a chain as soon as it pays out: its genesis block,
+    // then this send.
+    await http.faucet(keys.address, (5n * 10n ** 18n).toString())
+    const history = await http.accountHistory(faucet, { limit: 10 })
+    expect(history.length).toBeGreaterThan(1)
+
+    // What separates the two shapes: an inherited history entry describes the
+    // block — `type: "send"`, `account` naming the counterparty — and carries
+    // no `previous`, `signature` or `work`. Signing the next block needs all
+    // three, so this is the difference between a usable answer and a readable
+    // one.
+    const newest = history[0]!
+    expect(newest.type).toBe('state')
+    expect(newest.account).toBe(faucet)
+    expect((newest as { subtype?: string }).subtype).toBe('send')
+    for (const field of ['previous', 'representative', 'balance', 'link', 'signature', 'work'] as const) {
+      expect(typeof (newest as unknown as Record<string, unknown>)[field]).toBe('string')
+    }
+
+    // Oldest block on any chain is its open, and the SDK's word for that is
+    // `open` where the node's sideband only knows it as a receive.
+    expect((history.at(-1) as { subtype?: string }).subtype).toBe('open')
+  })
+
+  test('account_history without a shape is refused rather than guessed', async () => {
+    const { mock } = await connected()
+    const handler = mockRpcHandler({ node: mock })
+    const response = await handler(
+      new Request('http://node.test/rpc', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'account_history', account: mock.ledger.genesisAddresses().community }),
+      }),
+    )
+    // A real node would answer this with Nano's shape, which parses as a block
+    // and describes a different one. The mock has no second shape to serve, so
+    // it holds callers to the parameter instead of inferring it.
+    expect(((await response.json()) as { error?: string }).error).toMatch(/"shape": "block"/)
+  })
+
   test('work thresholds come across as decimal strings', async () => {
     const { http, mock } = await connected()
     expect(await http.workThresholds()).toEqual(await mock.workThresholds())
