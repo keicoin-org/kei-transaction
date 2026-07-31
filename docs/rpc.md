@@ -64,13 +64,28 @@ every issuance, not a statistic.
 ### `account_history`
 
 ```json
-{ "action": "account_history", "account": "kei_3abc...", "count": 100 }
+{ "action": "account_history", "account": "kei_3abc...", "count": 100, "shape": "block" }
 ```
 ```json
 { "history": [ { "type": "state", "subtype": "send", "...": "..." } ] }
 ```
 
-Newest first. Blocks are returned in the same shape `process` accepts.
+Newest first. Blocks are returned in the same shape `process` accepts, and every
+block on the account's chain appears — including `change` blocks, which Nano's
+own answer omits.
+
+**`shape` is required**, and it is the one parameter in this document that a Kei
+node needs because of its ancestry rather than because of Kei. A Banano-derived
+node already answers to `account_history`, with entries it derives from the
+blocks rather than the blocks themselves — the subtype in `type`, the
+counterparty in `account`. Those two keys collide with a block's own and mean
+something else in each, so unlike `accounts_receivable` the two answers cannot
+be told apart by reading them, and unlike `block_info` they cannot sit beside
+each other under separate keys. Omitting `shape` gets the inherited answer,
+which parses cleanly as a block and describes a different one. kei-node's
+`docs/decisions-m2.md` §15 records the reasoning; `mockRpcHandler` requires the
+parameter it could infer, so that a client which forgets it fails here rather
+than against a real node.
 
 ### `block_info`
 

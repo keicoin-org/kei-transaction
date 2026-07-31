@@ -92,9 +92,17 @@ export class HttpNode implements KeiNode {
   }
 
   async accountHistory(address: string, options?: { limit?: number }): Promise<Block[]> {
+    // `account_history` is the one action a Kei node and its Banano ancestor
+    // answer differently under the same name and the same parameters, and the
+    // two answers cannot be told apart by looking at them: Nano's entries put
+    // the subtype in `type` and the counterparty in `account`, which parses
+    // cleanly as a block and describes a different one. `shape` is what asks
+    // for ours. Omitting it does not fail — it silently reads Nano's entries
+    // as blocks — so it is not optional here.
     const result = await this.call<{ history?: Block[] }>('account_history', {
       account: address,
       count: options?.limit ?? 100,
+      shape: 'block',
     })
     return result.history ?? []
   }
