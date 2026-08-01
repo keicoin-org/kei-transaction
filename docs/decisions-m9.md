@@ -38,7 +38,7 @@ have it in the dependency graph.
 ## 2. It has no dependencies of its own
 
 `node:readline`, `node:fs`, `node:path`. No prompt library, no colour library, no
-spinner. A program that runs once and writes eleven files does not get to add
+spinner. A program that runs once and writes twelve files does not get to add
 three supply-chain risks, and the first thing a developer waits for should be
 their game's dependencies rather than the scaffolder's.
 
@@ -215,10 +215,21 @@ node will not accept the fence either, the intent stays indeterminate and the
 wallet receives no second answer; a later retry or restart resolves it. Startup
 does this recovery before it serves anything.
 
-A crash at any point in the sequence therefore lands on one of four states, and
-each is decided rather than guessed: no intent; an intent whose action is found;
-an empty intent window that has been fenced and can safely be written `void`; or
-an unreadable/unfenceable window that stays open.
+Recovery keeps four evidence states distinct:
+
+- **`found`** — the intended delivery or refund is in the frontier window; write
+  `done` with that outcome.
+- **`absent`** — no answer is in the window *and* a successful frontier fence
+  has made the submitted stale block impossible; only now may the intent become
+  `void` and be tried again.
+- **`ambiguous`** — both answer kinds appear where the per-wallet invariant says
+  only one can; cloud that wallet and refuse rather than choose.
+- **`unknown`** — history did not reach the recorded frontier, the frontier could
+  not be read, or the fence could not be submitted; leave the intent open.
+
+An empty read before the fence is only `pending`, never evidence of absence. A
+crash at any point therefore recovers to one of the four states above rather
+than collapsing “not there” and “not there yet” into the same answer.
 
 A torn last line preserves the same ordering. A half-written `done` leaves its
 `intent` open and the chain says what that intent did; a half-written `intent`
@@ -233,8 +244,12 @@ refusal, and it is deliberate: the two things the game could do instead are mint
 a second lantern or refund one the player is still holding. The blast radius is
 one wallet, and a wallet with no answers yet is unaffected.
 
-Three costs, recorded rather than hidden:
+Four costs, recorded rather than hidden:
 
+- **Safety can pause one wallet.** If the node will neither reveal the action nor
+  accept a fence, that wallet remains indeterminate and receives no second
+  answer. Other wallets keep moving. A retry or restart rechecks the chain, but
+  there is deliberately no timeout that turns uncertainty into `void`.
 - **A wiped disk strands unanswered payments.** Not money the game can take
   twice, but money a player cannot spend. It is the right way round and it is
   still a loss, and it is why the generated README says to back the file up.
@@ -331,16 +346,27 @@ Two gaps it does not close, recorded rather than hidden. The generated
 `server/main.ts` cannot be imported, because it bundles the Babylon.js client at
 startup and that dependency belongs to the generated project; its `/game/*`
 routes are mirrored in the test and a last assertion fails if the two stop
-agreeing. And the generated sources are still not type-checked anywhere — running
-them catches what they do, not what they claim. Type-checking the emitted project
-needs Babylon in this tree, which is a heavier trade than it looks and is M10's to
-make.
+agreeing. And the generated sources are still not type-checked by `bun test` —
+running them catches what they do, not what they claim. The exact PR head was
+checked by generating a fresh project, installing its declared SDK and Babylon
+dependencies, and running its strict TypeScript project successfully; making
+that generated type-check part of `bun test` remains M10's decision.
+
+At the final reviewed runtime head, the focused purchase/restart/scaffold suite
+is **39/39** and the complete workspace suite is **211/211**; workspace typecheck
+and the freshly emitted project's own typecheck are both clean. A mutation that
+turned provisional `pending` into immediate `absent` reproduces the reported
+free-lantern bug exactly: the late mint lands and the repost refunds its payment.
 
 ## What is left of M9
 
-- **Publishing — done.** All seven are on npm at `0.1.0`: `kei-transaction`,
-  `create-kei-game`, and the five `@keicoin/*`. `npm create kei-game` now works
-  for anybody, from the registry rather than from a checkout.
+- **Publishing — the first release exists, but the harness needs `0.1.1`.** All
+  seven are on npm at `0.1.0`, but public `create-kei-game@0.1.0` predates
+  `e8dc2ab`, `d3bf191`, and `296c36b`: it does not contain the final
+  hash-correlated write-ahead settlement path and is stale/unsafe for durable
+  payments. The coordinated `0.1.1` release and clean-registry verification are
+  tracked in [#12](https://github.com/keicoin-org/kei-transaction/issues/12).
+  This PR does not bump versions or publish.
 
   It is worth recording how narrow the remaining door was, because the next
   release has to go through it too. npm refuses a plain token publish, and an
@@ -365,4 +391,4 @@ make.
   before the first publish is otherwise believed.
 - **Skills** (§11.2) — one per task, distributed alongside `AGENTS.md` and
   `llms.txt`. Not started.
-- **The public testnet** — M2 and M3, and not this repository's.
+- **The public testnet** — M3, and not this repository's.

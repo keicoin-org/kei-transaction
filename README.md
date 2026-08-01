@@ -14,10 +14,10 @@ const kei = await Kei.start()          // wallet created, persisted, funded
 await kei.send('kei_3abc...', 0.001)   // sub-cent, instant, feeless
 ```
 
-> **Status: M1 complete.** The API is real and runs end to end, and
-> [Button](../button) is playable in a browser against it. The chain underneath is
-> still a mock — but it is now served over HTTP, so the SDK already talks to a node
-> across a URL. There is no testnet, and nothing here holds value. See
+> **Status: M2 complete.** The SDK's exact RPC contract runs end to end against
+> both its development mock and the native [Kei node](https://github.com/keicoin-org/kei-node).
+> [Button](../button) remains playable against the same API. M3's public testnet
+> is not open yet, and nothing here holds value. See
 > [Where this is](#where-this-is).
 
 ---
@@ -217,30 +217,30 @@ commit, because that is where the decision is actually made.
 
 ## Where this is
 
-M1 of eleven, complete. What exists:
+M2 of eleven, complete. What exists:
 
 | | |
 |---|---|
 | **The §6.7 API** | Complete, running end to end, types published |
-| **The chain** | A mock enforcing the SPEC §5.6 / §7 ledger rules, in process or over HTTP |
-| **The network** | No testnet. `Kei.start()` with no node gets a private in-process chain; point it at a `mockRpcHandler` and `kei.network` reports `'mock'` either way |
+| **The chain** | A development mock in this package and the native [Kei node](https://github.com/keicoin-org/kei-node), held to the same exact M2 RPC/economy suite |
+| **The network** | No public testnet yet. `Kei.start()` with no node gets a private in-process chain; pass a node URL to use an external node. M3 makes that network public |
 | **The demo** | [Button](../button) — playable single-player, every number on the chain and none in a database |
 | **The market** | M5 — `@keicoin/market` does not exist yet |
 | **The wallet panel** | M6 — the headless summary is here, `WalletPanel.mount()` is not |
-| **npm** | All seven published at `0.1.0` — `kei-transaction`, `create-kei-game`, and the five `@keicoin/*` |
-| **The harness** | `npm create kei-game` works for anybody, and the project it writes installs `kei-transaction` from the registry rather than from this checkout |
+| **npm** | All seven have a `0.1.0`, but public `create-kei-game@0.1.0` predates the safe purchase/restart work in PR #6 and is stale; the coordinated `0.1.1` release is tracked in [#12](https://github.com/keicoin-org/kei-transaction/issues/12) |
+| **The harness** | The source in this tree generates and runs the hash-correlated, restart-safe purchase path. Do not use the public `0.1.0` scaffold for durable payment settlement |
 
 The mock is not a stub of the API: it enforces one chain per account, derived
 asset ids, receivable arrivals, work tiers, the issuance burn, circulating-supply
 caps, transfer policy, the (account, root) double-claim index, and the genesis
-allocation — so the SDK is written against real semantics and M3 swaps the
-transport without the API moving.
+allocation. The mock keeps local development cheap; the native node supplies the
+production transport, and M3 deploys it without moving the API.
 
-M1 proved that across a process boundary rather than asserting it: `mockRpcHandler`
-serves [`docs/rpc.md`](docs/rpc.md) as a plain `Request → Response`, and the whole
-economy — issue, top-up, mint, transfer, item, commit, parallel claims — runs
-between two clients that share nothing but a URL. **M2 changes what is behind that
-URL and nothing above it.**
+M1 proved the process boundary with `mockRpcHandler`; M2 kept that boundary fixed
+and made the native node serve the same [`docs/rpc.md`](docs/rpc.md) contract. The
+exact M2 suite runs issue, top-up, mint, transfer, and item operations between two
+clients that share nothing but a URL. **M3 deploys that node as a public testnet;
+it does not move the SDK API.**
 
 Nothing here holds value, and until the validator set is meaningfully
 distributed, nothing should.
@@ -278,7 +278,7 @@ in somebody's new project.
 
 ```sh
 bun install
-bun test          # 193 tests
+bun test          # 211 tests
 bun run build     # tsc --build, emits dist/ and .d.ts across the workspace
 ```
 

@@ -3,6 +3,13 @@
 Scaffolds a browser game with a real currency, a real item, and a wallet the
 player owns.
 
+> **Release warning:** public `create-kei-game@0.1.0` predates the hash-correlated
+> purchase path and its write-ahead restart/late-acceptance recovery. It is stale
+> and unsafe for durable payment settlement. The corrected source is in PR #6;
+> the coordinated `0.1.1` release is tracked in
+> [#12](https://github.com/keicoin-org/kei-transaction/issues/12). Do not treat
+> `@latest` as this source until that checklist is complete.
+
 ```sh
 npm create kei-game
 ```
@@ -28,15 +35,18 @@ bun create kei-game star-clicker --currency "Gold Pieces"
 
 ```
 star-clicker/
+├── .gitignore
+├── README.md
 ├── src/economy.ts     every line of Kei in the browser
 ├── src/world.ts       the Babylon.js scene — knows nothing about Kei
 ├── src/main.ts        joins the two
 ├── server/game.ts     the whole backend: issues the currency, sells the item
+├── server/orders.ts   payment-hash write-ahead log and restart recovery
 ├── server/main.ts     bun run dev — node, issuer, and client in one process
 ├── shared/game.ts     the price list
 ├── index.html
 ├── package.json
-└── tsconfig.json
+└── tsconfig.json      strict type-check for the emitted project
 ```
 
 ```sh
