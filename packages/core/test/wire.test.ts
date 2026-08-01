@@ -16,6 +16,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   bytesToHex,
+  blockPreimage,
   deriveAssetId,
   hashBlock,
   keiBlockDomain,
@@ -145,7 +146,7 @@ describe('block hash vectors', () => {
   })
 })
 
-describe('blocks the node has no layout for', () => {
+describe('consensus wire layout coverage', () => {
   const base = {
     type: 'asset',
     account: ACCOUNT,
@@ -154,16 +155,16 @@ describe('blocks the node has no layout for', () => {
     balance: BALANCE,
   } as const
 
-  test('the M4/M5 operations are named rather than guessed at', () => {
-    const deferred: AssetOp[] = [
+  test('the M4 rooted-claim operations have the native layout', () => {
+    const rooted: AssetOp[] = [
       { kind: 'commit', root: PREVIOUS, asset: ASSET_ID, count: 2, total: '5' },
       { kind: 'commit_close', root: PREVIOUS },
       { kind: 'claim', root: PREVIOUS, asset: ASSET_ID, amount: '5', proof: [] },
     ]
-    for (const op of deferred) {
+    for (const op of rooted) {
       const gap = nodeLayoutGap({ ...base, op })
-      expect(gap).toContain(op.kind)
-      expect(gap).toContain('M4/M5')
+      expect(gap).toBeNull()
+      expect(() => blockPreimage({ ...base, op })).not.toThrow()
     }
   })
 

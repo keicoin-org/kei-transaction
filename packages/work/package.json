@@ -28,6 +28,9 @@
       "import": "./dist/index.js"
     }
   },
+  "bin": {
+    "kei-work-server": "./dist/server.js"
+  },
   "files": [
     "dist",
     "src"

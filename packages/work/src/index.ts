@@ -10,6 +10,7 @@
 
 import type { KeiNode, WorkProvider, WorkTier } from '@keicoin/core'
 import { KeiError, fail, generateWork } from '@keicoin/core'
+import { createServer, type Server } from 'node:http'
 
 export interface LocalWorkOptions {
   /** Overrides the node's advertised thresholds. Mostly for tests. */
@@ -130,4 +131,64 @@ export function createWorkProvider(node: KeiNode, options: WorkOptions = {}): Wo
     fallback: local,
     ...(options.fetch ? { fetch: options.fetch } : {}),
   })
+}
+
+export interface WorkHttpServerOptions {
+  host?: string
+  port?: number
+  /** Optional bearer token. Omit for a private/local network. */
+  token?: string
+}
+
+export interface RunningWorkServer {
+  url: string
+  close(): Promise<void>
+}
+
+/** Runs the production-compatible `work_generate` HTTP endpoint used above. */
+export async function startWorkServer(
+  node: KeiNode,
+  options: WorkHttpServerOptions = {},
+): Promise<RunningWorkServer> {
+  const provider = new LocalWorkProvider(node)
+  const host = options.host ?? '127.0.0.1'
+  const server: Server = createServer((request, response) => {
+    const send = (status: number, body: object) => {
+      response.writeHead(status, { 'content-type': 'application/json' })
+      response.end(JSON.stringify(body))
+    }
+    if (request.method !== 'POST') return send(405, { error: 'POST required' })
+    if (options.token && request.headers.authorization !== `Bearer ${options.token}`) {
+      return send(401, { error: 'unauthorized' })
+    }
+    const chunks: Uint8Array[] = []
+    request.on('data', (chunk: Uint8Array) => chunks.push(chunk))
+    request.on('end', () => {
+      void (async () => {
+        try {
+          const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+            action?: string
+            hash?: string
+            tier?: WorkTier
+          }
+          if (body.action !== 'work_generate') return send(400, { error: 'unknown action' })
+          if (!/^[0-9a-fA-F]{64}$/.test(body.hash ?? '')) return send(400, { error: 'hash must be 64 hex characters' })
+          if (body.tier !== 'A' && body.tier !== 'B' && body.tier !== 'C') return send(400, { error: 'tier must be A, B, or C' })
+          send(200, { work: await provider.generate(body.hash!, body.tier) })
+        } catch {
+          send(400, { error: 'invalid JSON' })
+        }
+      })()
+    })
+  })
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(options.port ?? 0, host, resolve)
+  })
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('work server did not bind a TCP port')
+  return {
+    url: `http://${host}:${address.port}`,
+    close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+  }
 }

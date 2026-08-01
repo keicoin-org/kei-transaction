@@ -32,6 +32,9 @@ const ASSET_OP: Record<string, number> = {
   burn: 2,
   transfer: 3,
   asset_receive: 4,
+  commit: 5,
+  commit_close: 6,
+  claim: 7,
 }
 
 /** `nano::transfer_policy`. */
@@ -101,6 +104,10 @@ function u8(value: number): Uint8Array {
 /** Little-endian, like `payload_len` itself. */
 function u16le(value: number): Uint8Array {
   return Uint8Array.of(value & 0xff, (value >> 8) & 0xff)
+}
+
+function u32be(value: number): Uint8Array {
+  return bigintToBytes(BigInt(value), 4)
 }
 
 /** A length-prefixed payload string: `uint16` little-endian, then the UTF-8 bytes. */
@@ -192,6 +199,34 @@ function assetFields(
         link: hashBytes(op.link, 'source block hash'),
         payload: new Uint8Array(0),
       }
+    case 'commit':
+      if (!Number.isSafeInteger(op.count) || op.count < 1 || op.count > 0xffff_ffff) {
+        fail('bad-block', `commit count must be a uint32 greater than zero, got ${op.count}.`)
+      }
+      return {
+        op: code,
+        assetId: hashBytes(op.asset, 'asset id'),
+        amount: amountBytes(op.total, 'total'),
+        link: hashBytes(op.root, 'root'),
+        payload: u32be(op.count),
+      }
+    case 'commit_close':
+      return {
+        op: code,
+        assetId: ZERO_32,
+        amount: new Uint8Array(16),
+        link: hashBytes(op.root, 'root'),
+        payload: new Uint8Array(0),
+      }
+    case 'claim':
+      if (op.proof.length > 48) fail('bad-block', `claim proof has ${op.proof.length} siblings; the limit is 48.`)
+      return {
+        op: code,
+        assetId: hashBytes(op.asset, 'asset id'),
+        amount: amountBytes(op.amount, 'amount'),
+        link: hashBytes(op.root, 'root'),
+        payload: concat(u8(op.proof.length), ...op.proof.map((hash) => hashBytes(hash, 'proof sibling'))),
+      }
     default:
       fail('bad-block', `"${(op as AssetOp).kind}" has no wire layout.`)
   }
@@ -234,8 +269,8 @@ function assetBytes(body: AssetBlockBody): Uint8Array {
  *
  * Two cases, and neither is something the SDK may decide on its own:
  *
- * - `commit`, `commit_close` and `claim` are SPEC §5.6.4 operations that land
- *   with M4 and M5, and are deliberately not members of `nano::asset_op` yet.
+ * - Operations after `claim` are future consensus work and deliberately have
+ *   no layout here until the node lands them.
  * - A memo on a `state` block. decisions-m2.md §8 puts memos on the asset-family
  *   block and leaves inherited `state` blocks untouched, so the §14 layout has
  *   nowhere to put one. Covering it anyway would fork the hash; leaving it out
