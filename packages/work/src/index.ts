@@ -6,11 +6,15 @@
  * package is the client side of that: a local generator for development, a work
  * server client for production, and precompute so the next block's work is
  * already in hand before the player asks for it.
+ *
+ * Everything here runs in a browser, because `kei-transaction` re-exports it and
+ * a game bundles that. The listener that serves `workRpcHandler` needs
+ * `node:http`, which has no browser polyfill, so it lives one import away in
+ * `@keicoin/work/server`.
  */
 
 import type { KeiNode, WorkProvider, WorkTier } from '@keicoin/core'
 import { KeiError, fail, generateWork } from '@keicoin/core'
-import { createServer, type Server } from 'node:http'
 
 export interface LocalWorkOptions {
   /** Overrides the node's advertised thresholds. Mostly for tests. */
@@ -133,74 +137,62 @@ export function createWorkProvider(node: KeiNode, options: WorkOptions = {}): Wo
   })
 }
 
-export interface WorkHttpServerOptions {
-  host?: string
-  port?: number
+/**
+ * A `work_generate` request is one action, a 64-character hash and a tier. Ten
+ * times that is already something other than a client, so it stops being read.
+ */
+export const MAX_WORK_REQUEST_BYTES = 8_192
+
+export interface WorkRpcOptions {
+  /** Where the work comes from. `startWorkServer` passes a `LocalWorkProvider`. */
+  provider: WorkProvider
   /** Optional bearer token. Omit for a private/local network. */
   token?: string
 }
 
-export interface RunningWorkServer {
-  url: string
-  close(): Promise<void>
-}
+/**
+ * The `work_generate` endpoint, as a plain `Request → Response` handler.
+ *
+ * Deliberately not a server, for the same reason `mockRpcHandler` is not one:
+ * the moment this file listens it needs `node:http`, and `@keicoin/work` is
+ * reachable from a game's browser bundle. Pass it to `Bun.serve({ fetch })`, to
+ * a Cloudflare Worker, or to `startWorkServer` in `@keicoin/work/server`, which
+ * is the `node:http` adapter.
+ */
+export function workRpcHandler(options: WorkRpcOptions): (request: Request) => Promise<Response> {
+  const { provider, token } = options
+  const headers = { 'content-type': 'application/json' }
+  const send = (status: number, body: object): Response =>
+    new Response(JSON.stringify(body), { status, headers })
 
-/** Runs the production-compatible `work_generate` HTTP endpoint used above. */
-export async function startWorkServer(
-  node: KeiNode,
-  options: WorkHttpServerOptions = {},
-): Promise<RunningWorkServer> {
-  const provider = new LocalWorkProvider(node)
-  const host = options.host ?? '127.0.0.1'
-  const server: Server = createServer((request, response) => {
-    const send = (status: number, body: object) => {
-      response.writeHead(status, { 'content-type': 'application/json' })
-      response.end(JSON.stringify(body))
-    }
+  return async (request: Request): Promise<Response> => {
     if (request.method !== 'POST') return send(405, { error: 'POST required' })
-    if (options.token && request.headers.authorization !== `Bearer ${options.token}`) {
+    if (token && request.headers.get('authorization') !== `Bearer ${token}`) {
       return send(401, { error: 'unauthorized' })
     }
-    const chunks: Uint8Array[] = []
-    let size = 0
-    let rejected = false
-    request.on('data', (chunk: Uint8Array) => {
-      if (rejected) return
-      size += chunk.byteLength
-      if (size > 8_192) {
-        rejected = true
-        send(413, { error: 'request body is too large' })
-        return
-      }
-      chunks.push(chunk)
-    })
-    request.on('end', () => {
-      if (rejected) return
-      void (async () => {
-        try {
-          const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
-            action?: string
-            hash?: string
-            tier?: WorkTier
-          }
-          if (body.action !== 'work_generate') return send(400, { error: 'unknown action' })
-          if (!/^[0-9a-fA-F]{64}$/.test(body.hash ?? '')) return send(400, { error: 'hash must be 64 hex characters' })
-          if (body.tier !== 'A' && body.tier !== 'B' && body.tier !== 'C') return send(400, { error: 'tier must be A, B, or C' })
-          send(200, { work: await provider.generate(body.hash!, body.tier) })
-        } catch {
-          send(400, { error: 'invalid JSON' })
-        }
-      })()
-    })
-  })
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(options.port ?? 0, host, resolve)
-  })
-  const address = server.address()
-  if (!address || typeof address === 'string') throw new Error('work server did not bind a TCP port')
-  return {
-    url: `http://${host}:${address.port}`,
-    close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+
+    let body: { action?: string; hash?: string; tier?: WorkTier }
+    try {
+      const raw = await request.arrayBuffer()
+      if (raw.byteLength > MAX_WORK_REQUEST_BYTES) return send(413, { error: 'request body is too large' })
+      body = JSON.parse(new TextDecoder().decode(raw))
+    } catch {
+      return send(400, { error: 'invalid JSON' })
+    }
+
+    if (body.action !== 'work_generate') return send(400, { error: 'unknown action' })
+    if (!/^[0-9a-fA-F]{64}$/.test(body.hash ?? '')) return send(400, { error: 'hash must be 64 hex characters' })
+    if (body.tier !== 'A' && body.tier !== 'B' && body.tier !== 'C') {
+      return send(400, { error: 'tier must be A, B, or C' })
+    }
+
+    try {
+      return send(200, { work: await provider.generate(body.hash!, body.tier) })
+    } catch (error) {
+      // The request was fine; this server could not answer it — usually because
+      // the node it asks for thresholds is down. Saying 400 here would send the
+      // caller looking at their own request.
+      return send(503, { error: `could not generate work: ${(error as Error)?.message ?? String(error)}` })
+    }
   }
 }
