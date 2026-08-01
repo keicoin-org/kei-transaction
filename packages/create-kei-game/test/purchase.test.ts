@@ -73,9 +73,17 @@ beforeAll(async () => {
 
   const node = await MockNode.create()
   const { startGame } = (await import(pathToFileURL(join(directory, 'server', 'game.ts')).href)) as {
-    startGame(options: { seed: string; node: KeiNode; network: 'mock' }): Promise<GeneratedGame>
+    startGame(options: { seed: string; node: KeiNode; network: 'mock'; orders: string }): Promise<GeneratedGame>
   }
-  game = await startGame({ seed: randomSeed(), node, network: 'mock' })
+  // Named, because the default is relative to the working directory and that is
+  // this repository's root when the suite runs. `restart.test.ts` is where the
+  // file itself is under test; here it just needs somewhere of its own.
+  game = await startGame({
+    seed: randomSeed(),
+    node,
+    network: 'mock',
+    orders: join(directory, '.kei', 'orders.ndjson'),
+  })
 
   // The generated `server/main.ts` cannot be imported directly: it bundles the
   // Babylon.js client at startup, and that dependency belongs to the generated

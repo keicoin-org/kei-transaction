@@ -39,6 +39,7 @@ describe('what it writes', () => {
       'package.json',
       'server/game.ts',
       'server/main.ts',
+      'server/orders.ts',
       'shared/game.ts',
       'src/economy.ts',
       'src/main.ts',
@@ -149,13 +150,17 @@ describe('the shape of the game itself', () => {
   })
 
   test('it exercises a currency, an item, and a payment', () => {
-    const server = at('server/game.ts').contents
-    expect(server).toContain('kei.token.issue(')
-    expect(server).toContain('kei.items.create(')
-    expect(server).toContain('kei.items.mint(')
-    expect(server).toContain('kei.onPayment(')
-    expect(server).toContain('.commit(')
+    const game = at('server/game.ts').contents
+    expect(game).toContain('kei.token.issue(')
+    expect(game).toContain('kei.items.create(')
+    expect(game).toContain('kei.items.mint(')
+    expect(game).toContain('.commit(')
     expect(at('src/economy.ts').contents).toContain('kei.pay(')
+
+    // Watching for payments lives in `server/orders.ts` rather than next to the
+    // delivery, because what a payment arriving means is "file this hash", and
+    // what it is answered with has to be written down before it is answered.
+    expect(at('server/orders.ts').contents).toContain('kei.onPayment(')
   })
 
   test('the renderer knows nothing about Kei', () => {

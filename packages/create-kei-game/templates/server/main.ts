@@ -13,6 +13,8 @@
  * it writes; this server never sees a player's key and cannot move their money.
  */
 
+import { rm } from 'node:fs/promises'
+
 import { MockNode, mockRpcHandler, randomSeed } from 'kei-transaction'
 
 import type { LanternOrder } from '../shared/game.js'
@@ -39,12 +41,21 @@ if (!bundle.success) {
 const node = await MockNode.create()
 const rpc = mockRpcHandler({ node })
 
+// `server/orders.ts` records which payments have been answered, so that a
+// restart can tell a player who asks again what they got the first time. This
+// chain is new every run, so last run's answers are about payments that no
+// longer exist — they go with the chain they belong to. Point this at a real
+// node and the file matters as much as the chain does: keep it.
+const orders = `${root}.kei/dev-orders.ndjson`
+await rm(orders, { force: true })
+
 const game = await startGame({
   // Set GAME_SEED in .env to keep the same issuer across restarts. It is the
   // game's money: it belongs in an environment variable, never in a commit.
   seed: process.env.GAME_SEED ?? randomSeed(),
   node,
   network: 'mock',
+  orders,
 })
 
 const json = (body: unknown, status = 200): Response => Response.json(body, { status })

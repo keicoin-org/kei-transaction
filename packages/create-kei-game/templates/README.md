@@ -26,15 +26,26 @@ still runs.
 | `src/world.ts` | The Babylon.js scene. Knows nothing about Kei. |
 | `src/main.ts` | Joins the two. Decides what a click means. |
 | `server/game.ts` | The whole backend. Issues the currency, sells the lantern. |
+| `server/orders.ts` | Which payment got which answer. The only thing the server stores. |
 | `server/main.ts` | `bun run dev`: the node, the issuer, and the client, one process. |
 | `shared/game.ts` | The price list. What things cost, what a click pays. |
 
 ## The part worth understanding
 
 **There is no database.** No `players` table, no `balances` table, no
-`inventory` table, and no save file. The server has no persistent storage of any
-kind. Stop it, start it, and a player's coins and lantern are still theirs,
-because they were never the server's to hold.
+`inventory` table. Stop the server, start it, and a player's coins and lantern
+are still theirs, because they were never the server's to hold.
+
+**There is one file, and it is `.kei/orders.ndjson`.** It is the exception that
+proves the rule above, and it exists for the one question the chain cannot
+answer: *which payment* an answer was for. A mint says who got the lantern; a
+refund says who got their money back; neither says which of a wallet's payments
+it settled, because a Kei send has nowhere to put that. So `server/orders.ts`
+writes down the hash it is about to answer *before* it answers it, and asks the
+chain afterwards only whether that one block landed. Back it up the way you
+would back up a database. Losing it cannot make the game pay twice — that is
+what the ordering is for — but the wallets whose records it held can no longer
+buy, and telling them apart is exactly what the lost file was doing.
 
 **The browser holds a key and signs its own transactions.** There is no session
 and no login. The game server never sees a player's key and cannot move their

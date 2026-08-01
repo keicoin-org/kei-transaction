@@ -159,6 +159,87 @@ the payment under the name the player knows it by. That is the SDK's shape, not
 the game's, and it is the one line of this scaffold that reaches past `Kei` into
 `kei.client.node`.
 
+## 6.2 The answer to a hash is written down before it is given
+
+**New: `templates/server/orders.ts`, and one file the generated server keeps.**
+
+§6.1 leaves the shop exactly-once *in one process*: deliveries are filed under
+the hash in a `Map`, and the map dies with the process. Restarting exposes three
+holes at once — a payment that arrived while the game was down is never
+announced to anybody, a repost of a delivered payment finds nothing and times
+out, and if the payment is rediscovered while the delivery is not, the "you
+already have a lantern" branch refunds the price of a lantern the player kept.
+The third one makes the item free.
+
+The chain answers the first two on its own: reading the issuer's account history
+back at startup finds every payment ever collected, including the ones collected
+inside `Kei.server()` before anything was listening. It does not answer the
+third, and this is the part worth being precise about, because there is an
+attractive wrong answer.
+
+**Counting does not work.** The issuer's chain shows how many answers went to a
+wallet — mints of the item to it, Kei sent to it — so it is tempting to answer a
+payment whenever a wallet's payments outnumber its answers. That statement is
+true and it names nothing. Take one wallet, payments A and B, and one answer:
+replaying the *answered* A finds "one answer is still owed", takes the refund
+branch, and hands back the price of the lantern A already bought — while B, the
+payment that really was owed, is now recorded as settled and can never be
+redeemed. One hash answered twice, one stranded, and the game out an item.
+Aggregates are not attribution, and nothing on the chain attributes: a mint says
+who, a refund says who, neither says *which payment*.
+
+**So the local record is a write-ahead log, and the chain only confirms.** Every
+purchase is four steps, in this order:
+
+1. read the issuer's frontier
+2. append an `intent` naming the hash, the plan, and that frontier — fsync
+3. write the block (mint or refund)
+4. append a `done` naming the hash and the outcome — fsync
+
+`settle()` holds a mutex across all four, and startup closes every intent it
+finds before it serves anything. So at most one intent is ever open, and that is
+what makes step 3 recoverable *exactly*: while an intent is open the only blocks
+this issuer can write are the receives it collects by itself and the one action
+that intent is for. A mint of the item to that address after that frontier is
+that intent's delivery. A Kei send to that address after it is that intent's
+refund. Nothing else could have put either there. A crash at any of the seven
+points in that sequence lands on one of three states, and each is decided rather
+than guessed: no intent (nothing happened), an intent with no matching block
+(nothing happened — write a `void` and let a repost answer normally), an intent
+with its block (that is the answer — write the `done` it never got to write).
+
+A torn last line is the same three states. A half-written `done` leaves its
+`intent` open and the chain says what that intent did; a half-written `intent`
+was never followed by an action at all, because the action comes strictly after
+the write that tore.
+
+**The chain's second job is catching the file going missing.** Answers to one
+wallet are countable even though they are not attributable, so if the file holds
+fewer answers for a wallet than the chain shows, records were lost — and every
+hash for that wallet that is not on file becomes unanswerable. That is a
+refusal, and it is deliberate: the two things the game could do instead are mint
+a second lantern or refund one the player is still holding. The blast radius is
+one wallet, and a wallet with no answers yet is unaffected.
+
+Three costs, recorded rather than hidden:
+
+- **A wiped disk strands unanswered payments.** Not money the game can take
+  twice, but money a player cannot spend. It is the right way round and it is
+  still a loss, and it is why the generated README says to back the file up.
+- **Startup reads the whole issuer chain**, and refuses to start if it cannot
+  reach the beginning of it. A partial read cannot tell a record this file lost
+  from one written before the window began, so `historyLimit` is a ceiling the
+  error names rather than a window that quietly narrows the audit.
+- **Any Kei the issuer sends a player counts as a refund.** Give the game a
+  second reason to send Kei and real purchases from that wallet get refused as
+  unattributable. Safe direction, still a bug; `answerIn()` is where the fix
+  goes, and it says so.
+
+A game past its first thousand players replaces this file with a table keyed by
+hash and drops the audit entirely, which is a database and one `INSERT` before
+the mint. The point of writing it as a file is that the ordering is the whole
+design and it is legible in forty lines.
+
 ## 7. A deploy pointed at testnet is refused, not warned
 
 **New: `Kei.server()` fails with `testnet-in-deployment`.**
@@ -211,6 +292,17 @@ made, the hash is posted, the item arrives, and the click rate doubles. The same
 file covers the rules that make hash correlation safe — one payment buys one
 lantern however many times it is posted, somebody else's hash buys nothing, and a
 hash nobody paid is refused rather than guessed at.
+
+`test/restart.test.ts` runs it again after killing it. It restarts the generated
+game against the same node and the same seed the way `bun run dev` does after a
+crash, and it stages on the disk exactly what a crash at each step of §6.2's four
+writes leaves behind: no intent, a torn intent, an intent with no block, an
+intent whose block landed, a torn `done`, and a refund crash whose window must
+not swallow the delivery before it. It also stands up a node that keeps a block
+and then throws, which is the one failure a caller cannot tell from "it never
+landed". The case worth naming is `one wallet, two payments, and a log that lost
+its last line`: it is green here and it fails with a *refund* against the
+counting design §6.2 rejects, which is the bug being paid for.
 
 It writes into `packages/create-kei-game/.generated/` rather than a temp
 directory, because the generated code has to resolve `kei-transaction` the way a

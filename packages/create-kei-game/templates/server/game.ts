@@ -15,11 +15,20 @@
 import { Kei, type ClaimBundle, type KeiNode } from 'kei-transaction'
 
 import { CURRENCY, LANTERN, perClickFor, type Catalogue, type LanternOutcome } from '../shared/game.js'
+import { openOrders } from './orders.js'
 
 export interface GameOptions {
   seed: string
   node: KeiNode | string
   network?: 'mock' | 'testnet' | 'mainnet'
+  /**
+   * Where purchases are written down, before and after they are answered. See
+   * `server/orders.ts`: it is the only thing this server keeps, and the only
+   * thing that can say which payment got which answer. Losing it does not cost
+   * money — nothing can be answered twice — but the wallets it held records for
+   * can no longer buy, so back it up the way you would back up a database.
+   */
+  orders?: string
 }
 
 export interface Game {
@@ -47,6 +56,9 @@ const CLICK_RATE_CAP = 25
  * side only knows about it once the node has told it and it has collected.
  */
 const PAYMENT_WAIT_MS = 10_000
+
+/** Which payment got which answer, so a restart is not amnesia. Kept out of git by `.gitignore`. */
+const ORDERS_PATH = '.kei/orders.ndjson'
 
 export async function startGame(options: GameOptions): Promise<Game> {
   const kei = await Kei.server({
@@ -83,17 +95,17 @@ export async function startGame(options: GameOptions): Promise<Game> {
   })
   const lanterns = await kei.items.token(lantern.id)
 
-  const payments = watchPayments(kei)
-  const lastEarn = new Map<string, number>()
+  // Watches for payments, writes down what each one was answered with before it
+  // is answered, and reads the issuer's own chain back so that neither survives
+  // only in this process. It also serialises deliveries: two payments arriving
+  // together cannot both read "this player has no lantern" and both mint one.
+  const orders = await openOrders({
+    kei,
+    item: lantern.id,
+    path: options.orders ?? ORDERS_PATH,
+  })
 
-  // One delivery at a time, so two payments arriving together cannot both read
-  // "this player has no lantern" and both mint one.
-  let queue: Promise<unknown> = Promise.resolve()
-  const serially = <T>(run: () => Promise<T>): Promise<T> => {
-    const next = queue.then(run, run)
-    queue = next.catch(() => undefined)
-    return next
-  }
+  const lastEarn = new Map<string, number>()
 
   /**
    * Selling the lantern: the player signs the payment, the issuer signs the
@@ -107,7 +119,7 @@ export async function startGame(options: GameOptions): Promise<Game> {
    * this game watched arrive.
    */
   const deliver = async (address: string, hash: string): Promise<LanternOutcome> => {
-    const payment = await payments.find(hash, PAYMENT_WAIT_MS)
+    const payment = await orders.payment(hash, PAYMENT_WAIT_MS)
     if (!payment) {
       throw new GameError(
         `No payment ${hash.slice(0, 12)}… has reached this game. If you have only just paid, try again in a moment — nothing was delivered and nothing was kept.`,
@@ -121,22 +133,41 @@ export async function startGame(options: GameOptions): Promise<Game> {
     }
 
     // Waiting happens above, outside the queue, so one player's unarrived
-    // payment cannot hold up everybody else's delivery.
-    return serially<LanternOutcome>(async () => {
+    // payment cannot hold up everybody else's delivery. Everything below runs
+    // one payment at a time, with the intent to answer this hash on the disk
+    // before the block that answers it is written.
+    const settled = await orders.settle(payment, async () => {
       // Already has one. The payment still arrived, so refund it rather than
       // keeping money for a thing that was not delivered.
       if ((await lanterns.balanceOf(address)) > 0) {
-        await kei.send(address, payment.amount)
-        return { outcome: 'refunded', amount: payment.amount, reason: 'You already have a lantern.' }
+        return {
+          kind: 'refund',
+          outcome: { outcome: 'refunded', amount: payment.amount, reason: 'You already have a lantern.' },
+          perform: async () => void (await kei.send(address, payment.amount)),
+        }
       }
-
-      await kei.items.mint(lantern.id, address)
-      return { outcome: 'delivered', item: lantern.id }
+      return {
+        kind: 'deliver',
+        outcome: { outcome: 'delivered', item: lantern.id },
+        perform: async () => void (await kei.items.mint(lantern.id, address)),
+      }
     })
+
+    // Answered, and this game cannot say with what: the entry naming this hash
+    // is gone and the chain shows an answer it can no longer attribute. The one
+    // thing that must not happen now is a guess. Delivering again would mint a
+    // second lantern; refunding would hand back the price of one the player is
+    // still holding.
+    if (settled.status === 'unattributable') {
+      throw new GameError(
+        'This payment has already been answered — you were sent the lantern, or your Kei was refunded — and this game no longer has the record of which. Both are in your own account history. Nothing was taken, and nothing more will be.',
+      )
+    }
+    return settled.outcome
   }
 
-  /** Deliveries already made or in flight, so a hash buys exactly one lantern. */
-  const orders = new Map<string, Promise<LanternOutcome>>()
+  /** Posts being served right now, so two tabs at once are one delivery. */
+  const inFlight = new Map<string, Promise<LanternOutcome>>()
 
   return {
     address: kei.address,
@@ -189,83 +220,23 @@ export async function startGame(options: GameOptions): Promise<Game> {
       // Exactly once, and safe to retry: the first call for a hash owns the
       // delivery and every later one is handed its answer. A browser that loses
       // the response and posts again must not get a second lantern, and neither
-      // must two tabs posting at the same moment.
-      const started = orders.get(paid)
+      // must two tabs posting at the same moment. What survives a restart is in
+      // `server/orders.ts`; this map only covers posts overlapping in time.
+      const started = inFlight.get(paid)
       if (started) return started
 
       // A failure is not an answer — most often it means the payment has not
       // landed here yet — so it is not remembered and the player can try again.
-      const order = deliver(address, paid).catch((error: unknown) => {
-        orders.delete(paid)
-        throw error
+      const order = deliver(address, paid).finally(() => {
+        inFlight.delete(paid)
       })
-      orders.set(paid, order)
+      inFlight.set(paid, order)
       return order
     },
 
     close() {
-      payments.close()
+      orders.close()
       kei.close()
     },
-  }
-}
-
-interface SeenPayment {
-  from: string
-  amount: number
-}
-
-interface PaymentLog {
-  /** Wait for one named payment to arrive here, or give up. */
-  find(hash: string, timeoutMs: number): Promise<SeenPayment | undefined>
-  close(): void
-}
-
-/**
- * Every Kei payment this game has actually watched arrive, filed under the name
- * the payer knows it by.
- *
- * `onPayment` reports the *receive* block this account wrote, which is not the
- * hash `kei.pay()` handed the player — they hold the send. A receive names the
- * send it collects in its `link`, and reading that back is what lets the two
- * sides talk about one payment by one name.
- */
-function watchPayments(kei: Kei): PaymentLog {
-  const seen = new Map<string, SeenPayment>()
-  const waiting = new Map<string, Array<(payment: SeenPayment) => void>>()
-
-  const stop = kei.onPayment(async ({ from, amount, hash }) => {
-    const receive = await kei.client.node.blockInfo(hash)
-    if (receive?.type !== 'state') return
-
-    const payment = { from, amount }
-    seen.set(receive.link, payment)
-    for (const arrived of waiting.get(receive.link) ?? []) arrived(payment)
-    waiting.delete(receive.link)
-  })
-
-  return {
-    async find(hash, timeoutMs) {
-      const already = seen.get(hash)
-      if (already) return already
-
-      return new Promise<SeenPayment | undefined>((resolve) => {
-        let timer: ReturnType<typeof setTimeout>
-        const arrived = (payment: SeenPayment): void => {
-          clearTimeout(timer)
-          resolve(payment)
-        }
-        timer = setTimeout(() => {
-          const listeners = (waiting.get(hash) ?? []).filter((listener) => listener !== arrived)
-          if (listeners.length === 0) waiting.delete(hash)
-          else waiting.set(hash, listeners)
-          resolve(undefined)
-        }, timeoutMs)
-
-        waiting.set(hash, [...(waiting.get(hash) ?? []), arrived])
-      })
-    },
-
-    close: stop,
   }
 }
