@@ -26,10 +26,15 @@
       "types": "./dist/index.d.ts",
       "bun": "./src/index.ts",
       "import": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "bun": "./src/server.ts",
+      "import": "./dist/server.js"
     }
   },
   "bin": {
-    "kei-work-server": "./dist/server.js"
+    "kei-work-server": "./dist/cli.js"
   },
   "files": [
     "dist",
