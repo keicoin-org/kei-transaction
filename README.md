@@ -14,10 +14,11 @@ const kei = await Kei.start()          // wallet created, persisted, funded
 await kei.send('kei_3abc...', 0.001)   // sub-cent, instant, feeless
 ```
 
-> **Status: M2 complete.** The SDK's exact RPC contract runs end to end against
-> both its development mock and the native [Kei node](https://github.com/keicoin-org/kei-node).
-> [Button](../button) remains playable against the same API. M3's public testnet
-> is not open yet, and nothing here holds value. See
+> **Status: M3 testnet.** `Kei.start()` uses a real node at
+> `https://testnet.keicoin.org/rpc`; `Kei.mock()` remains available for tests.
+> This is one best-effort node with weak consensus, no uptime promise, and no
+> monetary value: a dev-network chain whose keys are published, so anyone can
+> fund or reset it and it may be rebuilt without notice. See
 > [Where this is](#where-this-is).
 
 ---
@@ -226,13 +227,13 @@ commit, because that is where the decision is actually made.
 
 ## Where this is
 
-M2 of eleven, complete. What exists:
+M3 of eleven. What exists:
 
 | | |
 |---|---|
 | **The §6.7 API** | Complete, running end to end, types published |
-| **The chain** | A development mock in this package and the native [Kei node](https://github.com/keicoin-org/kei-node), held to the same exact M2 RPC/economy suite |
-| **The network** | No public testnet yet. `Kei.start()` with no node gets a private in-process chain; pass a node URL to use an external node. M3 makes that network public |
+| **The chain** | A real Kei node enforcing the SPEC §5.6 / §7 ledger rules; the reference mock remains for hermetic tests |
+| **The network** | One public, rate-limited, best-effort Hetzner testnet node. `Kei.start()` selects it by default; `Kei.mock()` is explicit |
 | **The demo** | [Button](../button) — playable single-player, every number on the chain and none in a database |
 | **The market** | M5 — `@keicoin/market` does not exist yet |
 | **The wallet panel** | M6 — the headless summary is here, `WalletPanel.mount()` is not |
@@ -245,11 +246,18 @@ caps, transfer policy, the (account, root) double-claim index, and the genesis
 allocation. The mock keeps local development cheap; the native node supplies the
 production transport, and M3 deploys it without moving the API.
 
-M1 proved the process boundary with `mockRpcHandler`; M2 kept that boundary fixed
-and made the native node serve the same [`docs/rpc.md`](docs/rpc.md) contract. The
-exact M2 suite runs issue, top-up, mint, transfer, and item operations between two
-clients that share nothing but a URL. **M3 deploys that node as a public testnet;
-it does not move the SDK API.**
+M1 proved that across a process boundary rather than asserting it: `mockRpcHandler`
+serves [`docs/rpc.md`](docs/rpc.md) as a plain `Request → Response`, and the whole
+economy — issue, top-up, mint, transfer, item, commit, parallel claims — runs
+between two clients that share nothing but a URL. **M2 changes what is behind that
+URL and nothing above it.** M3 made that swap: the same suites now pass against
+the public node with `KEI_NODE_URL` as the only switch, and `npm run test:m3-live`
+runs SPEC §6.2's no-argument `Kei.start()` against it, faucet to payment.
+
+Read that precisely. Issue, top-up, mint, transfer and item all run against the
+node today; **`commit` and `claim` do not** — they are M4, they stay covered
+against the mock, and they are deliberately not in the suite that gates the
+public endpoint.
 
 Nothing here holds value, and until the validator set is meaningfully
 distributed, nothing should.

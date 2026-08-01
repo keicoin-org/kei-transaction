@@ -50,6 +50,8 @@ import { createWallet, type WalletApi } from '@keicoin/wallet'
 import { assertServerOnly, deploymentSignal, testnetAllowedInDeployment } from './environment.js'
 import { defaultSeedStore, environmentSeed, seedStoreKey, type SeedStore } from './storage.js'
 
+const DEFAULT_TESTNET_NODE_URL = 'https://testnet.keicoin.org/rpc'
+
 export interface StartOptions {
   /**
    * `'mock'` is for a node URL serving `mockRpcHandler` — a mock is a real
@@ -185,8 +187,8 @@ export class Kei {
   }
 
   /**
-   * A private in-process chain. Until M3 this is what `Kei.start()` falls back
-   * to; pass the same node to several clients to have them share one ledger.
+   * A private in-process chain for tests and offline development; pass the same
+   * node to several clients to have them share one ledger.
    */
   static async mock(options: { faucetAmount?: number } = {}): Promise<MockNode> {
     return MockNode.create(options)
@@ -361,9 +363,10 @@ async function resolveNode(options: StartOptions): Promise<KeiNode> {
       'Kei mainnet is not open yet (SPEC §15) — it opens when the validator set is distributed enough that value is safe on it. Until then, build on the default testnet, or pass node: <url> for a network you run.',
     )
   }
-  // No public testnet until M3, so an unconfigured client gets a private
-  // in-process chain. `kei.network` reports 'mock' so this is never invisible.
-  return MockNode.create()
+  // `mock` remains an explicit offline-development choice. The default is the
+  // real M3 testnet, which is the transport swap this API was designed around.
+  if (options.network === 'mock') return MockNode.create()
+  return new HttpNode({ url: DEFAULT_TESTNET_NODE_URL, network: 'testnet' })
 }
 
 async function resolvePlayerKeys(options: StartOptions, network: NetworkName): Promise<KeyPair> {

@@ -27,12 +27,10 @@ a visible pause.
 
 ## Status
 
-**M1 of eleven.** The API is real and runs end to end, and the [Button demo](https://keicoin.org) is
-playable against it. The chain underneath is still a mock — served over HTTP, so the
-SDK already talks to a node across a URL, and M3 changes what is behind that URL
-without the API moving.
-
-There is no testnet yet and **nothing here holds value.**
+**M3 of eleven.** The public API now uses a real node at
+`https://testnet.keicoin.org/rpc`; `MockNode` remains the hermetic reference
+implementation. The testnet is one best-effort node with weak consensus and
+**nothing there holds value.**
 
 See the [full documentation](https://github.com/keicoin-org/kei-transaction/blob/master/README.md).
 

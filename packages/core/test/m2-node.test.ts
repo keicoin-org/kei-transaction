@@ -12,6 +12,14 @@ import { nodeTestNetwork, type NodeTestNetwork } from './node-network.js'
 
 let network: NodeTestNetwork
 
+/**
+ * The same file now runs three distances: an in-process mock, a node on
+ * loopback, and the public testnet across the internet and a CDN. Only the last
+ * one needs the room, and 5 s of it is not enough for a faucet plus its
+ * confirmation.
+ */
+const TIMEOUT = process.env.KEI_NODE_URL ? 60_000 : 5_000
+
 const rpc = (body: Record<string, unknown>): Promise<Response> =>
   network.request({
     method: 'POST',
@@ -22,9 +30,16 @@ const rpc = (body: Record<string, unknown>): Promise<Response> =>
 describe('the M2 node contract over HTTP', () => {
   beforeAll(async () => {
     network = await nodeTestNetwork()
+  })
+
+  // A test rather than a hook, because `beforeAll` takes no timeout and the
+  // first request to a public endpoint pays for DNS, TCP, and TLS at once —
+  // seconds, where every later request on the pooled connection is milliseconds.
+  test('a node is answering at all', async () => {
     const response = await rpc({ action: 'work_thresholds' }).catch(() => null)
     if (!response?.ok) throw new Error(`No node is answering at ${network.url}.`)
-  })
+    expect(response.ok).toBe(true)
+  }, TIMEOUT)
 
   test('a faucet, then an account that exists', async () => {
     const http = network.connect()
@@ -37,7 +52,7 @@ describe('the M2 node contract over HTTP', () => {
     expect(receivables).toHaveLength(1)
     expect(receivables[0]?.asset).toBe(KEI_ASSET)
     expect(receivables[0]?.amount).toBe((5n * 10n ** 18n).toString())
-  })
+  }, TIMEOUT)
 
   test('unknown M2 records are null, empty, or zero rather than errors', async () => {
     const http = network.connect()
@@ -47,7 +62,7 @@ describe('the M2 node contract over HTTP', () => {
     expect(await http.blockInfo('C'.repeat(64))).toBeNull()
     expect(await http.holdings(keys.address)).toEqual([])
     expect(await http.holderBalance('A'.repeat(64), keys.address)).toBe('0')
-  })
+  }, TIMEOUT)
 
   test('history returns complete blocks, including a legacy open subtype', async () => {
     const http = network.connect()
@@ -69,14 +84,14 @@ describe('the M2 node contract over HTTP', () => {
     // open block. The shared contract is the semantic subtype the SDK needs.
     const oldest = history.at(-1) as unknown as Record<string, unknown>
     expect(oldest.subtype).toBe('open')
-  })
+  }, TIMEOUT)
 
   test('work thresholds are ordered decimal strings', async () => {
     const thresholds = await network.connect().workThresholds()
     for (const tier of ['A', 'B', 'C'] as const) expect(thresholds[tier]).toMatch(/^[0-9]+$/)
     expect(BigInt(thresholds.A)).toBeGreaterThan(BigInt(thresholds.B))
     expect(BigInt(thresholds.B)).toBeGreaterThan(BigInt(thresholds.C))
-  })
+  }, TIMEOUT)
 
   test('a rejected block is a sentence, not a status code', async () => {
     const http = network.connect()
@@ -87,7 +102,7 @@ describe('the M2 node contract over HTTP', () => {
       work: '0000000000000000', signature: '0'.repeat(128),
     } as unknown as Block
     await expect(http.process(unsigned)).rejects.toThrow(/rejected "process"/)
-  })
+  }, TIMEOUT)
 
   test('an unknown action returns a useful JSON error', async () => {
     const response = await rpc({ action: 'definitely_not_an_action' })
@@ -95,7 +110,7 @@ describe('the M2 node contract over HTTP', () => {
     const error = ((await response.json()) as { error?: unknown }).error
     expect(typeof error).toBe('string')
     expect((error as string).length).toBeGreaterThan(0)
-  })
+  }, TIMEOUT)
 
   test('a browser can reach it through preflight and CORS', async () => {
     const preflight = await network.request({ method: 'OPTIONS' })
@@ -103,7 +118,7 @@ describe('the M2 node contract over HTTP', () => {
     expect(preflight.headers.get('access-control-allow-origin')).toBe('*')
     const answered = await rpc({ action: 'work_thresholds' })
     expect(answered.headers.get('access-control-allow-origin')).toBe('*')
-  })
+  }, TIMEOUT)
 
   test('subscribe polls receivables, so an arrival is noticed without a socket', async () => {
     const http = network.connect()
@@ -111,8 +126,8 @@ describe('the M2 node contract over HTTP', () => {
     const seen: string[] = []
     const stop = http.subscribe(keys.address, (event) => seen.push(event.hash))
     const { hash } = await http.faucet(keys.address)
-    await Bun.sleep(network.live ? 500 : 50)
+    await Bun.sleep(network.live ? 3_000 : 50)
     stop()
     expect(seen).toContain(hash)
-  })
+  }, TIMEOUT)
 })

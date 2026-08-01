@@ -3,7 +3,8 @@ import { HttpNode, MockNode, mockRpcHandler } from '@keicoin/core'
 /** One endpoint and no shared client state; KEI_NODE_URL swaps only the transport. */
 export async function httpNodeFactory(): Promise<() => HttpNode> {
   const liveUrl = process.env.KEI_NODE_URL
-  if (liveUrl) return () => new HttpNode({ url: liveUrl, network: 'testnet', pollInterval: 50 })
+  // See node-network.ts: 50 ms spends the gateway's whole per-edge budget.
+  if (liveUrl) return () => new HttpNode({ url: liveUrl, network: 'testnet', pollInterval: 250 })
 
   const handler = mockRpcHandler({ node: await MockNode.create() })
   const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) =>
