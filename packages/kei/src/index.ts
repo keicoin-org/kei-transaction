@@ -21,7 +21,13 @@ export type {
   TokenNamespace,
   TopUpOptions,
 } from './kei.js'
-export { assertServerOnly, isServerRuntime, looksLikeBrowser } from './environment.js'
+export {
+  assertServerOnly,
+  deploymentSignal,
+  isServerRuntime,
+  looksLikeBrowser,
+  testnetAllowedInDeployment,
+} from './environment.js'
 export { defaultSeedStore, seedStoreKey } from './storage.js'
 export type { SeedStore } from './storage.js'
 
