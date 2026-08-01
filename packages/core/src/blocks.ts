@@ -70,6 +70,21 @@ export interface TransferOp {
   memo?: string
 }
 
+/**
+ * Moves native Kei, with a memo — the asset-family sibling of a `state send`
+ * (decisions-m2.md, the entry naming `kei_transfer`). No `asset` field: it
+ * always means `KEI_ASSET`, and unlike every other asset op it decrements
+ * `balance` at send time rather than leaving it invariant. `kei.pay()` uses
+ * this only when a memo is given; a memo-less payment stays a plain
+ * `state send`.
+ */
+export interface KeiTransferOp {
+  kind: 'kei_transfer'
+  to: string
+  amount: string
+  memo?: string
+}
+
 /** Collect an asset receivable. The recipient signs for their own state (SPEC §5.6.3). */
 export interface AssetReceiveOp {
   kind: 'asset_receive'
@@ -103,6 +118,7 @@ export type AssetOp =
   | MintOp
   | BurnOp
   | TransferOp
+  | KeiTransferOp
   | AssetReceiveOp
   | CommitOp
   | CommitCloseOp
@@ -120,7 +136,11 @@ export interface StateBlockBody {
   balance: string
   /** Destination public key (send), source block hash (receive), or zeros. */
   link: string
-  /** See docs/decisions-m0.md — the on-chain home of a memo is M2's decision. */
+  /**
+   * decisions-m2.md §8: a state block never has a valid one — memos ride
+   * `kei_transfer` instead. This field exists so a malformed block can be
+   * represented and rejected by `nodeLayoutGap`, not so one can be built.
+   */
   memo?: string
 }
 
@@ -162,6 +182,7 @@ export function tierFor(body: BlockBody): WorkTier {
     case 'commit_close':
       return 'A'
     case 'transfer':
+    case 'kei_transfer':
       return 'B'
     case 'burn':
     case 'claim':

@@ -18,6 +18,7 @@ import {
   bytesToHex,
   deriveAssetId,
   hashBlock,
+  KEI_ASSET,
   keiBlockDomain,
   nodeLayoutGap,
   type AssetOp,
@@ -142,6 +143,54 @@ describe('block hash vectors', () => {
       op: { kind: 'transfer', asset: ASSET_ID, to: DESTINATION, amount: AMOUNT, memo },
     })
     expect(hashBlock(withMemo('thanks'))).not.toBe(hashBlock(withMemo('thanks!')))
+  })
+
+  // kei_transfer is not cross-checked against the node's own C++ vectors the
+  // way the ones above are — the fork's implementation lands separately and
+  // has no compiler here to produce a value to pin against. These assert
+  // structure instead of a literal hash; add a pinned vector once
+  // core_test.kei_hash_vectors has one to match.
+  describe('kei_transfer', () => {
+    const base = {
+      type: 'asset',
+      account: ACCOUNT,
+      previous: PREVIOUS,
+      representative: ACCOUNT,
+      balance: BALANCE,
+    } as const
+
+    test('has no node-layout gap', () => {
+      const body: BlockBody = {
+        ...base,
+        op: { kind: 'kei_transfer', to: DESTINATION, amount: AMOUNT, memo: 'thanks' },
+      }
+      expect(nodeLayoutGap(body)).toBeNull()
+    })
+
+    test('is a distinct op from transfer — same fields hash differently', () => {
+      const keiTransfer: BlockBody = {
+        ...base,
+        op: { kind: 'kei_transfer', to: DESTINATION, amount: AMOUNT, memo: 'thanks' },
+      }
+      const transfer: BlockBody = {
+        ...base,
+        op: { kind: 'transfer', asset: KEI_ASSET, to: DESTINATION, amount: AMOUNT, memo: 'thanks' },
+      }
+      expect(hashBlock(keiTransfer)).not.toBe(hashBlock(transfer))
+    })
+
+    test('the memo is covered, so changing it changes the hash', () => {
+      const withMemo = (memo: string): BlockBody => ({
+        ...base,
+        op: { kind: 'kei_transfer', to: DESTINATION, amount: AMOUNT, memo },
+      })
+      expect(hashBlock(withMemo('thanks'))).not.toBe(hashBlock(withMemo('thanks!')))
+    })
+
+    test('a memo-less kei_transfer still hashes', () => {
+      const noMemo: BlockBody = { ...base, op: { kind: 'kei_transfer', to: DESTINATION, amount: AMOUNT } }
+      expect(() => hashBlock(noMemo)).not.toThrow()
+    })
   })
 })
 

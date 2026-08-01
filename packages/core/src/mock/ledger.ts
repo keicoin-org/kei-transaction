@@ -284,6 +284,7 @@ export class MockLedger {
         asset: entry.asset,
         amount: entry.amount,
         ...(entry.memo === undefined ? {} : { memo: entry.memo }),
+        ...(entry.viaKeiTransfer === undefined ? {} : { viaKeiTransfer: entry.viaKeiTransfer }),
       })
     }
     return out
@@ -450,6 +451,12 @@ export class MockLedger {
             'Reserve Kei can only move through a passed on-chain vote (SPEC §5.7). Nothing moves without one, and the voting mechanism is not part of M0.',
           )
         }
+        if (body.memo !== undefined) {
+          fail(
+            'bad-block',
+            'A memo cannot ride a state block (decisions-m2.md §8) — use kei_transfer instead.',
+          )
+        }
         if (!isHex(body.link, 32)) {
           fail('bad-link', 'A send block\'s link is the destination public key, 64 hex characters.')
         }
@@ -463,7 +470,6 @@ export class MockLedger {
           to: addressFromPublicKey(body.link),
           asset: KEI_ASSET,
           amount: amount.toString(),
-          ...(body.memo === undefined ? {} : { memo: body.memo }),
         })
         return
       }
@@ -513,10 +519,24 @@ export class MockLedger {
           `The nth asset an account issues burns n Kei (SPEC §5.6.5). This is number ${ordinal}, so this block burns ${formatKei(burn)} and must leave a balance of ${previousBalance - burn}.`,
         )
       }
-    } else if (newBalance !== previousBalance) {
+    } else if (op.kind === 'kei_transfer') {
+      // The other deliberate exception to "balance is invariant on an asset
+      // block": kei_transfer moves native Kei, so it decrements balance at
+      // send time exactly like a state send (decisions-m2.md, kei_transfer).
+      const amount = requirePositive(op.amount, 'kei_transfer amount')
+      if (newBalance !== previousBalance - amount) {
+        fail(
+          'bad-kei-transfer-balance',
+          `A kei_transfer must decrease the sender's balance by exactly the amount sent. Expected ${previousBalance - amount}, got ${newBalance}.`,
+        )
+      }
+    } else if (op.kind !== 'asset_receive' && newBalance !== previousBalance) {
+      // asset_receive is validated below, once it is known whether it is
+      // collecting a real asset (balance invariant) or a kei_transfer
+      // receivable (balance credited) — the same fork this guard makes above.
       fail(
         'bad-asset-balance',
-        'An asset block must carry the account\'s Kei balance unchanged (SPEC §5.6.1). Only issuance changes it.',
+        'An asset block must carry the account\'s Kei balance unchanged (SPEC §5.6.1). Only issuance and kei_transfer change it.',
       )
     }
 
@@ -616,10 +636,43 @@ export class MockLedger {
         return
       }
 
+      case 'kei_transfer': {
+        const to = assertAddress(op.to, 'recipient')
+        const amount = requirePositive(op.amount, 'kei_transfer amount')
+        this.createReceivable(hash, {
+          hash,
+          from: body.account,
+          to,
+          asset: KEI_ASSET,
+          amount: amount.toString(),
+          viaKeiTransfer: true,
+          ...(op.memo === undefined ? {} : { memo: op.memo }),
+        })
+        return
+      }
+
       case 'asset_receive': {
         const receivable = this.takeReceivableAnyAsset(op.link, body.account)
-        if (receivable.asset === KEI_ASSET) {
+        if (receivable.asset === KEI_ASSET && !receivable.viaKeiTransfer) {
           fail('wrong-block-type', 'Incoming Kei is collected by a receive block, not an asset block.')
+        }
+        if (receivable.asset === KEI_ASSET) {
+          // A kei_transfer receivable: credits balance directly, never
+          // holdings — the same fork the top-of-function guard makes.
+          const amount = BigInt(receivable.amount)
+          if (newBalance !== previousBalance + amount) {
+            fail(
+              'bad-kei-transfer-receive',
+              `Collecting a kei_transfer must increase balance by exactly the amount received. Expected ${previousBalance + amount}, got ${newBalance}.`,
+            )
+          }
+          return
+        }
+        if (newBalance !== previousBalance) {
+          fail(
+            'bad-asset-balance',
+            'An asset block must carry the account\'s Kei balance unchanged (SPEC §5.6.1). Only issuance and kei_transfer change it.',
+          )
         }
         this.credit(body.account, this.requireAsset(receivable.asset), BigInt(receivable.amount))
         return
@@ -817,6 +870,9 @@ export class MockLedger {
     const receivable = this.takeReceivableAnyAsset(link, account)
     if (receivable.asset !== asset) {
       fail('wrong-asset', `Receivable ${link} is for asset ${receivable.asset}, not ${asset}.`)
+    }
+    if (receivable.viaKeiTransfer) {
+      fail('wrong-block-type', `Receivable ${link} arrived on a kei_transfer — collect it with asset_receive, not receive/open.`)
     }
     return receivable
   }

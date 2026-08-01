@@ -176,24 +176,42 @@ export class KeiClient {
       fail('self-send', 'That is this wallet\'s own address. Send to somebody else\'s address.')
     }
 
-    const { hash } = await this.submit((draft) => {
+    const checkFunds = (draft: BlockDraft): void => {
       if (draft.balance < raw) {
         fail(
           'insufficient-kei',
           `Not enough Kei — balance is ${formatRaw(draft.balance, KEI_DECIMALS)}, tried to send ${formatRaw(raw, KEI_DECIMALS)}.`,
         )
       }
-      return {
-        type: 'state',
-        subtype: 'send',
-        account: this.address,
-        previous: draft.previous,
-        representative: draft.representative,
-        balance: (draft.balance - raw).toString(),
-        link: publicKeyFromAddress(to),
-        ...(memo === undefined ? {} : { memo }),
-      }
-    })
+    }
+
+    // A memo cannot ride a state block (decisions-m2.md §8) — it takes the
+    // asset-family kei_transfer instead. Memo-less payments stay a plain state
+    // send, byte-identical to a Banano one.
+    const { hash } = memo === undefined
+      ? await this.submit((draft) => {
+          checkFunds(draft)
+          return {
+            type: 'state',
+            subtype: 'send',
+            account: this.address,
+            previous: draft.previous,
+            representative: draft.representative,
+            balance: (draft.balance - raw).toString(),
+            link: publicKeyFromAddress(to),
+          }
+        })
+      : await this.submit((draft) => {
+          checkFunds(draft)
+          return {
+            type: 'asset',
+            account: this.address,
+            previous: draft.previous,
+            representative: draft.representative,
+            balance: (draft.balance - raw).toString(),
+            op: { kind: 'kei_transfer', to, amount: raw.toString(), memo },
+          }
+        })
 
     const sent = { to, amount: fromRaw(raw, KEI_DECIMALS), hash, ...(memo === undefined ? {} : { memo }) }
     this.emitter.emit('sent', sent)
@@ -263,7 +281,7 @@ export class KeiClient {
   }
 
   private async collect(receivable: Receivable): Promise<void> {
-    if (receivable.asset === KEI_ASSET) {
+    if (receivable.asset === KEI_ASSET && !receivable.viaKeiTransfer) {
       const amount = BigInt(receivable.amount)
       const { hash } = await this.submit((draft) => ({
         type: 'state',
@@ -274,6 +292,20 @@ export class KeiClient {
         balance: (draft.balance + amount).toString(),
         link: receivable.hash,
       }))
+      this.emitter.emit('received', {
+        from: receivable.from,
+        amount: fromRaw(amount, KEI_DECIMALS),
+        hash,
+      })
+      return
+    }
+
+    if (receivable.asset === KEI_ASSET) {
+      // Arrived on a kei_transfer, not a state send — collected with
+      // asset_receive like any other asset, but the amount still credits
+      // `balance` directly rather than a holdings entry.
+      const amount = BigInt(receivable.amount)
+      const { hash } = await this.submitAsset({ kind: 'asset_receive', link: receivable.hash }, amount)
       this.emitter.emit('received', {
         from: receivable.from,
         amount: fromRaw(amount, KEI_DECIMALS),

@@ -63,6 +63,15 @@ export interface Receivable {
   /** Raw. */
   amount: string
   memo?: string
+  /**
+   * True only when `asset` is `KEI_ASSET` and this receivable came from a
+   * `kei_transfer` asset block rather than a plain `state send`. Collecting it
+   * takes `asset_receive`, not `receive`/`open`, and credits `balance` directly
+   * rather than a holdings entry (decisions-m2.md, the `kei_transfer` entry).
+   * Never set for a real asset — those are always collected with
+   * `asset_receive` regardless.
+   */
+  viaKeiTransfer?: boolean
 }
 
 export interface CommitInfo {

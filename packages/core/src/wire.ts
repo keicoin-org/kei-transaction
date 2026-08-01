@@ -25,13 +25,14 @@ import { bigintToBytes, concat, hexToBytes, isHex, utf8 } from './hex.js'
 const BLOCK_TYPE_STATE = 6
 const BLOCK_TYPE_ASSET = 7
 
-/** `nano::asset_op`. Five operations, and the order is consensus. */
+/** `nano::asset_op`. Six operations, and the order is consensus. */
 const ASSET_OP: Record<string, number> = {
   issue: 0,
   mint: 1,
   burn: 2,
   transfer: 3,
   asset_receive: 4,
+  kei_transfer: 5,
 }
 
 /** `nano::transfer_policy`. */
@@ -173,6 +174,16 @@ function assetFields(
           MAX_MEMO,
           'memo',
         ),
+      }
+    case 'kei_transfer':
+      // No `asset` field on this op — it always names Kei itself, not a real
+      // asset, so there is nothing a caller could get wrong to validate here.
+      return {
+        op: code,
+        assetId: ZERO_32,
+        amount: amountBytes(op.amount, 'amount'),
+        link: accountBytes(op.to),
+        payload: payloadString(op.memo ?? '', MAX_MEMO, 'memo'),
       }
     case 'burn':
       return {

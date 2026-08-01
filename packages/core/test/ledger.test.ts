@@ -216,6 +216,103 @@ describe('assets arrive as receivable (SPEC §5.6.3)', () => {
   })
 })
 
+describe('kei_transfer — memos ride the asset block (decisions-m2.md, kei_transfer)', () => {
+  test('a memo cannot ride a state send', async () => {
+    await fund(issuer, 2_000)
+    const context = await draft(issuer)
+    await expect(
+      submit(issuer, {
+        type: 'state',
+        subtype: 'send',
+        account: issuer.address,
+        previous: context.previous,
+        representative: context.representative,
+        balance: (BigInt(context.balance) - 10n ** 18n).toString(),
+        link: publicKeyFromAddress(player.address),
+        memo: 'for the sword',
+      }),
+    ).rejects.toThrow(/memo cannot ride a state block/)
+  })
+
+  test('decrements balance at send time, unlike every other asset op', async () => {
+    await fund(issuer, 2_000)
+    const before = await node.accountInfo(issuer.address)
+    const context = await draft(issuer)
+    const amount = 10n ** 18n
+
+    await submit(issuer, {
+      type: 'asset',
+      account: issuer.address,
+      previous: context.previous,
+      representative: context.representative,
+      balance: (BigInt(context.balance) - amount).toString(),
+      op: { kind: 'kei_transfer', to: player.address, amount: amount.toString(), memo: 'thanks' },
+    })
+
+    const after = await node.accountInfo(issuer.address)
+    expect(BigInt(after?.balance ?? '0')).toBe(BigInt(before?.balance ?? '0') - amount)
+  })
+
+  test('the receivable carries the memo, and cannot be collected with receive/open', async () => {
+    await fund(issuer, 2_000)
+    const context = await draft(issuer)
+    const amount = 10n ** 18n
+    await submit(issuer, {
+      type: 'asset',
+      account: issuer.address,
+      previous: context.previous,
+      representative: context.representative,
+      balance: (BigInt(context.balance) - amount).toString(),
+      op: { kind: 'kei_transfer', to: player.address, amount: amount.toString(), memo: 'thanks' },
+    })
+
+    const [receivable] = await node.receivables(player.address)
+    expect(receivable?.asset).toBe(KEI_ASSET)
+    expect(receivable?.memo).toBe('thanks')
+
+    await expect(
+      submit(player, {
+        type: 'state',
+        subtype: 'open',
+        account: player.address,
+        previous: ZERO_HASH,
+        representative: player.address,
+        balance: amount.toString(),
+        link: receivable?.hash ?? '',
+      }),
+    ).rejects.toThrow(/collect it with asset_receive/)
+  })
+
+  test('collecting with asset_receive credits balance, not holdings', async () => {
+    await fund(issuer, 2_000)
+    const context = await draft(issuer)
+    const amount = 10n ** 18n
+    await submit(issuer, {
+      type: 'asset',
+      account: issuer.address,
+      previous: context.previous,
+      representative: context.representative,
+      balance: (BigInt(context.balance) - amount).toString(),
+      op: { kind: 'kei_transfer', to: player.address, amount: amount.toString(), memo: 'thanks' },
+    })
+    const [receivable] = await node.receivables(player.address)
+
+    await submit(player, {
+      type: 'asset',
+      account: player.address,
+      previous: ZERO_HASH,
+      representative: player.address,
+      balance: amount.toString(),
+      op: { kind: 'asset_receive', link: receivable?.hash ?? '' },
+    })
+
+    const after = await node.accountInfo(player.address)
+    expect(BigInt(after?.balance ?? '0')).toBe(amount)
+    // Not a real asset — nothing was ever held in the asset tables for it.
+    expect(await node.holdings(player.address)).toEqual([])
+  })
+})
+
 describe('proof-of-work tiers (SPEC §5.6.4)', () => {
   test('tiers follow the table: mint is A, transfer is B, claim is C', () => {
     const base = { account: 'kei_x', previous: 'a'.repeat(64), representative: 'kei_y', balance: '0' }
