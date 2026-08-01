@@ -1,92 +1,17 @@
-/**
- * `mockRpcHandler` — docs/rpc.md, executed.
- *
- * http-node.test.ts pins what `HttpNode` sends against a stub. This pins the
- * other half: a real node object answering those calls, driven by the real
- * client, so the two halves of the contract are checked against each other
- * rather than against two readings of the same document.
- */
+/** Mock-handler-only behaviour; the shared M2 contract lives in m2-node.test.ts. */
 
 import { describe, expect, test } from 'bun:test'
-import {
-  HttpNode,
-  KEI_ASSET,
-  MockNode,
-  ZERO_HASH,
-  keyPairFromSeed,
-  mockRpcHandler,
-  randomSeed,
-  type Block,
-} from '@keicoin/core'
+import { HttpNode, MockNode, mockRpcHandler } from '@keicoin/core'
 
-/** An `HttpNode` and the `MockNode` behind it, joined by the handler alone. */
 async function connected(): Promise<{ http: HttpNode; mock: MockNode }> {
   const mock = await MockNode.create()
   const handler = mockRpcHandler({ node: mock })
   const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) =>
     handler(new Request(String(url), init))) as unknown as typeof globalThis.fetch
-
   return { http: new HttpNode({ url: 'http://node.test/rpc', network: 'mock', pollInterval: 5, fetch: fetchImpl }), mock }
 }
 
-describe('the mock node over HTTP', () => {
-  test('a faucet, then an account that exists', async () => {
-    const { http } = await connected()
-    const keys = await keyPairFromSeed(randomSeed())
-
-    expect(await http.accountInfo(keys.address)).toBeNull()
-
-    const { hash } = await http.faucet(keys.address, (5n * 10n ** 18n).toString())
-    expect(hash).toMatch(/^[0-9A-F]{64}$/)
-
-    const receivables = await http.receivables(keys.address)
-    expect(receivables).toHaveLength(1)
-    expect(receivables[0]?.asset).toBe(KEI_ASSET)
-    expect(receivables[0]?.amount).toBe((5n * 10n ** 18n).toString())
-  })
-
-  test('an unknown account, asset, root and block are null, not errors', async () => {
-    const { http } = await connected()
-    const keys = await keyPairFromSeed(randomSeed())
-
-    expect(await http.accountInfo(keys.address)).toBeNull()
-    expect(await http.assetInfo('A'.repeat(64))).toBeNull()
-    expect(await http.commitInfo('B'.repeat(64))).toBeNull()
-    expect(await http.blockInfo('C'.repeat(64))).toBeNull()
-    expect(await http.holdings(keys.address)).toEqual([])
-    expect(await http.holderBalance('A'.repeat(64), keys.address)).toBe('0')
-    expect(await http.hasClaimed(keys.address, 'B'.repeat(64))).toBe(false)
-  })
-
-  test('history comes back as blocks, not as entries describing them', async () => {
-    const { http, mock } = await connected()
-    const keys = await keyPairFromSeed(randomSeed())
-    const faucet = mock.ledger.genesisAddresses().community
-
-    // The faucet account has a chain as soon as it pays out: its genesis block,
-    // then this send.
-    await http.faucet(keys.address, (5n * 10n ** 18n).toString())
-    const history = await http.accountHistory(faucet, { limit: 10 })
-    expect(history.length).toBeGreaterThan(1)
-
-    // What separates the two shapes: an inherited history entry describes the
-    // block — `type: "send"`, `account` naming the counterparty — and carries
-    // no `previous`, `signature` or `work`. Signing the next block needs all
-    // three, so this is the difference between a usable answer and a readable
-    // one.
-    const newest = history[0]!
-    expect(newest.type).toBe('state')
-    expect(newest.account).toBe(faucet)
-    expect((newest as { subtype?: string }).subtype).toBe('send')
-    for (const field of ['previous', 'representative', 'balance', 'link', 'signature', 'work'] as const) {
-      expect(typeof (newest as unknown as Record<string, unknown>)[field]).toBe('string')
-    }
-
-    // Oldest block on any chain is its open, and the SDK's word for that is
-    // `open` where the node's sideband only knows it as a receive.
-    expect((history.at(-1) as { subtype?: string }).subtype).toBe('open')
-  })
-
+describe('mock-only HTTP handler behaviour', () => {
   test('account_history without a shape is refused rather than guessed', async () => {
     const { mock } = await connected()
     const handler = mockRpcHandler({ node: mock })
@@ -97,36 +22,15 @@ describe('the mock node over HTTP', () => {
         body: JSON.stringify({ action: 'account_history', account: mock.ledger.genesisAddresses().community }),
       }),
     )
-    // A real node would answer this with Nano's shape, which parses as a block
-    // and describes a different one. The mock has no second shape to serve, so
-    // it holds callers to the parameter instead of inferring it.
     expect(((await response.json()) as { error?: string }).error).toMatch(/"shape": "block"/)
   })
 
-  test('work thresholds come across as decimal strings', async () => {
+  test('HttpNode and MockNode publish the same work thresholds', async () => {
     const { http, mock } = await connected()
     expect(await http.workThresholds()).toEqual(await mock.workThresholds())
   })
 
-  test('a rejected block is a sentence, not a status code', async () => {
-    const { http } = await connected()
-    const keys = await keyPairFromSeed(randomSeed())
-    const unsigned = {
-      type: 'state',
-      subtype: 'send',
-      account: keys.address,
-      previous: ZERO_HASH,
-      representative: keys.address,
-      balance: '0',
-      link: ZERO_HASH,
-      work: '0000000000000000',
-      signature: '0'.repeat(128),
-    } as unknown as Block
-
-    await expect(http.process(unsigned)).rejects.toThrow(/rejected "process"/)
-  })
-
-  test('an action the node does not have says so, and points at the list', async () => {
+  test('an unknown action names the contract list exactly', async () => {
     const { mock } = await connected()
     const handler = mockRpcHandler({ node: mock })
     const response = await handler(
@@ -142,10 +46,9 @@ describe('the mock node over HTTP', () => {
     })
   })
 
-  test('a browser can reach it — preflight and origin', async () => {
+  test('the default handler answers preflight exactly and adds CORS', async () => {
     const { mock } = await connected()
     const handler = mockRpcHandler({ node: mock })
-
     const preflight = await handler(new Request('http://node.test/rpc', { method: 'OPTIONS' }))
     expect(preflight.status).toBe(204)
     expect(preflight.headers.get('access-control-allow-origin')).toBe('*')
@@ -163,18 +66,5 @@ describe('the mock node over HTTP', () => {
       new Request('http://node.test/rpc', { method: 'POST', body: JSON.stringify({ action: 'work_thresholds' }) }),
     )
     expect(response.headers.get('access-control-allow-origin')).toBeNull()
-  })
-
-  test('subscribe polls receivables, so an arrival is noticed without a socket', async () => {
-    const { http } = await connected()
-    const keys = await keyPairFromSeed(randomSeed())
-
-    const seen: string[] = []
-    const stop = http.subscribe(keys.address, (event) => seen.push(event.hash))
-    const { hash } = await http.faucet(keys.address)
-
-    await Bun.sleep(40)
-    stop()
-    expect(seen).toContain(hash)
   })
 })
