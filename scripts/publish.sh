@@ -20,11 +20,9 @@
 
 set -eu
 
+# Optional: an account whose 2FA is a security key has no six-digit code to give,
+# and an account that does not require 2FA for writes does not need one either.
 OTP="${1:-${NPM_OTP:-}}"
-if [ -z "$OTP" ]; then
-  echo "Usage: sh scripts/publish.sh <six-digit code from your authenticator>" >&2
-  exit 2
-fi
 
 cd "$(dirname "$0")/.."
 
@@ -49,7 +47,11 @@ for package in $PACKAGES; do
   fi
 
   echo "==> Publishing $name@$version"
-  (cd "$directory" && npm publish --access public --otp "$OTP")
+  if [ -n "$OTP" ]; then
+    (cd "$directory" && npm publish --access public --otp "$OTP")
+  else
+    (cd "$directory" && npm publish --access public)
+  fi
 done
 
 echo
