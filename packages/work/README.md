@@ -37,12 +37,12 @@ a visible pause.
 
 ## Status
 
-**M4 of eleven.** Native items, rooted claims, and the work server run end to end, and the [Button demo](https://keicoin.org) is
-playable against it. The chain underneath is still a mock — served over HTTP, so the
-SDK already talks to a node across a URL, and M3 changes what is behind that URL
-without the API moving.
-
-There is no testnet yet and **nothing here holds value.**
+**M4 of eleven.** Native item and rooted-claim wire layouts now match the node,
+and the authenticated work server is runnable. The public API defaults to the
+real node at `https://testnet.keicoin.org/rpc`; `MockNode` remains the hermetic
+reference implementation for claim flows until the M4 RPC surface is deployed.
+The testnet is one best-effort node with weak consensus and **nothing there holds
+value.**
 
 See the [full documentation](https://github.com/keicoin-org/kei-transaction/blob/master/README.md).
 
