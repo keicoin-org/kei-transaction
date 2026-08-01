@@ -53,7 +53,7 @@ describe('kei-work-server CLI', () => {
     const port = await freePort()
     const url = `http://127.0.0.1:${port}`
 
-    proc = Bun.spawn(['bun', 'run', CLI_PATH], {
+    proc = Bun.spawn([process.execPath, 'run', CLI_PATH], {
       env: { ...process.env, KEI_NODE_URL: rpcServer.url.toString(), PORT: String(port), HOST: '127.0.0.1' },
       stdout: 'ignore',
       stderr: 'ignore',

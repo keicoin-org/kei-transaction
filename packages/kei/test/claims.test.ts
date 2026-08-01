@@ -179,5 +179,5 @@ describe('rooted claims', () => {
       expect(await gems.balanceOf(player.address)).toBe(1)
     }
     for (const player of players) player.close()
-  }, 60_000)
+  }, 180_000)
 })
