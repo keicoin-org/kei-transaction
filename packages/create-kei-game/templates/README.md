@@ -42,8 +42,11 @@ answer: *which payment* an answer was for. A mint says who got the lantern; a
 refund says who got their money back; neither says which of a wallet's payments
 it settled, because a Kei send has nowhere to put that. So `server/orders.ts`
 writes down the hash it is about to answer *before* it answers it, and asks the
-chain afterwards only whether that one block landed. Back it up the way you
-would back up a database. Losing it cannot make the game pay twice — that is
+chain afterwards only whether that one block landed. If a node drops the answer
+to a submission, the order stays pending until the issuer chain either contains
+the action or has advanced far enough that the action can no longer land; an
+empty immediate read is never treated as a rejection. Back the file up the way
+you would back up a database. Losing it cannot make the game pay twice — that is
 what the ordering is for — but the wallets whose records it held can no longer
 buy, and telling them apart is exactly what the lost file was doing.
 

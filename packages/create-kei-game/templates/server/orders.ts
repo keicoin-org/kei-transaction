@@ -23,13 +23,28 @@
  *   3. write the block (mint or refund)
  *   4. append a `done` naming the hash and the outcome — fsync
  *
- * One intent is open at a time, because `settle` holds a mutex across all four
- * steps and startup closes every intent it finds before anything is served. That
- * invariant is what makes step 3 recoverable *exactly*: while an intent is open,
- * the only blocks this issuer can write are the receives it collects by itself
- * and the one action that intent is for. So a mint of the item to that address
- * after that frontier is that intent's delivery, and a Kei send to that address
- * after it is that intent's refund. Nothing else could have put them there.
+ * A wallet has one intent open at a time, because `settle` holds a mutex across
+ * all four steps and refuses a wallet whose last intent is still open. That is
+ * what makes step 3 recoverable *exactly*: while an intent is open, the only
+ * blocks this issuer can write for that wallet are the one action that intent is
+ * for. So a mint of the item to that address after that frontier is that
+ * intent's delivery, and a Kei send to that address after it is that intent's
+ * refund. Nothing else could have put them there.
+ *
+ * Step 3 is also the step that can fail without saying so. A node can refuse a
+ * block — time out, drop the connection, lose the reply — and accept the same
+ * block a moment later, so an error is not evidence and neither is a chain that
+ * has nothing on it yet. "Not there" and "not there *yet*" read identically, and
+ * treating the second as the first is how one payment gets two answers: the
+ * intent is closed as void, the block lands, and the next post sees a player who
+ * already owns the item and refunds what they paid for it.
+ *
+ * So absence has to be *made* true rather than observed. One account has one
+ * chain and every block names the block it builds on, so a block signed against
+ * an older frontier is dead the moment anything else occupies that slot — see
+ * `fence`. Until that has been done, a failed action is indeterminate: the
+ * intent stays open, the wallet is answered nothing further, and the next
+ * attempt or the next restart resolves it against the chain.
  *
  * The chain's second job is to catch this file going missing. Answers written to
  * one address are countable on the issuer's chain even though they are not
@@ -80,6 +95,13 @@ export type Settled =
    * guess. Both possible answers are in the player's own account history.
    */
   | { status: 'unattributable' }
+  /**
+   * An action for this wallet was submitted and its fate is not known: the node
+   * neither confirmed it nor can be shown to have rejected it. Nothing has been
+   * answered and nothing has been given up on. Ask again — the next attempt
+   * resolves it if the node will talk, and so does a restart.
+   */
+  | { status: 'indeterminate' }
 
 export interface Orders {
   /** Wait for one named payment to reach this game, or give up. */
@@ -117,6 +139,28 @@ interface Answer {
   address: string
 }
 
+/**
+ * What the chain has to say about the one action an intent's window can hold.
+ *
+ * These are four different things and the bug is writing code that has three.
+ * `absent` in particular is a claim about the future — that nothing can land
+ * there any more — and it is only ever returned once that has been made true.
+ */
+type Evidence =
+  | { state: 'found'; kind: Plan['kind'] }
+  /** Nothing landed in that window and nothing still can: the slot after it is taken. */
+  | { state: 'absent' }
+  /** Two kinds of answer in one window. The invariant is broken; refuse rather than pick. */
+  | { state: 'ambiguous' }
+  /** The chain could not be read back to that frontier, so it said nothing either way. */
+  | { state: 'unknown' }
+
+/** A reading taken before the door is shut, where `pending` means "not there *yet*". */
+type Reading = Evidence | { state: 'pending' }
+
+/** The `link` of a block that links to nothing. */
+const NOTHING = '0'.repeat(64)
+
 export async function openOrders(options: OrdersOptions): Promise<Orders> {
   const { kei, item, path } = options
   const node = kei.client.node
@@ -132,8 +176,12 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
   /** Per address: answers on file, and answers on the chain. Equal, or records were lost. */
   const onFile = new Map<string, number>()
   const onChain = new Map<string, number>()
-  /** Wallets whose in-flight answer could not be resolved. Never answered again. */
+  /** Wallets whose answers can no longer be told apart. Never answered again by this process. */
   const clouded = new Set<string>()
+  /** Wallets with an action whose fate is not known yet. Answered again once it is. */
+  const unresolved = new Set<string>()
+  /** Intents written and not yet closed, by payment hash. */
+  const openIntents = new Map<string, Intent>()
 
   const bump = (counts: Map<string, number>, address: string): void => {
     counts.set(address, (counts.get(address) ?? 0) + 1)
@@ -150,17 +198,17 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
 
   mkdirSync(dirname(path), { recursive: true })
 
-  /** Intents with no `done` or `void` after them: answers in flight when the process died. */
-  const open = new Map<string, Intent>()
+  // Intents with no `done` or `void` after them: answers in flight when the
+  // process died, or ones it could never resolve before it did.
   for (const entry of readEntries(path)) {
     // Entries name their issuer, so two games sharing a directory — or one game
     // restarted on a new seed — do not read each other's answers.
     if (entry.issuer !== issuer) continue
     if (entry.k === 'intent') {
-      open.set(entry.hash, entry)
+      openIntents.set(entry.hash, entry)
       continue
     }
-    open.delete(entry.hash)
+    openIntents.delete(entry.hash)
     if (entry.k !== 'done') continue
     answers.set(entry.hash, entry.outcome)
     bump(onFile, entry.address)
@@ -189,11 +237,34 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
     note({ hash: receive.link, from, amount })
   })
 
+  // -------------------------------------------------------- answers in flight
+
+  // Settled first, and before the chain is counted, because settling one can
+  // write to the chain: it fences off an action that may still be in flight, and
+  // that action can land in between. Counting afterwards counts what is actually
+  // there rather than what was there a moment before the door was shut.
+  //
+  // More than one intent can be open at once: an action nobody could resolve
+  // leaves its own open and the game goes on serving other wallets. Each is
+  // settled over its own window and told apart by the wallet it names. Two open
+  // intents for *one* wallet is the case no window can separate, and it is
+  // refused rather than guessed at.
+  const perAddress = new Map<string, number>()
+  for (const intent of openIntents.values()) bump(perAddress, intent.address)
+  for (const intent of [...openIntents.values()]) {
+    if ((perAddress.get(intent.address) ?? 0) > 1) {
+      clouded.add(intent.address)
+      continue
+    }
+    await closeIntent(intent, { count: 'later' })
+  }
+
+  // ----------------------------------------------------------------- the chain
+
   // Read before the history, so that a block landing between the two leaves the
   // history long rather than the frontier unaccounted for. It is the one hash on
   // the chain no `previous` field names, and an intent that got no further than
   // its own fsync recorded exactly it.
-  const started = await node.accountInfo(issuer)
   const history = await node.accountHistory(issuer, { limit: historyLimit })
   const oldest = history[history.length - 1]
   if (oldest && !/^0+$/.test(oldest.previous)) {
@@ -203,13 +274,6 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
         'window began, and answering on that basis is how one payment gets answered twice. Raise historyLimit ' +
         'past the length of the chain, or move this record to a store that does not re-derive itself at boot.',
     )
-  }
-
-  /** Frontier hash to the index of the block written directly on top of it. */
-  const builtOn = new Map<string, number>()
-  for (let index = 0; index < history.length; index++) {
-    const block = history[index]
-    if (block) builtOn.set(block.previous, index)
   }
 
   // One pass, newest first, for the two things the chain is read for: how many
@@ -243,71 +307,145 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
     note({ hash: block.link, from: send.account, amount: keiFromRaw(arrived) })
   }
 
-  // -------------------------------------------------------- answers in flight
+  // --------------------------------------------------------- asking the chain
 
-  // Oldest first. One open intent is the most a crash can leave, because nothing
-  // opens a second while one is open. A file that somehow holds more gets each
-  // window closed off at the next intent's frontier, so no two can claim one
-  // block. All of them are settled here, before anything is served.
-  const inFlight = [...open.values()].sort((left, right) => index(right.since) - index(left.since))
-  for (let at = 0; at < inFlight.length; at++) {
-    const intent = inFlight[at]
-    if (!intent) continue
-    const next = inFlight[at + 1]
-    closeIntent(intent, next ? index(next.since) + 1 : 0)
+  /** The issuer's chain, or nothing at all if the node would not answer for it. */
+  async function readChain(): Promise<{ frontier: string | undefined; recent: Block[] } | undefined> {
+    try {
+      const info = await node.accountInfo(issuer)
+      return { frontier: info?.frontier, recent: await node.accountHistory(issuer, { limit: historyLimit }) }
+    } catch {
+      return undefined
+    }
   }
 
-  /** Where the block written on top of a frontier sits, or -1 for a frontier nothing was written on. */
-  function index(since: string): number {
-    return builtOn.get(since) ?? -1
+  /** What is in one intent's window right now, which is not yet what will be. */
+  async function read(intent: { since: string; address: string }): Promise<Reading> {
+    const chain = await readChain()
+    if (!chain) return { state: 'unknown' }
+    const window = blocksAfter(chain.recent, chain.frontier, intent.since)
+    // The read did not reach that frontier — it is beyond `historyLimit`, or it
+    // is not on the chain this game is running against at all. Either way the
+    // window cannot be looked at, so nothing is claimed about it.
+    if (!window) return { state: 'unknown' }
+
+    const kinds = new Set<Plan['kind']>()
+    for (const block of window) {
+      const answer = answerIn(block, item)
+      if (answer?.address === intent.address) kinds.add(answer.kind)
+    }
+    // Two kinds of answer inside one window is the one thing the invariant rules
+    // out. If it happens the invariant is broken, and a refusal beats a guess.
+    if (kinds.size > 1) return { state: 'ambiguous' }
+    const only = first(kinds)
+    return only ? { state: 'found', kind: only } : { state: 'pending' }
   }
 
   /**
-   * Settle one intent against the chain, and write the entry that closes it.
+   * Write a block that does nothing, so that one which might still be in flight
+   * can never land.
    *
-   * `newest` is the index the search stops at, 0 being the frontier. It is 0 for
-   * the single open intent a crash can actually leave.
+   * This is the whole answer to a submit that failed without saying whether it
+   * failed. One account has one chain (SPEC §5.6.1) and every block names the
+   * block it builds on, so a block already signed against some frontier is dead
+   * the moment anything else occupies that slot — the node rejects it as a fork.
+   * Any block written here is after the one in question was signed, so its slot
+   * is at or before this one, and either way it is taken.
+   *
+   * A representative change to the representative already in place is the block
+   * to do it with: it moves no Kei, mints nothing, and `answerIn` does not read
+   * it as an answer to anybody. It is a door, not a decision.
+   *
+   * False if the node would not take it, in which case nothing is known and
+   * nothing is claimed.
    */
-  function closeIntent(intent: Intent, newest: number): void {
-    const oldestInWindow = builtOn.get(intent.since)
-    const known = oldestInWindow !== undefined || intent.since === started?.frontier
-    if (!known) {
-      // Its frontier is nowhere on the chain this game is running against, so
-      // nothing about it can be proved. Nothing is claimed either: the intent
-      // stays open and this wallet is refused from here on.
-      clouded.add(intent.address)
+  async function fence(): Promise<boolean> {
+    try {
+      await kei.client.submit((draft) => ({
+        type: 'state',
+        subtype: 'change',
+        account: issuer,
+        previous: draft.previous,
+        representative: draft.representative,
+        balance: draft.balance.toString(),
+        link: NOTHING,
+      }))
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * What an intent's action did, once the question can be answered for good.
+   *
+   * An empty window is the dangerous reading, because it is the one that looks
+   * like proof and is not: a node can refuse a block and accept it a moment
+   * later. So an empty window is fenced first and read again, and only a window
+   * still empty behind a closed door counts as `absent`.
+   */
+  async function settled(intent: { since: string; address: string }): Promise<Evidence> {
+    const seenNow = await read(intent)
+    if (seenNow.state !== 'pending') return seenNow
+    if (!(await fence())) return { state: 'unknown' }
+    const afterwards = await read(intent)
+    return afterwards.state === 'pending' ? { state: 'absent' } : afterwards
+  }
+
+  /**
+   * Settle one intent against the chain and write the entry that closes it — or
+   * leave it open, which is what everything short of an answer amounts to.
+   *
+   * `count` says whether the pass over the chain has already counted an answer
+   * found here: at startup it has not run yet and will count it itself, and
+   * while running it ran long ago and this is one more than it saw.
+   */
+  async function closeIntent(intent: Intent, { count }: { count: 'later' | 'now' }): Promise<void> {
+    const evidence = await settled(intent)
+
+    if (evidence.state === 'found') {
+      openIntents.delete(intent.hash)
+      unresolved.delete(intent.address)
+      const outcome = outcomeFor(evidence.kind, intent.amount, item)
+      answers.set(intent.hash, outcome)
+      bump(onFile, intent.address)
+      if (count === 'now') bump(onChain, intent.address)
+      note({ hash: intent.hash, from: intent.address, amount: intent.amount })
+      append({ k: 'done', issuer, hash: intent.hash, address: intent.address, amount: intent.amount, outcome })
       return
     }
 
-    const found = new Set<Plan['kind']>()
-    for (let at = newest; at <= (oldestInWindow ?? -1); at++) {
-      const block = history[at]
-      if (!block) continue
-      const answer = answerIn(block, item)
-      if (answer?.address === intent.address) found.add(answer.kind)
-    }
-
-    // Two kinds of answer inside one intent's window is the one thing the
-    // invariant above rules out. If it happens the invariant is broken, and a
-    // refusal is worth more than a guess.
-    if (found.size > 1) {
-      clouded.add(intent.address)
-      return
-    }
-
-    if (found.size === 0) {
-      // The process died before the block was written, or while writing one that
-      // never landed. The payment is unanswered, and closing the intent lets an
-      // ordinary repost answer it — which is exactly what should happen.
+    if (evidence.state === 'absent') {
+      // The action never landed and never can now. The payment is unanswered,
+      // and closing the intent lets an ordinary repost answer it — which is
+      // exactly what should happen.
+      openIntents.delete(intent.hash)
+      unresolved.delete(intent.address)
       append({ k: 'void', issuer, hash: intent.hash })
       return
     }
 
-    const outcome = outcomeFor(found.has('deliver') ? 'deliver' : 'refund', intent.amount, item)
-    answers.set(intent.hash, outcome)
-    bump(onFile, intent.address)
-    note({ hash: intent.hash, from: intent.address, amount: intent.amount })
-    append({ k: 'done', issuer, hash: intent.hash, address: intent.address, amount: intent.amount, outcome })
+    // Nothing is written, because nothing is known. The intent stays open, and
+    // with it the one thing that matters: no second answer can start for this
+    // wallet while its first one might still be on its way.
+    if (evidence.state === 'ambiguous') clouded.add(intent.address)
+    else unresolved.add(intent.address)
+  }
+
+  /**
+   * Try again to settle whatever this wallet has open, before answering it
+   * anything. This is the path that gets a stuck wallet moving without a
+   * restart: the node that would not answer a moment ago may answer now.
+   */
+  async function resolveOpen(address: string): Promise<void> {
+    if (clouded.has(address)) return
+    const mine = [...openIntents.values()].filter((intent) => intent.address === address)
+    if (mine.length > 1) {
+      clouded.add(address)
+      return
+    }
+    const only = mine[0]
+    if (only) await closeIntent(only, { count: 'now' })
   }
 
   /**
@@ -319,7 +457,7 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
    * being refunded.
    */
   function attributable(address: string): boolean {
-    return !clouded.has(address) && (onFile.get(address) ?? 0) === (onChain.get(address) ?? 0)
+    return (onFile.get(address) ?? 0) === (onChain.get(address) ?? 0)
   }
 
   // ------------------------------------------------------------- one at a time
@@ -355,8 +493,16 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
 
     settle(payment, choose) {
       return serially<Settled>(async () => {
+        // An action this wallet has open and unresolved is asked about again
+        // here, on the chance the node has come back. It is the difference
+        // between a wallet stuck until somebody restarts the game and a wallet
+        // that unsticks itself the next time the player presses the button.
+        await resolveOpen(payment.from)
+
         const recorded = answers.get(payment.hash)
         if (recorded) return { status: 'answered', outcome: recorded }
+        if (clouded.has(payment.from)) return { status: 'unattributable' }
+        if (unresolved.has(payment.from)) return { status: 'indeterminate' }
         if (!attributable(payment.from)) return { status: 'unattributable' }
 
         // Inside the mutex, so the read this plan is chosen on — whether the
@@ -368,7 +514,7 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
           throw new Error('The issuer has no chain to write on, which cannot happen once it has issued its own assets.')
         }
 
-        append({
+        const intent: Intent = {
           k: 'intent',
           issuer,
           hash: payment.hash,
@@ -376,20 +522,29 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
           plan: plan.kind,
           amount: payment.amount,
           since: info.frontier,
-        })
+        }
+        append(intent)
+        openIntents.set(intent.hash, intent)
 
         try {
           await plan.perform()
         } catch (error) {
-          // It may have landed anyway. Ask the chain the question a restart would
-          // ask, over the same window, and close the intent either way — one left
-          // open would cloud this wallet for good.
-          if ((await wroteSince(info.frontier, payment.from)) !== plan.kind) {
-            append({ k: 'void', issuer, hash: payment.hash })
-            throw error
-          }
+          // The error says nothing on its own: a node that refuses a block can
+          // accept it a moment afterwards. `closeIntent` asks the chain over
+          // this intent's own window and shuts the door before believing an
+          // empty one, so what the player is told is the chain's answer rather
+          // than the exception's.
+          await closeIntent(intent, { count: 'now' })
+          const answered = answers.get(payment.hash)
+          if (answered) return { status: 'answered', outcome: answered }
+          if (clouded.has(payment.from)) return { status: 'unattributable' }
+          if (openIntents.has(intent.hash)) return { status: 'indeterminate' }
+          // Voided: nothing landed and nothing can now. The payment is untouched
+          // and this hash can be posted again, so the failure is the answer.
+          throw error
         }
 
+        openIntents.delete(intent.hash)
         answers.set(payment.hash, plan.outcome)
         bump(onFile, payment.from)
         bump(onChain, payment.from)
@@ -411,21 +566,22 @@ export async function openOrders(options: OrdersOptions): Promise<Orders> {
     },
   }
 
-  /** The evidence `closeIntent` reads, for a frontier recorded a moment ago rather than a run ago. */
-  async function wroteSince(since: string, address: string): Promise<Plan['kind'] | undefined> {
-    const recent = await node.accountHistory(issuer, { limit: historyLimit })
-    const found = new Set<Plan['kind']>()
-    for (const block of recent) {
-      if (!block) continue
-      const answer = answerIn(block, item)
-      if (answer?.address === address) found.add(answer.kind)
-      // Everything from here down was already on the chain when the intent was
-      // written, so it belongs to some earlier answer and not to this one.
-      if (block.previous === since) return found.size === 1 ? first(found) : undefined
-    }
-    // Nothing at all was written on top of that frontier, so nothing landed.
-    return undefined
-  }
+}
+
+/**
+ * The blocks written on top of `since`, newest first — an intent's window.
+ *
+ * `undefined` is the fourth answer and the one that has to stay distinct: the
+ * read cannot see that far back, so the window is not empty, it is unreadable.
+ * The history is consulted first and the frontier only as a fallback, so a block
+ * landing between the two reads makes the window longer rather than invisible.
+ */
+function blocksAfter(recent: Block[], frontier: string | undefined, since: string): Block[] | undefined {
+  const at = recent.findIndex((block) => block.previous === since)
+  if (at !== -1) return recent.slice(0, at + 1)
+  // Nothing is built on it and it is the tip of the chain, so the window is
+  // genuinely empty — which is not the same as nothing being able to arrive in it.
+  return frontier === since ? [] : undefined
 }
 
 /**

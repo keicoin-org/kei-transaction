@@ -166,6 +166,94 @@ function diesAfterAccepting(node: MockNode, when: (block: Block) => boolean): Ke
 const isMintOf = (item: string) => (block: Block) =>
   block.type === 'asset' && block.op.kind === 'mint' && block.op.asset === item
 
+const isSend = (block: Block): boolean => block.type === 'state' && block.subtype === 'send'
+
+interface Kept {
+  node: KeiNode
+  /** Whether the block this wrapper was waiting for has been taken and not answered for. */
+  kept(): boolean
+  /**
+   * Offer the kept block back to the real node — the late acceptance. False if
+   * the chain has moved past the slot it was signed against and it no longer fits.
+   */
+  accept(): Promise<boolean>
+  /** Answer again, the way a node that was unreachable comes back. */
+  revive(): void
+}
+
+/**
+ * A node that takes one block, keeps it, and fails the request that carried it.
+ *
+ * This is the failure `diesAfterAccepting` above does not cover, and the harder
+ * one: there, the block is on the chain before the caller sees the error, so a
+ * single look finds it. Here the error comes *first* — a timeout on the way in,
+ * a lost reply, a leader that committed after the connection went — and the look
+ * that follows sees an empty chain. "Not there" and "not there yet" are the same
+ * read, and only one of them is safe to act on.
+ *
+ * Nothing is timed: `accept()` is when the late acceptance happens, so a test
+ * decides the interleaving rather than a sleep. With `thenStall` the node goes
+ * quiet after keeping the block, which is the case where even the door cannot be
+ * shut and the answer has to stay unknown.
+ */
+function keeps(node: MockNode, when: (block: Block) => boolean, options: { thenStall?: boolean } = {}): Kept {
+  let held: Block | undefined
+  let stalled = false
+  const unreachable = (): never => {
+    throw new Error('the node did not answer')
+  }
+
+  const wrapped = Object.create(node) as KeiNode & {
+    process: KeiNode['process']
+    accountInfo: KeiNode['accountInfo']
+    accountHistory: KeiNode['accountHistory']
+  }
+  wrapped.process = async (block: Block) => {
+    if (stalled) unreachable()
+    if (held === undefined && when(block)) {
+      held = block
+      stalled = options.thenStall === true
+      unreachable()
+    }
+    return node.process(block)
+  }
+  wrapped.accountInfo = async (address: string) => (stalled ? unreachable() : node.accountInfo(address))
+  wrapped.accountHistory = async (address: string, query?: { limit?: number }) =>
+    stalled ? unreachable() : node.accountHistory(address, query)
+
+  return {
+    node: wrapped,
+    kept: () => held !== undefined,
+    revive: () => {
+      stalled = false
+    },
+    async accept() {
+      if (!held) throw new Error('Nothing was kept: the block this test is about was never submitted.')
+      try {
+        await node.process(held)
+        return true
+      } catch {
+        return false
+      }
+    },
+  }
+}
+
+/** The reported shape: fail the request, and hand the block to the node `afterMs` later. */
+function acceptsLate(node: MockNode, when: (block: Block) => boolean, afterMs: number): KeiNode {
+  let armed = true
+  const wrapped = Object.create(node) as KeiNode & { process: KeiNode['process'] }
+  wrapped.process = async (block: Block) => {
+    if (armed && when(block)) {
+      armed = false
+      setTimeout(() => void node.process(block).catch(() => undefined), afterMs)
+      throw new Error('the node did not answer, and kept the block')
+    }
+    return node.process(block)
+  }
+  return wrapped
+}
+
 // -------------------------------------------------------------------- the tests
 
 describe('the generated game, restarted', () => {
@@ -720,6 +808,294 @@ describe('a crash at every boundary of one purchase', () => {
           back.close()
         }
       } finally {
+        kei.close()
+      }
+    },
+    60_000,
+  )
+})
+
+/**
+ * A block the node refuses and then accepts.
+ *
+ * This is the failure that makes an immediate look at the chain worthless as
+ * proof. The submit throws, the game asks the chain, the chain has nothing yet —
+ * and if that is written down as "nothing happened", the block landing a moment
+ * later gives the same payment a second answer. The expensive direction is the
+ * one that costs money: the mint lands, the next post finds a player who already
+ * owns a lantern, and refunds what they paid for it. One payment, one lantern,
+ * and its price back.
+ *
+ * So absence is made true rather than observed. Before anything is written down,
+ * the game puts a block of its own on the chain; one account has one chain, so
+ * whatever was in flight is building on a slot that is now taken and can never
+ * be accepted. Only then does an empty window mean the action never happened —
+ * and when even that cannot be done, the answer stays unknown and the payment
+ * stays open rather than being closed on a guess.
+ */
+describe('a node that refuses a block and takes it afterwards', () => {
+  test(
+    'a mint accepted after it was refused does not turn the payment into a refund',
+    async () => {
+      const game = await deployment('late-mint')
+      const probe = await game.boot()
+      const catalogue = probe.catalogue()
+      probe.close()
+
+      const node = keeps(game.node, isMintOf(catalogue.lantern.asset))
+      const running = await game.boot(node.node)
+      const kei = await player(game.node)
+
+      try {
+        const lanterns = await kei.token(catalogue.lantern.asset)
+        const receipt = await kei.pay({ to: catalogue.issuer, amount: catalogue.lantern.price })
+        await until('the payment to be collected', async () => (await game.node.receivables(game.issuer)).length === 0)
+        const paid = await holdings(kei, lanterns)
+
+        // The mint is kept and the request fails. Nothing is on the chain, which
+        // is the reading that must not be mistaken for a decision.
+        await expect(running.buyLantern(kei.address, receipt.hash)).rejects.toThrow()
+        expect(node.kept()).toBe(true)
+
+        // The late acceptance, offered now. It no longer fits: the game wrote
+        // its own block on that slot before it wrote anything down.
+        expect(await node.accept()).toBe(false)
+
+        // So the payment is still owed an answer, and gets exactly one.
+        expect(await running.buyLantern(kei.address, receipt.hash)).toEqual({
+          outcome: 'delivered',
+          item: catalogue.lantern.asset,
+        })
+        await until('the lantern to arrive', async () => (await lanterns.balanceOf(kei.address)) === 1)
+        await settle(kei, game.node)
+
+        // One lantern, and the price of it gone. A refund here would be the bug
+        // reported: the lantern, for free.
+        expect(await holdings(kei, lanterns)).toEqual({ kei: paid.kei, lanterns: 1 })
+        expect(await game.node.receivables(kei.address)).toEqual([])
+      } finally {
+        running.close()
+        kei.close()
+      }
+    },
+    60_000,
+  )
+
+  test(
+    'a refund accepted after it was refused is not paid a second time',
+    async () => {
+      const game = await deployment('late-refund')
+      // The issuer sends Kei for one reason, so any send from it is the refund.
+      const node = keeps(game.node, isSend)
+      const running = await game.boot(node.node)
+      const catalogue = running.catalogue()
+      const kei = await player(game.node)
+
+      try {
+        const lanterns = await kei.token(catalogue.lantern.asset)
+        const price = catalogue.lantern.price
+
+        const bought = await kei.pay({ to: catalogue.issuer, amount: price })
+        expect(await running.buyLantern(kei.address, bought.hash)).toEqual({
+          outcome: 'delivered',
+          item: catalogue.lantern.asset,
+        })
+        await until('the lantern to arrive', async () => (await lanterns.balanceOf(kei.address)) === 1)
+
+        // A second payment, which this game answers by giving it back. That
+        // refund is refused and kept.
+        const spare = await kei.pay({ to: catalogue.issuer, amount: price })
+        await until('the second payment to be collected', async () => {
+          return (await game.node.receivables(game.issuer)).length === 0
+        })
+        const paid = await holdings(kei, lanterns)
+
+        await expect(running.buyLantern(kei.address, spare.hash)).rejects.toThrow()
+        expect(node.kept()).toBe(true)
+        expect(await node.accept()).toBe(false)
+
+        expect(await running.buyLantern(kei.address, spare.hash)).toEqual({
+          outcome: 'refunded',
+          amount: price,
+          reason: 'You already have a lantern.',
+        })
+        await settle(kei, game.node)
+
+        // The price back once, not twice, and still one lantern.
+        expect(await holdings(kei, lanterns)).toEqual({ kei: paid.kei + price, lanterns: 1 })
+      } finally {
+        running.close()
+        kei.close()
+      }
+    },
+    60_000,
+  )
+
+  test(
+    'the reported sequence — refused, taken 100ms later, reposted — still costs one lantern',
+    async () => {
+      const game = await deployment('late-by-a-timer')
+      const probe = await game.boot()
+      const catalogue = probe.catalogue()
+      probe.close()
+
+      const running = await game.boot(acceptsLate(game.node, isMintOf(catalogue.lantern.asset), 100))
+      const kei = await player(game.node)
+
+      try {
+        const lanterns = await kei.token(catalogue.lantern.asset)
+        const receipt = await kei.pay({ to: catalogue.issuer, amount: catalogue.lantern.price })
+        await until('the payment to be collected', async () => (await game.node.receivables(game.issuer)).length === 0)
+        const paid = await holdings(kei, lanterns)
+
+        // Whether the door is shut before the timer fires or the mint gets in
+        // first is a race, and deliberately not asserted: the point is that both
+        // arms end in the same place. One of them answers this call and the
+        // other rejects it.
+        const answered = await running.buyLantern(kei.address, receipt.hash).catch(() => undefined)
+        await Bun.sleep(300)
+
+        expect(await running.buyLantern(kei.address, receipt.hash)).toEqual({
+          outcome: 'delivered',
+          item: catalogue.lantern.asset,
+        })
+        if (answered !== undefined) expect(answered).toEqual({ outcome: 'delivered', item: catalogue.lantern.asset })
+
+        await until('the lantern to arrive', async () => (await lanterns.balanceOf(kei.address)) === 1)
+        await settle(kei, game.node)
+        expect(await holdings(kei, lanterns)).toEqual({ kei: paid.kei, lanterns: 1 })
+        expect(await game.node.receivables(kei.address)).toEqual([])
+      } finally {
+        running.close()
+        kei.close()
+      }
+    },
+    60_000,
+  )
+})
+
+/**
+ * And when the door cannot be shut either.
+ *
+ * A node that stops answering leaves the game unable to find out what happened
+ * *and* unable to make it not happen. There is no safe answer to give, so it
+ * gives none: the intent stays open, the wallet is told its payment is still
+ * being settled, and nothing is written down that a later block could
+ * contradict. The cost is liveness, and it is paid by that one wallet only,
+ * until the node comes back — which the next attempt and every restart checks.
+ */
+describe('a node that stops answering mid-purchase', () => {
+  /** Paid, collected, and then an action nobody can find out the fate of. */
+  async function stalled(name: string): Promise<{
+    game: Deployment
+    node: Kept
+    running: GeneratedGame
+    kei: Kei
+    lanterns: PlayerToken
+    item: string
+    hash: string
+    paid: { kei: number; lanterns: number }
+  }> {
+    const game = await deployment(name)
+    const probe = await game.boot()
+    const catalogue = probe.catalogue()
+    probe.close()
+
+    const node = keeps(game.node, isMintOf(catalogue.lantern.asset), { thenStall: true })
+    const running = await game.boot(node.node)
+    const kei = await player(game.node)
+    const lanterns = await kei.token(catalogue.lantern.asset)
+    const receipt = await kei.pay({ to: catalogue.issuer, amount: catalogue.lantern.price })
+    await until('the payment to be collected', async () => (await game.node.receivables(game.issuer)).length === 0)
+    const paid = await holdings(kei, lanterns)
+
+    await expect(running.buyLantern(kei.address, receipt.hash)).rejects.toThrow(/still being settled/)
+
+    // The whole fix, in one assertion: the intent is still open. A `void` here
+    // would be a claim about a block that is still in the air.
+    expect(entries(game.orders).at(-1)).toMatchObject({ k: 'intent', hash: receipt.hash })
+
+    return { game, node, running, kei, lanterns, item: catalogue.lantern.asset, hash: receipt.hash, paid }
+  }
+
+  test(
+    'the payment stays open, and the next attempt after the node returns settles it',
+    async () => {
+      const { game, node, running, kei, lanterns, item, hash, paid } = await stalled('unreachable')
+      try {
+        // Asking again while it is still unknown is refused the same way, and
+        // moves nothing. This is the liveness cost, and it is only this wallet's.
+        await expect(running.buyLantern(kei.address, hash)).rejects.toThrow(/still being settled/)
+        expect(await holdings(kei, lanterns)).toEqual(paid)
+
+        // The node comes back. The next attempt settles the open intent before
+        // it does anything else: the kept block is fenced out, the fact that
+        // nothing landed is written down, and only then is the payment answered.
+        node.revive()
+        expect(await running.buyLantern(kei.address, hash)).toEqual({ outcome: 'delivered', item })
+        expect(entries(game.orders).some((entry) => entry.k === 'void' && entry.hash === hash)).toBe(true)
+        expect(await node.accept()).toBe(false)
+
+        await until('the lantern to arrive', async () => (await lanterns.balanceOf(kei.address)) === 1)
+        await settle(kei, game.node)
+        expect(await holdings(kei, lanterns)).toEqual({ kei: paid.kei, lanterns: 1 })
+      } finally {
+        running.close()
+        kei.close()
+      }
+    },
+    60_000,
+  )
+
+  test(
+    'a restart shuts the door on the block still in flight before it serves anybody',
+    async () => {
+      const { game, node, running, kei, lanterns, item, hash, paid } = await stalled('restart-in-flight')
+      running.close()
+
+      const back = await game.boot()
+      try {
+        // Startup could not find the mint, so it shut the door and said so —
+        // before the first request was served, and before the kept block was
+        // offered back below.
+        expect(entries(game.orders).some((entry) => entry.k === 'void' && entry.hash === hash)).toBe(true)
+        expect(await node.accept()).toBe(false)
+
+        expect(await back.buyLantern(kei.address, hash)).toEqual({ outcome: 'delivered', item })
+        await until('the lantern to arrive', async () => (await lanterns.balanceOf(kei.address)) === 1)
+        await settle(kei, game.node)
+        expect(await holdings(kei, lanterns)).toEqual({ kei: paid.kei, lanterns: 1 })
+        expect(await game.node.receivables(kei.address)).toEqual([])
+      } finally {
+        back.close()
+        kei.close()
+      }
+    },
+    60_000,
+  )
+
+  test(
+    'a restart finds the block that did land, and answers the payment with it',
+    async () => {
+      const { game, node, running, kei, lanterns, item, hash, paid } = await stalled('restart-it-landed')
+      running.close()
+
+      // This time the kept block gets in before anything else is written, which
+      // is the other arm of the same race. The restart must read it as this
+      // payment's delivery rather than as an unexplained lantern.
+      expect(await node.accept()).toBe(true)
+
+      const back = await game.boot()
+      try {
+        expect(entries(game.orders).at(-1)).toMatchObject({ k: 'done', hash })
+        expect(await back.buyLantern(kei.address, hash)).toEqual({ outcome: 'delivered', item })
+
+        await settle(kei, game.node)
+        // One lantern and no refund: the delivery it already had is the answer.
+        expect(await holdings(kei, lanterns)).toEqual({ kei: paid.kei, lanterns: 1 })
+        expect(await game.node.receivables(kei.address)).toEqual([])
+      } finally {
+        back.close()
         kei.close()
       }
     },

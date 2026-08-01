@@ -163,6 +163,17 @@ export async function startGame(options: GameOptions): Promise<Game> {
         'This payment has already been answered — you were sent the lantern, or your Kei was refunded — and this game no longer has the record of which. Both are in your own account history. Nothing was taken, and nothing more will be.',
       )
     }
+
+    // A lantern or a refund was sent to the chain and the chain has not said
+    // whether it took it. The one thing that must not happen is a second try at
+    // answering, because the first may still land — so nothing is answered until
+    // it is known which. Nothing has been lost either: the payment stands and
+    // this hash still redeems it.
+    if (settled.status === 'indeterminate') {
+      throw new GameError(
+        'Your payment is still being settled: the game sent an answer and the network has not confirmed what happened to it. Nothing was taken and nothing was lost — try again in a moment, and you will get whichever answer the chain actually has.',
+      )
+    }
     return settled.outcome
   }
 

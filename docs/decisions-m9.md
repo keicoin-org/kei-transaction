@@ -196,19 +196,31 @@ purchase is four steps, in this order:
 3. write the block (mint or refund)
 4. append a `done` naming the hash and the outcome — fsync
 
-`settle()` holds a mutex across all four, and startup closes every intent it
-finds before it serves anything. So at most one intent is ever open, and that is
-what makes step 3 recoverable *exactly*: while an intent is open the only blocks
-this issuer can write are the receives it collects by itself and the one action
-that intent is for. A mint of the item to that address after that frontier is
-that intent's delivery. A Kei send to that address after it is that intent's
-refund. Nothing else could have put either there. A crash at any of the seven
-points in that sequence lands on one of three states, and each is decided rather
-than guessed: no intent (nothing happened), an intent with no matching block
-(nothing happened — write a `void` and let a repost answer normally), an intent
-with its block (that is the answer — write the `done` it never got to write).
+`settle()` holds a mutex across all four. An indeterminate action can leave its
+intent open while the game continues to serve other wallets, but a wallet with
+one open intent cannot start another. That per-wallet invariant is what makes
+step 3 recoverable *exactly*: a mint of the item to that address after the
+recorded frontier is that intent's delivery, and a Kei send to that address after
+it is that intent's refund. Nothing else this game writes for that wallet can be
+put there until the intent is closed.
 
-A torn last line is the same three states. A half-written `done` leaves its
+An error from step 3 is not proof that its block was rejected. A node can drop a
+reply and accept the submitted block later, after an immediate history read has
+found nothing. Calling that empty read `void` would let a repost start a refund
+before the delayed mint lands. The generated server therefore advances the
+issuer chain with a no-op representative-change block before it treats an empty
+window as absent. That fence occupies the old frontier, so the submitted action
+has either landed before it or can no longer land as a valid next block. If the
+node will not accept the fence either, the intent stays indeterminate and the
+wallet receives no second answer; a later retry or restart resolves it. Startup
+does this recovery before it serves anything.
+
+A crash at any point in the sequence therefore lands on one of four states, and
+each is decided rather than guessed: no intent; an intent whose action is found;
+an empty intent window that has been fenced and can safely be written `void`; or
+an unreadable/unfenceable window that stays open.
+
+A torn last line preserves the same ordering. A half-written `done` leaves its
 `intent` open and the chain says what that intent did; a half-written `intent`
 was never followed by an action at all, because the action comes strictly after
 the write that tore.
@@ -238,7 +250,7 @@ Three costs, recorded rather than hidden:
 A game past its first thousand players replaces this file with a table keyed by
 hash and drops the audit entirely, which is a database and one `INSERT` before
 the mint. The point of writing it as a file is that the ordering is the whole
-design and it is legible in forty lines.
+design and remains visible in the generated source.
 
 ## 7. A deploy pointed at testnet is refused, not warned
 
@@ -299,10 +311,14 @@ crash, and it stages on the disk exactly what a crash at each step of §6.2's fo
 writes leaves behind: no intent, a torn intent, an intent with no block, an
 intent whose block landed, a torn `done`, and a refund crash whose window must
 not swallow the delivery before it. It also stands up a node that keeps a block
-and then throws, which is the one failure a caller cannot tell from "it never
-landed". The case worth naming is `one wallet, two payments, and a log that lost
-its last line`: it is green here and it fails with a *refund* against the
-counting design §6.2 rejects, which is the bug being paid for.
+and then throws, plus the harder node that throws first and offers the block to
+the chain later. The tests exercise both outcomes of that race: the delayed
+action lands and is recovered, or the fence lands first and proves the action
+cannot. They also cover a node that stops answering entirely, where the intent
+must remain open until a retry or restart can resolve it. The case worth naming
+is `one wallet, two payments, and a log that lost its last line`: it is green here
+and it fails with a *refund* against the counting design §6.2 rejects, which is
+the bug being paid for.
 
 It writes into `packages/create-kei-game/.generated/` rather than a temp
 directory, because the generated code has to resolve `kei-transaction` the way a
