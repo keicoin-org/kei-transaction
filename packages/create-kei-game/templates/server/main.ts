@@ -15,6 +15,7 @@
 
 import { MockNode, mockRpcHandler, randomSeed } from 'kei-transaction'
 
+import type { LanternOrder } from '../shared/game.js'
 import { GameError, startGame } from './game.js'
 
 /** Native, and with a trailing separator — `pathname` would hand Windows `/C:/…`. */
@@ -70,6 +71,21 @@ const server = Bun.serve({
         try {
           const { address, clicks } = (await request.json()) as { address: string; clicks: number }
           return json({ bundle: await game.earn(address, clicks) })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          return json({ error: message }, error instanceof GameError ? 400 : 500)
+        }
+      },
+    },
+
+    // The out-of-band half of a purchase. The payment is already on the chain
+    // by the time this is called; all it carries is which payment it was, which
+    // the block itself has nowhere to say.
+    '/game/lantern': {
+      async POST(request) {
+        try {
+          const { address, hash } = (await request.json()) as LanternOrder
+          return json(await game.buyLantern(address, hash))
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           return json({ error: message }, error instanceof GameError ? 400 : 500)

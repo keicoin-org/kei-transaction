@@ -15,7 +15,7 @@
 
 import { Kei, type PlayerToken, type WalletSummary } from 'kei-transaction'
 
-import { LANTERN_MEMO, perClickFor, type Catalogue } from '../shared/game.js'
+import { perClickFor, type Catalogue, type LanternOrder, type LanternOutcome } from '../shared/game.js'
 
 export interface EconomyState {
   address: string
@@ -173,6 +173,7 @@ export async function connect(): Promise<Economy> {
     },
 
     async buyLantern() {
+      let paid: string | undefined
       try {
         state.message = null
         if (state.lanterns > 0) throw new Error('You already have a lantern.')
@@ -182,12 +183,43 @@ export async function connect(): Promise<Economy> {
         if ((await kei.balance()) < catalogue.lantern.price && catalogue.network !== 'mainnet') {
           await kei.faucet()
         }
-        await kei.pay({ to: catalogue.issuer, amount: catalogue.lantern.price, memo: LANTERN_MEMO })
+        const receipt = await kei.pay({ to: catalogue.issuer, amount: catalogue.lantern.price })
+        paid = receipt.hash
 
-        state.message = 'Paid. The lantern is on its way.'
+        // The payment is on the chain and cannot say what it was for — a Kei
+        // send has no memo field. Its hash names it exactly, so that is what
+        // gets sent, and the game matches it against the payment it watched
+        // arrive. Money first, order second: nothing here can spend a payment
+        // that was never made.
+        state.message = 'Paid. Telling the game what it was for…'
+        changed()
+
+        const response = await fetch('/game/lantern', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ address: kei.address, hash: receipt.hash } satisfies LanternOrder),
+        })
+        const body = (await response.json()) as LanternOutcome | { error?: string }
+        if ('error' in body && body.error) throw new Error(body.error)
+
+        state.message =
+          'outcome' in body && body.outcome === 'refunded'
+            ? `${body.reason} Refunded ${body.amount} Kei.`
+            : 'Paid. The lantern is on its way.'
         changed()
       } catch (error) {
         say(error)
+        if (paid) {
+          // The payment is final and its hash is the only thing that redeems
+          // it, so it is not allowed to vanish with the failure. The crystal
+          // has room for two lines; the console has room for the hash. It is
+          // also in this wallet's own account history, and posting it again is
+          // safe — the game delivers once per payment, however often it is
+          // asked.
+          console.warn(`Paid, not yet delivered. Payment hash: ${paid}`)
+          state.message = `${state.message ?? ''} Payment ${paid.slice(0, 8)}… — try again.`
+          changed()
+        }
       }
     },
 

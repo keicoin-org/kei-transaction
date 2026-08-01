@@ -36,9 +36,6 @@ export const LANTERN = {
   multiplier: 2,
 } as const
 
-/** The memo on the payment that buys it, so the issuer knows what was ordered. */
-export const LANTERN_MEMO = 'lantern'
-
 export function perClickFor(lanterns: number): number {
   return lanterns > 0 ? PER_CLICK * LANTERN.multiplier : PER_CLICK
 }
@@ -50,3 +47,23 @@ export interface Catalogue {
   currency: { asset: string; symbol: string; decimals: number }
   lantern: { asset: string; name: string; description: string; price: number }
 }
+
+/**
+ * What the browser posts once its payment is on the chain.
+ *
+ * A Kei payment carries no memo, so the payment cannot say what it was for. Its
+ * hash can: it names that one payment and nothing else, and the payer is the
+ * only one holding it the moment it is made. Handing it to the game is what
+ * turns "somebody paid" into "this player bought a lantern" — out of band,
+ * because the block has nowhere to put it.
+ */
+export interface LanternOrder {
+  address: string
+  /** The hash `kei.pay()` returned. */
+  hash: string
+}
+
+/** A refund is an outcome rather than an error: the money moved either way. */
+export type LanternOutcome =
+  | { outcome: 'delivered'; item: string }
+  | { outcome: 'refunded'; amount: number; reason: string }

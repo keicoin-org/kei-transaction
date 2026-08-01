@@ -66,6 +66,10 @@ The generated project does not import this package, does not depend on it, and
 does not know it exists. Delete `create-kei-game` from your machine and the game
 still builds and still runs — that is the test, and it has one.
 
+It has a harder one too: `bun test` writes the project out, imports both halves,
+and buys the item, so an SDK change that breaks the emitted code fails here
+rather than in somebody's brand-new project.
+
 This package installs nothing of its own, either. It is a program that writes
 files, and the first thing you wait for is your game's dependencies.
 

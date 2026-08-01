@@ -12,9 +12,9 @@
  * that reason, and there is no way to talk it round.
  */
 
-import { Kei, type ClaimBundle, type IssuerToken, type Item, type KeiNode } from 'kei-transaction'
+import { Kei, type ClaimBundle, type KeiNode } from 'kei-transaction'
 
-import { CURRENCY, LANTERN, LANTERN_MEMO, perClickFor, type Catalogue } from '../shared/game.js'
+import { CURRENCY, LANTERN, perClickFor, type Catalogue, type LanternOutcome } from '../shared/game.js'
 
 export interface GameOptions {
   seed: string
@@ -27,6 +27,12 @@ export interface Game {
   catalogue(): Catalogue
   /** Pay for clicks. Returns the proof the player claims with. */
   earn(address: string, clicks: number): Promise<ClaimBundle>
+  /**
+   * Deliver the lantern for one payment, named by the hash `kei.pay()` gave the
+   * player. Calling it twice with the same hash returns the first answer rather
+   * than delivering twice.
+   */
+  buyLantern(address: string, hash: string): Promise<LanternOutcome>
   close(): void
 }
 
@@ -34,6 +40,13 @@ export class GameError extends Error {}
 
 /** Fast for a finger, slow for a script. */
 const CLICK_RATE_CAP = 25
+
+/**
+ * How long to wait for a payment the player says they made. They are quicker
+ * than the chain: `kei.pay()` returns as soon as the block is theirs, and this
+ * side only knows about it once the node has told it and it has collected.
+ */
+const PAYMENT_WAIT_MS = 10_000
 
 export async function startGame(options: GameOptions): Promise<Game> {
   const kei = await Kei.server({
@@ -70,8 +83,60 @@ export async function startGame(options: GameOptions): Promise<Game> {
   })
   const lanterns = await kei.items.token(lantern.id)
 
-  const stopSelling = sell(kei, lantern, lanterns)
+  const payments = watchPayments(kei)
   const lastEarn = new Map<string, number>()
+
+  // One delivery at a time, so two payments arriving together cannot both read
+  // "this player has no lantern" and both mint one.
+  let queue: Promise<unknown> = Promise.resolve()
+  const serially = <T>(run: () => Promise<T>): Promise<T> => {
+    const next = queue.then(run, run)
+    queue = next.catch(() => undefined)
+    return next
+  }
+
+  /**
+   * Selling the lantern: the player signs the payment, the issuer signs the
+   * delivery, and neither can sign for the other. There is no `charge(player, …)`
+   * in this SDK and there never will be — a game cannot sign for a wallet it
+   * does not hold the key to.
+   *
+   * The payment says who and how much. The hash says which, and the player is
+   * the only one who has it when they make it, so quoting it is a claim only
+   * they could make. Everything else here is checking that claim against what
+   * this game watched arrive.
+   */
+  const deliver = async (address: string, hash: string): Promise<LanternOutcome> => {
+    const payment = await payments.find(hash, PAYMENT_WAIT_MS)
+    if (!payment) {
+      throw new GameError(
+        `No payment ${hash.slice(0, 12)}… has reached this game. If you have only just paid, try again in a moment — nothing was delivered and nothing was kept.`,
+      )
+    }
+    if (payment.from !== address) {
+      throw new GameError('That payment was signed by a different wallet, and a payment buys for the wallet that made it.')
+    }
+    if (payment.amount < LANTERN.price) {
+      throw new GameError(`That payment was ${payment.amount} Kei and the lantern costs ${LANTERN.price}.`)
+    }
+
+    // Waiting happens above, outside the queue, so one player's unarrived
+    // payment cannot hold up everybody else's delivery.
+    return serially<LanternOutcome>(async () => {
+      // Already has one. The payment still arrived, so refund it rather than
+      // keeping money for a thing that was not delivered.
+      if ((await lanterns.balanceOf(address)) > 0) {
+        await kei.send(address, payment.amount)
+        return { outcome: 'refunded', amount: payment.amount, reason: 'You already have a lantern.' }
+      }
+
+      await kei.items.mint(lantern.id, address)
+      return { outcome: 'delivered', item: lantern.id }
+    })
+  }
+
+  /** Deliveries already made or in flight, so a hash buys exactly one lantern. */
+  const orders = new Map<string, Promise<LanternOutcome>>()
 
   return {
     address: kei.address,
@@ -115,34 +180,92 @@ export async function startGame(options: GameOptions): Promise<Game> {
       return drop.proofFor(address)
     },
 
+    async buyLantern(address, hash) {
+      if (typeof hash !== 'string' || !/^[0-9a-f]{64}$/i.test(hash)) {
+        throw new GameError('That is not a payment hash. Send the hash kei.pay() gave you.')
+      }
+      const paid = hash.toUpperCase()
+
+      // Exactly once, and safe to retry: the first call for a hash owns the
+      // delivery and every later one is handed its answer. A browser that loses
+      // the response and posts again must not get a second lantern, and neither
+      // must two tabs posting at the same moment.
+      const started = orders.get(paid)
+      if (started) return started
+
+      // A failure is not an answer — most often it means the payment has not
+      // landed here yet — so it is not remembered and the player can try again.
+      const order = deliver(address, paid).catch((error: unknown) => {
+        orders.delete(paid)
+        throw error
+      })
+      orders.set(paid, order)
+      return order
+    },
+
     close() {
-      stopSelling()
+      payments.close()
       kei.close()
     },
   }
 }
 
+interface SeenPayment {
+  from: string
+  amount: number
+}
+
+interface PaymentLog {
+  /** Wait for one named payment to arrive here, or give up. */
+  find(hash: string, timeoutMs: number): Promise<SeenPayment | undefined>
+  close(): void
+}
+
 /**
- * Selling the lantern: the player signs the payment, the issuer signs the
- * delivery, and neither can sign for the other. There is no `charge(player, …)`
- * in this SDK and there never will be — a game cannot sign for a wallet it does
- * not hold the key to.
+ * Every Kei payment this game has actually watched arrive, filed under the name
+ * the payer knows it by.
  *
- * The payment carries a memo, which is how an arriving payment is matched to
- * what it was for.
+ * `onPayment` reports the *receive* block this account wrote, which is not the
+ * hash `kei.pay()` handed the player — they hold the send. A receive names the
+ * send it collects in its `link`, and reading that back is what lets the two
+ * sides talk about one payment by one name.
  */
-function sell(kei: Kei, lantern: Item, lanterns: IssuerToken): () => void {
-  return kei.onPayment(async ({ from, amount, memo }) => {
-    if (memo !== LANTERN_MEMO) return
-    if (amount < LANTERN.price) return
+function watchPayments(kei: Kei): PaymentLog {
+  const seen = new Map<string, SeenPayment>()
+  const waiting = new Map<string, Array<(payment: SeenPayment) => void>>()
 
-    // Already has one. The payment still arrived, so refund it rather than
-    // keeping money for a thing that was not delivered.
-    if ((await lanterns.balanceOf(from)) > 0) {
-      await kei.send(from, amount)
-      return
-    }
+  const stop = kei.onPayment(async ({ from, amount, hash }) => {
+    const receive = await kei.client.node.blockInfo(hash)
+    if (receive?.type !== 'state') return
 
-    await kei.items.mint(lantern.id, from)
+    const payment = { from, amount }
+    seen.set(receive.link, payment)
+    for (const arrived of waiting.get(receive.link) ?? []) arrived(payment)
+    waiting.delete(receive.link)
   })
+
+  return {
+    async find(hash, timeoutMs) {
+      const already = seen.get(hash)
+      if (already) return already
+
+      return new Promise<SeenPayment | undefined>((resolve) => {
+        let timer: ReturnType<typeof setTimeout>
+        const arrived = (payment: SeenPayment): void => {
+          clearTimeout(timer)
+          resolve(payment)
+        }
+        timer = setTimeout(() => {
+          const listeners = (waiting.get(hash) ?? []).filter((listener) => listener !== arrived)
+          if (listeners.length === 0) waiting.delete(hash)
+          else waiting.set(hash, listeners)
+          resolve(undefined)
+        }, timeoutMs)
+
+        waiting.set(hash, [...(waiting.get(hash) ?? []), arrived])
+      })
+    },
+
+    close: stop,
+  }
 }

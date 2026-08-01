@@ -26,7 +26,8 @@ scaffolder that generates against last month's surface produces a project that
 fails on `bun install` rather than on a type error anyone would notice here.
 
 Living in the tree means it moves with the API and inherits §10.1's one version
-number, and `test/scaffold.test.ts` parses everything it emits on every `bun test`.
+number, and every `bun test` both parses everything it emits (`test/scaffold.test.ts`)
+and runs the game it emits against the SDK next door (`test/purchase.test.ts`, §8).
 
 It is still not part of the SDK. It is not published under `@keicoin/`, it is not
 re-exported by the umbrella, and it appears in the packages table under its own
@@ -47,6 +48,11 @@ the harness does not install the SDK and `@bananocoin/bananojs` behind it. A cop
 drifts, so `test/naming.test.ts` checks every symbol the harness derives against
 the real `normalizeSymbol` — the SDK is a devDependency, present exactly where
 drift would be caught and absent from what ships.
+
+`kei-transaction` is a devDependency for the same reason: §8's test runs the
+generated game, which needs the umbrella package the generated game imports. Both
+are dev-only, `files` ships `dist`, `src`, and `templates`, and nothing a
+developer installs has either in its graph.
 
 ## 3. Two prompts, and every prompt has a flag
 
@@ -91,23 +97,67 @@ so `npm create kei-game` works either way.
 
 ## 6. The item is bought with Kei, not with the game's currency
 
-The generated shop is one `kei.pay({ …, memo })` and one `kei.onPayment` handler,
-which is §6.7's headline flow and the shortest honest purchase in the SDK: the
-player signs the payment, the issuer signs the delivery, and the memo says what
-was ordered.
+The generated shop is one `kei.pay()` and one `kei.onPayment` handler, which is
+§6.7's headline flow and the shortest honest purchase in the SDK: the player
+signs the payment, the issuer signs the delivery, and neither can sign for the
+other.
 
-Charging in the game's own currency is the other obvious choice and it is
-strictly more code, because a token transfer carries no memo (decisions-m0 §4) —
-the intent has to be recorded first and matched to the arrival, which is what
-Button's shop does. The generated README says how to switch and why it costs more
-lines. Starting with the two-signature payment also puts the sub-cent
-micropayment — the thing a card processor cannot do at all — in the first thing a
-developer reads.
+Charging in the game's own currency is the other obvious choice, and it needs the
+same out-of-band correlation §6.1 below describes, plus a second asset to
+denominate the price in. The generated README says how to switch. Starting with
+the two-signature Kei payment also puts the sub-cent micropayment — the thing a
+card processor cannot do at all — in the first thing a developer reads.
 
 Clicks are paid by `commit` rather than `mint`, even though the batch is always
 one player. Minting per player makes the issuer's chain a global write lock
 (SPEC §5.5), and the point of writing it this way in a scaffold is that the code
 does not change when there are a thousand claimants instead of one.
+
+## 6.1 The purchase is correlated by hash, out of band
+
+**Changed: this shop was written against `kei.pay({ memo })`, which no longer
+exists.**
+
+decisions-m2 §17 settled that a Kei send has no wire field for a memo and that
+the SDK refuses one up front rather than building a block the node would silently
+strip it from. That closed a real hole and it broke this scaffold: the generated
+client passed `memo: LANTERN_MEMO`, the generated server matched on it, and the
+first thing a developer bought threw `no-memo-yet`. Nothing in the harness
+noticed, which is §8 below.
+
+What replaces it is the correlator the SDK's own error names. `kei.pay()` returns
+the hash of the block the player just signed. That hash identifies one payment
+and nothing else, and at the moment of paying the player is the only party
+holding it. So the browser posts `{ address, hash }` to `/game/lantern` after
+paying, and the server delivers only if it has watched that exact payment arrive,
+from that address, for at least the price.
+
+Three properties are worth stating, because they are what makes this honest
+rather than a memo with extra steps:
+
+- **It is a claim only the payer can make.** A memo was a string anyone could
+  copy into their own payment; a hash is evidence of a specific signed block.
+- **It is retryable and it is exactly once.** Deliveries are filed under the
+  hash, so a lost response, a second tab, or a refresh gets the first answer back
+  instead of a second lantern. The player can recover the hash from their own
+  account history, which is why the client prints it when the post fails.
+- **Money first, order second.** The payment is final before the game hears about
+  it. If the browser dies in between, nothing is lost that a retry cannot fix,
+  and the game never holds money for a thing it did not deliver — the one case it
+  cannot deliver (the player already owns a lantern) refunds.
+
+The cost is an HTTP round trip the memo version did not need, and a server that
+has to remember something. Both are real; neither is avoidable while a Kei send
+has nowhere to put an intent. M4 may give memos a wire representation, and if it
+does, this stays as it is: the hash is exact where a memo would only ever have
+narrowed a guess.
+
+The one piece of plumbing worth flagging is that `onPayment` reports the *receive*
+block this account wrote, not the send the payer holds — a receive names the send
+it collects in its `link`, so the server reads that back with `blockInfo` to file
+the payment under the name the player knows it by. That is the SDK's shape, not
+the game's, and it is the one line of this scaffold that reaches past `Kei` into
+`kei.client.node`.
 
 ## 7. A deploy pointed at testnet is refused, not warned
 
@@ -144,6 +194,39 @@ refusal says move to mainnet, and `no-mainnet` says when mainnet arrives and wha
 to do until then. Pointing at a network that is not open is uncomfortable and it
 is the honest state of the project; the alternative is a guard that says nothing
 and lets the shipping happen.
+
+## 8. The generated game is run, not just parsed
+
+**New: `test/purchase.test.ts`.**
+
+`test/scaffold.test.ts` reads every file the harness emits, parses the TypeScript,
+and checks that nothing points back at the harness. All of that passed on the day
+the shop stopped working, because a call that throws at runtime parses perfectly
+and `templates/` is not in any `tsconfig` — the generated project type-checks in
+the developer's directory, which is exactly one step too late.
+
+So the harness now writes the project out, imports both halves of it, puts an
+HTTP server between them, and buys the lantern: clicks are banked, the payment is
+made, the hash is posted, the item arrives, and the click rate doubles. The same
+file covers the rules that make hash correlation safe — one payment buys one
+lantern however many times it is posted, somebody else's hash buys nothing, and a
+hash nobody paid is refused rather than guessed at.
+
+It writes into `packages/create-kei-game/.generated/` rather than a temp
+directory, because the generated code has to resolve `kei-transaction` the way a
+real project does: by walking up to a `node_modules` that has it. Here that is
+the workspace link, so the emitted code is exercised against the SDK in this tree
+rather than against whatever is on npm. `kei-transaction` is a devDependency of
+the harness for that reason and ships in nothing.
+
+Two gaps it does not close, recorded rather than hidden. The generated
+`server/main.ts` cannot be imported, because it bundles the Babylon.js client at
+startup and that dependency belongs to the generated project; its `/game/*`
+routes are mirrored in the test and a last assertion fails if the two stop
+agreeing. And the generated sources are still not type-checked anywhere — running
+them catches what they do, not what they claim. Type-checking the emitted project
+needs Babylon in this tree, which is a heavier trade than it looks and is M10's to
+make.
 
 ## What is left of M9
 

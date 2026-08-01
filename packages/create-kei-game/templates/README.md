@@ -44,6 +44,14 @@ money — which also means it cannot lose it.
 signs the delivery. There is no `charge(player, …)` in this SDK and there never
 will be: a game cannot sign for a wallet it does not have the key to.
 
+**A payment is matched by its hash, not by a memo.** A Kei send has no field to
+say what it was for, so the browser pays, gets the hash back from `kei.pay()`,
+and posts it to `/game/lantern`. The server delivers only for a payment it
+watched arrive under that exact hash, from that exact wallet — and only once,
+however many times it is asked. That last part is what makes a lost tab or a
+double-click harmless: the hash is in the player's own account history, and
+posting it again returns the first answer rather than buying a second lantern.
+
 **Clicks are paid by a commit, not a mint.** One block from your issuer
 underwrites a claim that each player writes from their own account, in parallel.
 With one player that is a batch of one and the code is identical — which is the
@@ -66,8 +74,9 @@ can hold or trade them whether or not this game is running.
 
 **Charge in your own currency instead of Kei.** The lantern is bought with Kei,
 because a fraction of a cent is the demo. To charge in __CURRENCY_SYMBOL__
-instead, take a token transfer rather than a payment — token transfers carry no
-memo, so record the order first and match it to the arrival.
+instead, take a token transfer rather than a payment. The correlation does not
+change: the payer still sends you the hash of what they signed, and you still
+match it against what arrived.
 
 **Replace the renderer.** `src/world.ts` is Babylon.js and nothing else, and the
 SDK is not tied to it. Swap in Three.js, PlayCanvas, or a flat 2D canvas: keep

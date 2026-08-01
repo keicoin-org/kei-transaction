@@ -268,11 +268,17 @@ mock node to develop against — and exits. It has no dependencies, and nothing 
 generates depends on it. It lives here because it emits code against this API and
 has to move when this API moves; it versions with the tree for the same reason.
 
+That last part is enforced rather than intended: `bun test` writes the project
+out, imports both halves of it, and buys the item against the SDK in this tree.
+The generated shop is the `pay()` flow above end to end — pay, then hand the
+game the hash of what you signed — and the emitted code breaks here rather than
+in somebody's new project.
+
 ## Development
 
 ```sh
 bun install
-bun test          # 173 tests
+bun test          # 193 tests
 bun run build     # tsc --build, emits dist/ and .d.ts across the workspace
 ```
 

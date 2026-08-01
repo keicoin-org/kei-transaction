@@ -47,6 +47,7 @@
     "access": "public"
   },
   "devDependencies": {
-    "@keicoin/core": "^0.1.0"
+    "@keicoin/core": "^0.1.0",
+    "kei-transaction": "^0.1.0"
   }
 }
