@@ -17,7 +17,8 @@ await kei.send('kei_3abc...', 0.001)   // sub-cent, instant, feeless
 > **Status: M3 testnet.** `Kei.start()` uses a real node at
 > `https://testnet.keicoin.org/rpc`; `Kei.mock()` remains available for tests.
 > This is one best-effort node with weak consensus, no uptime promise, and no
-> monetary value. See
+> monetary value: a dev-network chain whose keys are published, so anyone can
+> fund or reset it and it may be rebuilt without notice. See
 > [Where this is](#where-this-is).
 
 ---
@@ -223,7 +224,13 @@ serves [`docs/rpc.md`](docs/rpc.md) as a plain `Request → Response`, and the w
 economy — issue, top-up, mint, transfer, item, commit, parallel claims — runs
 between two clients that share nothing but a URL. **M2 changes what is behind that
 URL and nothing above it.** M3 made that swap: the same suites now pass against
-the native node, and `npm run test:m3-live` proves a public faucet-to-payment loop.
+the public node with `KEI_NODE_URL` as the only switch, and `npm run test:m3-live`
+runs SPEC §6.2's no-argument `Kei.start()` against it, faucet to payment.
+
+Read that precisely. Issue, top-up, mint, transfer and item all run against the
+node today; **`commit` and `claim` do not** — they are M4, they stay covered
+against the mock, and they are deliberately not in the suite that gates the
+public endpoint.
 
 Nothing here holds value, and until the validator set is meaningfully
 distributed, nothing should.
