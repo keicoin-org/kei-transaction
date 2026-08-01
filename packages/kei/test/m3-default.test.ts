@@ -7,7 +7,7 @@ describe('M3 default transport', () => {
     expect(live.network).toBe('testnet')
     expect(live.client.node).toBeInstanceOf(HttpNode)
     expect((live.client.node as unknown as { url: string }).url).toBe(
-      'https://rpc.testnet.keicoin.org/rpc',
+      'https://testnet.keicoin.org/rpc',
     )
     live.close()
 

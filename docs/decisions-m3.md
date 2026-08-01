@@ -1,7 +1,7 @@
 # M3 — the transport swap
 
 M3 changes the default behind `Kei.start()` from a private `MockNode` to
-`HttpNode` at `https://rpc.testnet.keicoin.org/rpc`. The public methods, types,
+`HttpNode` at `https://testnet.keicoin.org/rpc`. The public methods, types,
 amounts, signing boundary, and wire contract do not move. `Kei.mock()` and
 `network: 'mock'` remain explicit, hermetic choices for tests and offline work.
 

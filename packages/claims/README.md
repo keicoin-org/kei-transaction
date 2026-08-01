@@ -35,7 +35,7 @@ distinct drops.
 ## Status
 
 **M3 of eleven.** The public API now uses a real node at
-`https://rpc.testnet.keicoin.org/rpc`; `MockNode` remains the hermetic reference
+`https://testnet.keicoin.org/rpc`; `MockNode` remains the hermetic reference
 implementation. The testnet is one best-effort node with weak consensus and
 **nothing there holds value.**
 

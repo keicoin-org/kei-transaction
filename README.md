@@ -15,7 +15,7 @@ await kei.send('kei_3abc...', 0.001)   // sub-cent, instant, feeless
 ```
 
 > **Status: M3 testnet.** `Kei.start()` uses a real node at
-> `https://rpc.testnet.keicoin.org/rpc`; `Kei.mock()` remains available for tests.
+> `https://testnet.keicoin.org/rpc`; `Kei.mock()` remains available for tests.
 > This is one best-effort node with weak consensus, no uptime promise, and no
 > monetary value. See
 > [Where this is](#where-this-is).

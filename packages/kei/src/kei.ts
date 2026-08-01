@@ -50,7 +50,7 @@ import { createWallet, type WalletApi } from '@keicoin/wallet'
 import { assertServerOnly } from './environment.js'
 import { defaultSeedStore, environmentSeed, seedStoreKey, type SeedStore } from './storage.js'
 
-const DEFAULT_TESTNET_NODE_URL = 'https://rpc.testnet.keicoin.org/rpc'
+const DEFAULT_TESTNET_NODE_URL = 'https://testnet.keicoin.org/rpc'
 
 export interface StartOptions {
   /**
