@@ -162,8 +162,20 @@ export async function startWorkServer(
       return send(401, { error: 'unauthorized' })
     }
     const chunks: Uint8Array[] = []
-    request.on('data', (chunk: Uint8Array) => chunks.push(chunk))
+    let size = 0
+    let rejected = false
+    request.on('data', (chunk: Uint8Array) => {
+      if (rejected) return
+      size += chunk.byteLength
+      if (size > 8_192) {
+        rejected = true
+        send(413, { error: 'request body is too large' })
+        return
+      }
+      chunks.push(chunk)
+    })
     request.on('end', () => {
+      if (rejected) return
       void (async () => {
         try {
           const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {

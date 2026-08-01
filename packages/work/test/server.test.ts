@@ -13,4 +13,10 @@ describe('work HTTP server', () => {
     const root = randomSeed()
     expect(await provider.generate(root, 'C')).toMatch(/^[0-9a-f]{16}$/i)
   })
+
+  test('rejects unauthenticated callers when a token is configured', async () => {
+    const node = await MockNode.create()
+    running = await startWorkServer(node, { token: 'test-secret' })
+    expect((await fetch(running.url, { method: 'POST', body: '{}' })).status).toBe(401)
+  })
 })
