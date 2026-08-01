@@ -204,9 +204,11 @@ describe('purchases', () => {
   test('two signed halves: player pays, issuer delivers (SPEC §6.3)', async () => {
     const gems = await game.token.issue({ name: 'Gems', symbol: 'GEM', decimals: 0 })
 
+    // A Kei payment carries no memo until M4 (decisions-m2.md §17) — the
+    // issuer correlates this purchase by the returned hash instead of by a
+    // memo string, passed out of band the way a real order flow would.
     const delivered = new Promise<void>((resolve) => {
-      game.onPayment(async ({ from, amount, memo }) => {
-        expect(memo).toBe('Sword of Testing')
+      game.onPayment(async ({ from, amount }) => {
         if (amount >= 0.05) {
           await gems.mint(from, 100)
           resolve()
@@ -215,12 +217,19 @@ describe('purchases', () => {
     })
 
     await player.faucet(1)
-    const ok = await player.pay({ to: game.address, amount: 0.05, memo: 'Sword of Testing' })
+    const ok = await player.pay({ to: game.address, amount: 0.05 })
     expect(ok.hash).toMatch(/^[0-9A-F]{64}$/)
 
     await delivered
     await player.sync()
     expect(await gems.balanceOf(player.address)).toBe(100)
+  })
+
+  test('a memo on a Kei payment is refused, not silently dropped (decisions-m2.md §17)', async () => {
+    await player.faucet(1)
+    await expect(player.pay({ to: game.address, amount: 0.05, memo: 'Sword of Testing' })).rejects.toThrow(
+      /no wire representation until M4/,
+    )
   })
 
   test('acceptTopUps mints at the declared rate', async () => {

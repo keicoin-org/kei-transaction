@@ -450,6 +450,18 @@ export class MockLedger {
             'Reserve Kei can only move through a passed on-chain vote (SPEC §5.7). Nothing moves without one, and the voting mechanism is not part of M0.',
           )
         }
+        if (body.memo !== undefined) {
+          // decisions-m2.md §17: a state block has no field for a memo, and
+          // the real risk is not rejection — it is silent acceptance. The
+          // node's JSON deserializer reads named fields and ignores the rest,
+          // so an unguarded ledger would take this block, drop the memo, and
+          // never say so. Refuse it here instead, the same as client.ts does
+          // before ever building the block.
+          fail(
+            'no-memo-yet',
+            'A memo on a Kei send has no wire representation until M4 (decisions-m2.md §17) — client.send() should have refused this before it reached the ledger.',
+          )
+        }
         if (!isHex(body.link, 32)) {
           fail('bad-link', 'A send block\'s link is the destination public key, 64 hex characters.')
         }
@@ -463,7 +475,6 @@ export class MockLedger {
           to: addressFromPublicKey(body.link),
           asset: KEI_ASSET,
           amount: amount.toString(),
-          ...(body.memo === undefined ? {} : { memo: body.memo }),
         })
         return
       }

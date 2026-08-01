@@ -60,13 +60,17 @@ A purchase is therefore always **two signed transactions**. There is no
 
 ```js
 // Player
-const ok = await kei.pay({ to: gameAddress, amount: 0.05, memo: 'Sword of Testing' })
+const ok = await kei.pay({ to: gameAddress, amount: 0.05 })
 
 // Game server
 game.onPayment(async ({ from, amount }) => {
   if (amount >= 0.05) await gems.mint(from, 100)
 })
 ```
+
+> A memo isn't available on `pay()` yet — a Kei payment has no wire field for
+> one until M4. Correlate a purchase by `ok.hash` instead of a memo string in
+> the meantime; it's exact where a memo would only have narrowed a guess.
 
 ## A currency in one call
 

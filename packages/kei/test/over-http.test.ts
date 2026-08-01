@@ -48,8 +48,10 @@ describe('an issuer and a player who share only a URL', () => {
         resolve()
       })
     })
+    // No memo on the Kei leg — decisions-m2.md §17, deferred to M4. The two
+    // sides correlate by nothing but the payment landing, same as the chain.
     await player.faucet(1)
-    await player.pay({ to: game.address, amount: 0.05, memo: 'starter pack' })
+    await player.pay({ to: game.address, amount: 0.05 })
     await paid
 
     // Minted coins arrive receivable, like everything else (SPEC §5.6.3). The

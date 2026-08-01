@@ -175,6 +175,17 @@ export class KeiClient {
     if (to === this.address) {
       fail('self-send', 'That is this wallet\'s own address. Send to somebody else\'s address.')
     }
+    if (memo !== undefined) {
+      // decisions-m2.md §17: a Kei send has no field to carry a memo, and the
+      // SDK refuses the same way it refuses commit/commit_close/claim — up
+      // front, rather than building a block the node would reject or, worse,
+      // silently strip the memo from. Correlate the payment by the hash
+      // returned here instead, passed out of band to the recipient.
+      fail(
+        'no-memo-yet',
+        'kei.pay({ memo }) is not available yet — a memo on a Kei payment has no wire representation until M4. Correlate the payment by its hash instead: the hash this call returns is exact, where a memo would only have narrowed an amount/timing guess.',
+      )
+    }
 
     const { hash } = await this.submit((draft) => {
       if (draft.balance < raw) {
@@ -191,13 +202,12 @@ export class KeiClient {
         representative: draft.representative,
         balance: (draft.balance - raw).toString(),
         link: publicKeyFromAddress(to),
-        ...(memo === undefined ? {} : { memo }),
       }
     })
 
-    const sent = { to, amount: fromRaw(raw, KEI_DECIMALS), hash, ...(memo === undefined ? {} : { memo }) }
+    const sent = { to, amount: fromRaw(raw, KEI_DECIMALS), hash }
     this.emitter.emit('sent', sent)
-    return { hash, amount: sent.amount, to, ...(memo === undefined ? {} : { memo }) }
+    return { hash, amount: sent.amount, to }
   }
 
   /** Testnet self-funding, so an agent needs no human step (SPEC §12). */
