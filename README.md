@@ -60,16 +60,25 @@ A purchase is therefore always **two signed transactions**. There is no
 
 ```js
 // Player
-const ok = await kei.pay({ to: gameAddress, amount: 0.05 })
+const order = await orders.create({ sku: 'starter-pack' })
+const receipt = await kei.pay({ to: gameAddress, amount: 0.05 })
+await orders.attachPayment(order.id, receipt.hash)
 
-// Game server
-game.onPayment(async ({ from, amount }) => {
-  if (amount >= 0.05) await gems.mint(from, 100)
+// Game server: onPayment.hash is the receive hash, not receipt.hash.
+game.onPayment(async ({ from, amount, hash: receiveHash }) => {
+  const receive = await game.client.node.blockInfo(receiveHash)
+  if (!receive || receive.type !== 'state' || !['open', 'receive'].includes(receive.subtype)) return
+  await payments.record({ sendHash: receive.link, receiveHash, from, amount })
+  await reconcile(receive.link)
 })
 ```
 
-A Kei payment has no memo field until M4. Pass `ok.hash` alongside the order
-instead; the SDK rejects `pay({ memo })` rather than silently dropping it.
+A Kei payment has no memo field until M4. The SDK rejects `pay({ memo })` rather
+than silently dropping it. `pay()` returns the player's send-block hash;
+`onPayment.hash` is the game's receive-block hash, and that receive block's
+`link` is the send hash. Persist orders and confirmed payments independently by
+send hash, then run the same atomic, idempotent reconciliation after either
+write. A payment can confirm before the browser attaches it to an order.
 
 ## A currency in one call
 
