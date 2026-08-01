@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/kei-coin-256.png" width="168" alt="The Kei coin: an owl pushing a boulder uphill between two olive branches, reading UNUS KEI — one boulder — above a lyre marked with the Roman numeral one.">
+</p>
+
 # kei-transaction
 
 Real currencies and items for browser games. One install, no payment
