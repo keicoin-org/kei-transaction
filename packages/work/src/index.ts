@@ -6,6 +6,11 @@
  * package is the client side of that: a local generator for development, a work
  * server client for production, and precompute so the next block's work is
  * already in hand before the player asks for it.
+ *
+ * Everything here runs in a browser, because `kei-transaction` re-exports it and
+ * a game bundles that. The listener that serves `workRpcHandler` needs
+ * `node:http`, which has no browser polyfill, so it lives one import away in
+ * `@keicoin/work/server`.
  */
 
 import type { KeiNode, WorkProvider, WorkTier } from '@keicoin/core'
@@ -130,4 +135,64 @@ export function createWorkProvider(node: KeiNode, options: WorkOptions = {}): Wo
     fallback: local,
     ...(options.fetch ? { fetch: options.fetch } : {}),
   })
+}
+
+/**
+ * A `work_generate` request is one action, a 64-character hash and a tier. Ten
+ * times that is already something other than a client, so it stops being read.
+ */
+export const MAX_WORK_REQUEST_BYTES = 8_192
+
+export interface WorkRpcOptions {
+  /** Where the work comes from. `startWorkServer` passes a `LocalWorkProvider`. */
+  provider: WorkProvider
+  /** Optional bearer token. Omit for a private/local network. */
+  token?: string
+}
+
+/**
+ * The `work_generate` endpoint, as a plain `Request → Response` handler.
+ *
+ * Deliberately not a server, for the same reason `mockRpcHandler` is not one:
+ * the moment this file listens it needs `node:http`, and `@keicoin/work` is
+ * reachable from a game's browser bundle. Pass it to `Bun.serve({ fetch })`, to
+ * a Cloudflare Worker, or to `startWorkServer` in `@keicoin/work/server`, which
+ * is the `node:http` adapter.
+ */
+export function workRpcHandler(options: WorkRpcOptions): (request: Request) => Promise<Response> {
+  const { provider, token } = options
+  const headers = { 'content-type': 'application/json' }
+  const send = (status: number, body: object): Response =>
+    new Response(JSON.stringify(body), { status, headers })
+
+  return async (request: Request): Promise<Response> => {
+    if (request.method !== 'POST') return send(405, { error: 'POST required' })
+    if (token && request.headers.get('authorization') !== `Bearer ${token}`) {
+      return send(401, { error: 'unauthorized' })
+    }
+
+    let body: { action?: string; hash?: string; tier?: WorkTier }
+    try {
+      const raw = await request.arrayBuffer()
+      if (raw.byteLength > MAX_WORK_REQUEST_BYTES) return send(413, { error: 'request body is too large' })
+      body = JSON.parse(new TextDecoder().decode(raw))
+    } catch {
+      return send(400, { error: 'invalid JSON' })
+    }
+
+    if (body.action !== 'work_generate') return send(400, { error: 'unknown action' })
+    if (!/^[0-9a-fA-F]{64}$/.test(body.hash ?? '')) return send(400, { error: 'hash must be 64 hex characters' })
+    if (body.tier !== 'A' && body.tier !== 'B' && body.tier !== 'C') {
+      return send(400, { error: 'tier must be A, B, or C' })
+    }
+
+    try {
+      return send(200, { work: await provider.generate(body.hash!, body.tier) })
+    } catch (error) {
+      // The request was fine; this server could not answer it — usually because
+      // the node it asks for thresholds is down. Saying 400 here would send the
+      // caller looking at their own request.
+      return send(503, { error: `could not generate work: ${(error as Error)?.message ?? String(error)}` })
+    }
+  }
 }
