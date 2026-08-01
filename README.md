@@ -200,6 +200,31 @@ Not enough Kei — balance is 0.4, tried to send 1.2.
 
 `AGENTS.md` and `llms.txt` ship at M9.
 
+## Shipping
+
+Testnet is where you build, and the wrong place to finish. Its Kei is worth
+nothing and that chain can be reset without notice, so a game that reaches real
+players on testnet has an economy with an expiry date nobody chose (SPEC §5.9).
+
+So `Kei.server()` refuses to start against testnet from a host that looks like a
+deployment — `NODE_ENV=production`, or a platform variable nobody sets on
+purpose like `FLY_APP_NAME`, `RAILWAY_ENVIRONMENT`, or `K_SERVICE` — and the
+refusal names the move:
+
+```
+This looks like a deployment (NODE_ENV=production) and your game is pointed at
+testnet. […] move to mainnet before real players arrive: network: 'mainnet'.
+```
+
+Mainnet is not open yet, so today that refusal means *not yet*: keep the game in
+front of testers who know the money is play money. It opens when enough
+independent validators run the chain that value is safe on it (SPEC §15).
+
+Two things it deliberately does not block. A mock, deployed or not, because a
+mock was never pretending to be money. And a public testnet demo you meant to
+run: `KEI_ALLOW_TESTNET=1`, set in the deploy's environment rather than in a
+commit, because that is where the decision is actually made.
+
 ## Where this is
 
 M3 of eleven. What exists:
@@ -212,12 +237,14 @@ M3 of eleven. What exists:
 | **The demo** | [Button](../button) — playable single-player, every number on the chain and none in a database |
 | **The market** | M5 — `@keicoin/market` does not exist yet |
 | **The wallet panel** | M6 — the headless summary is here, `WalletPanel.mount()` is not |
+| **npm** | All seven have a `0.1.0`, but public `create-kei-game@0.1.0` predates the safe purchase/restart work in PR #6 and is stale; the coordinated `0.1.1` release is tracked in [#12](https://github.com/keicoin-org/kei-transaction/issues/12) |
+| **The harness** | The source in this tree generates and runs the hash-correlated, restart-safe purchase path. Do not use the public `0.1.0` scaffold for durable payment settlement |
 
 The mock is not a stub of the API: it enforces one chain per account, derived
 asset ids, receivable arrivals, work tiers, the issuance burn, circulating-supply
 caps, transfer policy, the (account, root) double-claim index, and the genesis
-allocation — so the SDK is written against real semantics and M3 swaps the
-transport without the API moving.
+allocation. The mock keeps local development cheap; the native node supplies the
+production transport, and M3 deploys it without moving the API.
 
 M1 proved that across a process boundary rather than asserting it: `mockRpcHandler`
 serves [`docs/rpc.md`](docs/rpc.md) as a plain `Request → Response`, and the whole
@@ -251,11 +278,24 @@ for people who care about bundle size, not as a puzzle everyone must solve.
 
 `@keicoin/core` depends on nothing else in the tree.
 
+One package in the tree is not part of the SDK: **`create-kei-game`** is the
+harness behind `npm create kei-game` (SPEC §11.3). It writes a working
+single-player game — wallet, currency, purchasable item, Babylon.js scene, and a
+mock node to develop against — and exits. It has no dependencies, and nothing it
+generates depends on it. It lives here because it emits code against this API and
+has to move when this API moves; it versions with the tree for the same reason.
+
+That last part is enforced rather than intended: `bun test` writes the project
+out, imports both halves of it, and buys the item against the SDK in this tree.
+The generated shop is the `pay()` flow above end to end — pay, then hand the
+game the hash of what you signed — and the emitted code breaks here rather than
+in somebody's new project.
+
 ## Development
 
 ```sh
 bun install
-bun test          # 113 tests
+bun test          # 211 tests
 bun run build     # tsc --build, emits dist/ and .d.ts across the workspace
 ```
 

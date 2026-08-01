@@ -200,6 +200,31 @@ Not enough Kei — balance is 0.4, tried to send 1.2.
 
 `AGENTS.md` and `llms.txt` ship at M9.
 
+## Shipping
+
+Testnet is where you build, and the wrong place to finish. Its Kei is worth
+nothing and that chain can be reset without notice, so a game that reaches real
+players on testnet has an economy with an expiry date nobody chose (SPEC §5.9).
+
+So `Kei.server()` refuses to start against testnet from a host that looks like a
+deployment — `NODE_ENV=production`, or a platform variable nobody sets on
+purpose like `FLY_APP_NAME`, `RAILWAY_ENVIRONMENT`, or `K_SERVICE` — and the
+refusal names the move:
+
+```
+This looks like a deployment (NODE_ENV=production) and your game is pointed at
+testnet. […] move to mainnet before real players arrive: network: 'mainnet'.
+```
+
+Mainnet is not open yet, so today that refusal means *not yet*: keep the game in
+front of testers who know the money is play money. It opens when enough
+independent validators run the chain that value is safe on it (SPEC §15).
+
+Two things it deliberately does not block. A mock, deployed or not, because a
+mock was never pretending to be money. And a public testnet demo you meant to
+run: `KEI_ALLOW_TESTNET=1`, set in the deploy's environment rather than in a
+commit, because that is where the decision is actually made.
+
 ## Where this is
 
 M3 of eleven. What exists:
@@ -216,8 +241,8 @@ M3 of eleven. What exists:
 The mock is not a stub of the API: it enforces one chain per account, derived
 asset ids, receivable arrivals, work tiers, the issuance burn, circulating-supply
 caps, transfer policy, the (account, root) double-claim index, and the genesis
-allocation — so the SDK is written against real semantics and M3 swaps the
-transport without the API moving.
+allocation. The mock keeps local development cheap; the native node supplies the
+production transport, and M3 deploys it without moving the API.
 
 M1 proved that across a process boundary rather than asserting it: `mockRpcHandler`
 serves [`docs/rpc.md`](https://github.com/keicoin-org/kei-transaction/blob/master/docs/rpc.md) as a plain `Request → Response`, and the whole
@@ -255,7 +280,7 @@ for people who care about bundle size, not as a puzzle everyone must solve.
 
 ```sh
 bun install
-bun test          # 113 tests
+bun test          # 211 tests
 bun run build     # tsc --build, emits dist/ and .d.ts across the workspace
 ```
 
