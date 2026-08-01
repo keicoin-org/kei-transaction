@@ -14,6 +14,8 @@
  *   - holdings and holders indexed both ways, zero entries deleted (§7)
  *   - claims keyed (account, root), one leaf per account per root (§5.5)
  *   - reserve accounts name a null representative; weight is Kei-only (§5.6.2, §5.7)
+ *   - a swap locks only the offerer's own asset, and accept and cancel race for
+ *     that one locked entry across two chains (§9.2)
  */
 
 import { NULL_REPRESENTATIVE, addressFromPublicKey, assertAddress, publicKeyFromAddress } from '../address.js'
@@ -44,6 +46,8 @@ import type {
   NetworkName,
   Notification,
   Receivable,
+  SwapOffer,
+  SwapState,
   Unsubscribe,
 } from '../node.js'
 import { MOCK_THRESHOLDS, generateWork, meetsThreshold, workRoot } from '../work.js'
@@ -92,6 +96,35 @@ interface StoredReceivable extends Receivable {
 }
 
 /**
+ * A locked entry, keyed by the hash of the `swap_offer` block that created it
+ * (SPEC §9.2).
+ *
+ * Consumed entries are kept rather than deleted, because the interesting
+ * question after a swap is *which* block won the race, and an absent entry
+ * cannot answer it. It is also the market's read model: a settled offer is a
+ * trade, and a trade is what price history is made of (§9.1).
+ */
+interface LockRecord {
+  offer: string
+  owner: string
+  asset: AssetId
+  amount: bigint
+  wantAsset: AssetId
+  wantAmount: bigint
+  counterparty: string | null
+  expiresAt: number | null
+  state: SwapState
+  settledBy: string | null
+  acceptedBy: string | null
+  height: number
+  seenAt: number
+  settledAt: number | null
+}
+
+/** Asset operations that may move Kei. Everything else carries it unchanged. */
+const KEI_MOVING_OPS: ReadonlySet<string> = new Set(['swap_offer', 'swap_accept', 'swap_cancel'])
+
+/**
  * Genesis allocation (SPEC §5.7). The seeds are fixed and public because this is
  * a mock: they exist so tests and the demo have a funded faucet, and M2 replaces
  * them with a real genesis block.
@@ -121,6 +154,12 @@ export interface LedgerOptions {
   thresholds?: Record<WorkTier, string>
   /** Default faucet payout, in Kei. */
   faucetAmount?: number
+  /**
+   * The node's own wall clock, used only for the node-local timestamps on the
+   * market read model (SPEC §9.1). Nothing in consensus reads it — this chain
+   * has no clock — so a test may replace it without changing a single hash.
+   */
+  now?: () => number
 }
 
 export class MockLedger {
@@ -153,16 +192,23 @@ export class MockLedger {
   /** Keyed (account, root) so a claim record prunes with its account (SPEC §5.5). */
   private readonly claimed = new Set<string>()
 
+  /** Locked entries, keyed by the offer block's hash (SPEC §9.2). */
+  private readonly locks = new Map<string, LockRecord>()
+  /** Offer hashes per offerer, in chain order — the only scan §9.1 allows. */
+  private readonly swapsByAccount = new Map<string, string[]>()
+
   private readonly listeners = new Map<string, Set<(event: Notification) => void>>()
 
   private readonly genesisKeys = new Map<GenesisRole, KeyPair>()
   private readonly reserveAccounts = new Set<string>()
   private readonly faucetAmount: bigint
+  private readonly now: () => number
 
   private constructor(options: LedgerOptions) {
     this.network = options.network ?? 'mock'
     this.thresholds = options.thresholds ?? MOCK_THRESHOLDS
     this.faucetAmount = BigInt(options.faucetAmount ?? 10) * 10n ** BigInt(KEI_DECIMALS)
+    this.now = options.now ?? Date.now
   }
 
   static async create(options: LedgerOptions = {}): Promise<MockLedger> {
@@ -356,6 +402,25 @@ export class MockLedger {
     return this.claimed.has(claimKey(address, root.toUpperCase()))
   }
 
+  swapOffer(hash: string): SwapOffer | null {
+    const lock = this.locks.get(String(hash).toUpperCase())
+    return lock ? offerFrom(lock) : null
+  }
+
+  /** One account's own offers, newest first — a bounded chain walk (SPEC §9.1). */
+  swapsOf(address: string, options: { limit?: number; state?: SwapState } = {}): SwapOffer[] {
+    const hashes = this.swapsByAccount.get(address) ?? []
+    const out: SwapOffer[] = []
+    for (let i = hashes.length - 1; i >= 0; i--) {
+      const lock = this.locks.get(hashes[i] as string)
+      if (!lock) continue
+      if (options.state !== undefined && lock.state !== options.state) continue
+      out.push(offerFrom(lock))
+      if (options.limit !== undefined && out.length >= options.limit) break
+    }
+    return out
+  }
+
   subscribe(address: string, listener: (event: Notification) => void): Unsubscribe {
     const set = this.listeners.get(address) ?? new Set()
     set.add(listener)
@@ -524,10 +589,14 @@ export class MockLedger {
           `The nth asset an account issues burns n Kei (SPEC §5.6.5). This is number ${ordinal}, so this block burns ${formatKei(burn)} and must leave a balance of ${previousBalance - burn}.`,
         )
       }
-    } else if (newBalance !== previousBalance) {
+    } else if (!KEI_MOVING_OPS.has(op.kind) && newBalance !== previousBalance) {
+      // Issuance burns Kei, and a swap leg moves it whenever Kei is one of the
+      // two assets being traded — locking it, paying it, or releasing it back.
+      // Those cases assert their own exact delta below; everything else carries
+      // the balance unchanged (SPEC §5.6.1).
       fail(
         'bad-asset-balance',
-        'An asset block must carry the account\'s Kei balance unchanged (SPEC §5.6.1). Only issuance changes it.',
+        'An asset block must carry the account\'s Kei balance unchanged (SPEC §5.6.1). Only issuance and a swap leg trading Kei itself change it.',
       )
     }
 
@@ -710,7 +779,240 @@ export class MockLedger {
         this.credit(body.account, asset, amount)
         return
       }
+
+      case 'swap_offer': {
+        const offered = this.swapAsset(op.asset, 'offered asset')
+        const wanted = this.swapAsset(op.wantAsset, 'wanted asset')
+        const amount = requirePositive(op.amount, 'offered amount')
+        const wantAmount = requirePositive(op.wantAmount, 'wanted amount')
+        const counterparty =
+          op.counterparty === undefined ? null : assertAddress(op.counterparty, 'counterparty')
+        if (counterparty === body.account) {
+          fail(
+            'self-swap',
+            'An offer cannot name its own author as the counterparty — trading an asset with yourself moves nothing. Leave counterparty out to let anyone accept.',
+          )
+        }
+        if (op.expiresAt !== undefined && (!Number.isSafeInteger(op.expiresAt) || op.expiresAt <= 0)) {
+          fail(
+            'bad-expiry',
+            `expiresAt is a wall-clock time in milliseconds since the epoch — got ${String(op.expiresAt)}. It is advisory and the ledger never acts on it (SPEC §9.3).`,
+          )
+        }
+        // Refuse now what could never settle. A policy that forbids the move is
+        // not a reason to lock somebody's asset and make them cancel it back.
+        this.requireSwappable(offered, body.account, counterparty, 'offered')
+        this.requireSwappable(wanted, body.account, counterparty, 'wanted')
+
+        if (offered === null) {
+          if (previousBalance < amount) {
+            fail(
+              'insufficient-kei',
+              `Not enough Kei to lock — balance is ${formatKei(previousBalance)}, and this offer locks ${formatKei(amount)}.`,
+            )
+          }
+          requireDelta(
+            previousBalance,
+            newBalance,
+            -amount,
+            `Offering ${formatKei(amount)} locks it out of the spendable balance`,
+          )
+        } else {
+          requireDelta(previousBalance, newBalance, 0n, 'An offer of an asset other than Kei moves no Kei')
+          // The self-lock (SPEC §9.2, problem 1): after this the sword is not in
+          // the offerer's spendable balance, so it cannot be offered twice.
+          this.debit(body.account, offered, amount)
+        }
+
+        this.locks.set(hash, {
+          offer: hash,
+          owner: body.account,
+          asset: offered?.id ?? KEI_ASSET,
+          amount,
+          wantAsset: wanted?.id ?? KEI_ASSET,
+          wantAmount,
+          counterparty,
+          expiresAt: op.expiresAt ?? null,
+          state: 'open',
+          settledBy: null,
+          acceptedBy: null,
+          height: (this.accounts.get(body.account)?.height ?? 0) + 1,
+          seenAt: this.now(),
+          settledAt: null,
+        })
+        const own = this.swapsByAccount.get(body.account) ?? []
+        own.push(hash)
+        this.swapsByAccount.set(body.account, own)
+        return
+      }
+
+      case 'swap_accept': {
+        const lock = this.requireLock(op.offer)
+        if (lock.owner === body.account) {
+          fail(
+            'self-accept',
+            `Offer ${lock.offer} is this account's own. Accepting it would trade an asset with itself and move nothing — cancel it instead with market.cancel().`,
+          )
+        }
+        this.requireOpenLock(lock, 'accepted')
+        if (lock.counterparty !== null && lock.counterparty !== body.account) {
+          fail(
+            'not-the-counterparty',
+            `Offer ${lock.offer} is reserved for ${lock.counterparty}, so ${body.account} cannot accept it (SPEC §9.2).`,
+          )
+        }
+        const offered = lock.asset === KEI_ASSET ? null : this.requireAsset(lock.asset)
+        const wanted = lock.wantAsset === KEI_ASSET ? null : this.requireAsset(lock.wantAsset)
+        // Both parties are known now, so the policy is checked against the real
+        // pair rather than the possible one.
+        if (offered) this.enforceTransferPolicy(offered, lock.owner, body.account)
+        if (wanted) this.enforceTransferPolicy(wanted, body.account, lock.owner)
+
+        if (wanted === null) {
+          if (previousBalance < lock.wantAmount) {
+            fail(
+              'insufficient-kei',
+              `Not enough Kei — balance is ${formatKei(previousBalance)}, and offer ${lock.offer} asks ${formatKei(lock.wantAmount)}.`,
+            )
+          }
+          requireDelta(
+            previousBalance,
+            newBalance,
+            -lock.wantAmount,
+            `Accepting offer ${lock.offer} pays ${formatKei(lock.wantAmount)}`,
+          )
+        } else {
+          requireDelta(previousBalance, newBalance, 0n, 'Accepting an offer that asks for an asset other than Kei moves no Kei')
+          this.debit(body.account, wanted, lock.wantAmount)
+        }
+
+        // Both legs, in one block, or neither: past this point nothing can fail.
+        // The payment is receivable on the offerer's chain, keyed by this block;
+        // the locked asset is receivable on the accepter's, keyed by the offer
+        // block that locked it. Two receivables, two distinct keys, both of them
+        // real block hashes.
+        this.createReceivable(hash, {
+          hash,
+          from: body.account,
+          to: lock.owner,
+          asset: lock.wantAsset,
+          amount: lock.wantAmount.toString(),
+        })
+        this.createReceivable(lock.offer, {
+          hash: lock.offer,
+          from: lock.owner,
+          to: body.account,
+          asset: lock.asset,
+          amount: lock.amount.toString(),
+        })
+        lock.state = 'accepted'
+        lock.acceptedBy = body.account
+        lock.settledBy = hash
+        lock.settledAt = this.now()
+        return
+      }
+
+      case 'swap_cancel': {
+        const lock = this.requireLock(op.offer)
+        if (lock.owner !== body.account) {
+          fail(
+            'not-your-offer',
+            `Offer ${lock.offer} was made by ${lock.owner}, and only its author can cancel it. Nobody else's asset is locked by it (SPEC §9.2).`,
+          )
+        }
+        this.requireOpenLock(lock, 'cancelled')
+
+        if (lock.asset === KEI_ASSET) {
+          requireDelta(
+            previousBalance,
+            newBalance,
+            lock.amount,
+            `Cancelling offer ${lock.offer} returns ${formatKei(lock.amount)} to the spendable balance`,
+          )
+        } else {
+          requireDelta(previousBalance, newBalance, 0n, 'Cancelling an offer of an asset other than Kei moves no Kei')
+          this.credit(body.account, this.requireAsset(lock.asset), lock.amount)
+        }
+        lock.state = 'cancelled'
+        lock.settledBy = hash
+        lock.settledAt = this.now()
+        return
+      }
     }
+  }
+
+  /** An asset id a swap leg names: an `AssetRecord`, or null for Kei itself. */
+  private swapAsset(asset: AssetId, label: string): AssetRecord | null {
+    const id = String(asset ?? '').toUpperCase()
+    if (id === '') fail('bad-swap', `A swap names an ${label} — Kei itself is ${KEI_ASSET}.`)
+    if (id === KEI_ASSET) return null
+    return this.requireAsset(id)
+  }
+
+  /**
+   * Whether a policy could ever let this asset settle a swap between these two
+   * (SPEC §5.4). The counterparty may be unknown, in which case an offer that
+   * only *some* counterparty could settle is refused: an open listing that
+   * nobody can take is a lock with no exit but a cancel.
+   */
+  private requireSwappable(
+    asset: AssetRecord | null,
+    offerer: string,
+    counterparty: string | null,
+    side: 'offered' | 'wanted',
+  ): void {
+    if (asset === null) return
+    switch (asset.transfer) {
+      case 'open':
+        return
+      case 'issuer-only':
+        if (offerer === asset.issuer || counterparty === asset.issuer) return
+        fail(
+          'transfer-not-permitted',
+          `${asset.symbol} is issuer-only: units may only move to or from ${asset.issuer} (SPEC §5.4), and this offer would settle between two other accounts. Name ${asset.issuer} as the counterparty, or trade something else.`,
+        )
+      case 'none':
+        fail(
+          'transfer-not-permitted',
+          `${asset.symbol} cannot be transferred at all — it is soulbound (SPEC §5.4), so it can never be the ${side} side of a swap. It can only be burned.`,
+        )
+    }
+  }
+
+  private requireLock(offer: string): LockRecord {
+    const lock = this.locks.get(String(offer ?? '').toUpperCase())
+    if (!lock) {
+      fail(
+        'no-such-offer',
+        `No offer with hash ${String(offer)} exists. An offer is a swap_offer block and its hash is its id — read it back with swap_info before referencing it.`,
+      )
+    }
+    return lock
+  }
+
+  /**
+   * The one new consensus rule in the swap design (SPEC §9.2, conflict 4): accept
+   * and cancel consume the same locked entry from *different chains*, so the
+   * conflict is keyed on the lock rather than on `previous`. Whichever arrives
+   * first takes it; the other is told plainly that it lost a race it is meant to
+   * lose sometimes, because §9.2 chose that over protocol machinery.
+   */
+  private requireOpenLock(lock: LockRecord, attempt: 'accepted' | 'cancelled'): void {
+    if (lock.state === 'open') return
+    if (lock.state === 'accepted') {
+      fail(
+        'offer-taken',
+        attempt === 'accepted'
+          ? `Offer ${lock.offer} was already accepted by ${String(lock.acceptedBy)} in block ${String(lock.settledBy)}. An offer settles exactly once, and nothing of yours moved — pick another listing.`
+          : `Offer ${lock.offer} was accepted by ${String(lock.acceptedBy)} in block ${String(lock.settledBy)} before this cancel reached the ledger, so there is nothing left to cancel. The payment is receivable on your chain.`,
+      )
+    }
+    fail(
+      'offer-cancelled',
+      attempt === 'accepted'
+        ? `Offer ${lock.offer} was cancelled by ${lock.owner} in block ${String(lock.settledBy)} before this accept reached the ledger. Nothing of yours moved. An offerer racing a cancel against an accept is allowed and expected (SPEC §9.2) — pick another listing and try again.`
+        : `Offer ${lock.offer} was already cancelled in block ${String(lock.settledBy)}, and its asset is back in this account's spendable balance.`,
+    )
   }
 
   private commitBlock(block: Block, body: BlockBody, hash: string, newBalance: bigint): void {
@@ -912,6 +1214,36 @@ function holderKey(asset: AssetId, account: string): string {
 
 function claimKey(account: string, root: string): string {
   return `${account}|${root}`
+}
+
+/** The Kei balance a block must carry, stated exactly rather than inferred. */
+function requireDelta(previous: bigint, next: bigint, delta: bigint, why: string): void {
+  const expected = previous + delta
+  if (next !== expected) {
+    fail(
+      'bad-asset-balance',
+      `${why}, so this block must leave a Kei balance of ${expected}, not ${next}.`,
+    )
+  }
+}
+
+function offerFrom(lock: LockRecord): SwapOffer {
+  return {
+    hash: lock.offer,
+    from: lock.owner,
+    asset: lock.asset,
+    amount: lock.amount.toString(),
+    wantAsset: lock.wantAsset,
+    wantAmount: lock.wantAmount.toString(),
+    counterparty: lock.counterparty,
+    expiresAt: lock.expiresAt,
+    state: lock.state,
+    settledBy: lock.settledBy,
+    acceptedBy: lock.acceptedBy,
+    height: lock.height,
+    seenAt: lock.seenAt,
+    settledAt: lock.settledAt,
+  }
 }
 
 function parseRaw(value: string, label: string): bigint {

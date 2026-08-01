@@ -43,6 +43,9 @@ export type {
   MintOp,
   StateBlockBody,
   StateSubtype,
+  SwapAcceptOp,
+  SwapCancelOp,
+  SwapOfferOp,
   SwapPolicy,
   TransferOp,
   TransferPolicy,
@@ -83,6 +86,8 @@ export type {
   NetworkName,
   Notification,
   Receivable,
+  SwapOffer,
+  SwapState,
   Unsubscribe,
 } from './node.js'
 

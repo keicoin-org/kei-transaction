@@ -44,6 +44,7 @@ import {
   type PlayerItemsApi,
   type PlayerToken,
 } from '@keicoin/tokens'
+import { createMarket, type MarketApi } from '@keicoin/market'
 import { createWorkProvider } from '@keicoin/work'
 import { createWallet, type WalletApi } from '@keicoin/wallet'
 
@@ -70,6 +71,12 @@ export interface StartOptions {
   autoReceive?: boolean
   /** Claim entitlements in the background as proofs arrive. Default true. */
   autoClaim?: boolean
+  /**
+   * Cancel this wallet's own expired offers in the background (SPEC §9.3).
+   * Default true — an expiry is advisory, so a cancel is the only thing that
+   * frees the lock and takes the listing off the ledger.
+   */
+  autoCancelExpired?: boolean
   /** A work server, so proof-of-work does not pause the game (SPEC §5.5). */
   workServer?: string
   storage?: SeedStore
@@ -127,14 +134,23 @@ export class Kei {
   readonly items: ItemsNamespace
   readonly claims: ClaimsApi
   readonly wallet: WalletApi
+  /** Offers, atomic settlement, and price history read from the chain (SPEC §9). */
+  readonly market: MarketApi
 
-  private constructor(client: KeiClient, options: { uploader?: IpfsUploader; autoClaim?: boolean }) {
+  private constructor(
+    client: KeiClient,
+    options: { uploader?: IpfsUploader; autoClaim?: boolean; autoCancelExpired?: boolean },
+  ) {
     this.client = client
     this.network = client.node.network
     this.role = client.role
 
     this.claims = createClaims(client, options.autoClaim === false ? { autoClaim: false } : {})
     this.wallet = createWallet(client, { claims: this.claims })
+    this.market = createMarket(
+      client,
+      options.autoCancelExpired === false ? { autoCancelExpired: false } : {},
+    )
 
     const get = (symbolOrId: string, issuer?: string): Promise<PlayerToken> =>
       readToken(client, symbolOrId, issuer)
@@ -208,6 +224,7 @@ export class Kei {
     const kei = new Kei(client, {
       ...(options.uploader === undefined ? {} : { uploader: options.uploader }),
       ...(options.autoClaim === undefined ? {} : { autoClaim: options.autoClaim }),
+      ...(options.autoCancelExpired === undefined ? {} : { autoCancelExpired: options.autoCancelExpired }),
     })
     await client.start(options.autoReceive === false ? { autoReceive: false } : {})
     return kei
@@ -312,6 +329,7 @@ export class Kei {
   }
 
   close(): void {
+    this.market.close()
     this.client.close()
   }
 }

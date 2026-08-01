@@ -17,6 +17,8 @@ import type {
   NetworkName,
   Notification,
   Receivable,
+  SwapOffer,
+  SwapState,
   Unsubscribe,
 } from '../node.js'
 import { MockLedger, type LedgerOptions } from './ledger.js'
@@ -84,6 +86,17 @@ export class MockNode implements KeiNode {
 
   async hasClaimed(address: string, root: string): Promise<boolean> {
     return this.ledger.hasClaimed(address, root)
+  }
+
+  async swapOffer(hash: string): Promise<SwapOffer | null> {
+    return this.ledger.swapOffer(hash)
+  }
+
+  async accountSwaps(
+    address: string,
+    options?: { limit?: number; state?: SwapState },
+  ): Promise<SwapOffer[]> {
+    return this.ledger.swapsOf(address, options ?? {})
   }
 
   subscribe(address: string, listener: (event: Notification) => void): Unsubscribe {

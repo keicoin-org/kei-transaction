@@ -9,6 +9,15 @@
  * `nano/lib/blocks.cpp`; it does not decide anything, and where the node has not
  * decided yet it says so rather than guessing (see `nodeLayoutGap`).
  *
+ * The three swap legs are the one exception, and it is a deliberate one:
+ * kei-node has reserved their op numbers (decisions-m2.md §18) but has not
+ * published their layout, so the layout below is **this SDK's proposal**, built
+ * from the §7 header the other eight ops already use. docs/decisions-m5.md §2
+ * states it as a proposal and says what changes if the node lands a different
+ * one. It is written down rather than deferred because a swap block that hashes
+ * under the local preamble is a block no node can ever accept, which is a worse
+ * answer than a proposal the node can correct in one function.
+ *
  * Field order, widths and endianness are the node's. Everything is big-endian
  * except the two length prefixes, which are little-endian — the one departure
  * from Nano's convention that §7 calls out.
@@ -25,7 +34,13 @@ import { bigintToBytes, concat, hexToBytes, isHex, utf8 } from './hex.js'
 const BLOCK_TYPE_STATE = 6
 const BLOCK_TYPE_ASSET = 7
 
-/** `nano::asset_op`. Five operations, and the order is consensus. */
+/**
+ * `nano::asset_op`. The order is consensus, because the op byte is hashed.
+ *
+ * 0-4 are M2's, 5-7 are M4's, and kei-node's `decisions-m2.md §18` reserved
+ * "8 upward for the §5.6.4 swap legs" — which that table lists as `swap_offer`,
+ * `swap_accept`, `swap_cancel`. M5 spends them in exactly that order.
+ */
 const ASSET_OP: Record<string, number> = {
   issue: 0,
   mint: 1,
@@ -35,7 +50,13 @@ const ASSET_OP: Record<string, number> = {
   commit: 5,
   commit_close: 6,
   claim: 7,
+  swap_offer: 8,
+  swap_accept: 9,
+  swap_cancel: 10,
 }
+
+/** No expiry, as the advisory `expires_at` field carries it (SPEC §9.3). */
+const NO_EXPIRY = 0n
 
 /** `nano::transfer_policy`. */
 const TRANSFER_POLICY: Record<string, number> = { open: 0, 'issuer-only': 1, none: 2 }
@@ -108,6 +129,19 @@ function u16le(value: number): Uint8Array {
 
 function u32be(value: number): Uint8Array {
   return bigintToBytes(BigInt(value), 4)
+}
+
+function u64be(value: bigint): Uint8Array {
+  return bigintToBytes(value, 8)
+}
+
+/** Milliseconds since the epoch as a uint64. Zero is "no expiry" (SPEC §9.3). */
+function timestampBytes(value: number | undefined, label: string): Uint8Array {
+  if (value === undefined) return u64be(NO_EXPIRY)
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    fail('bad-block', `${label} is milliseconds since the epoch, so it is a whole number above zero — got ${String(value)}.`)
+  }
+  return u64be(BigInt(value))
 }
 
 /** A length-prefixed payload string: `uint16` little-endian, then the UTF-8 bytes. */
@@ -227,6 +261,35 @@ function assetFields(
         link: hashBytes(op.root, 'root'),
         payload: concat(u8(op.proof.length), ...op.proof.map((hash) => hashBytes(hash, 'proof sibling'))),
       }
+    case 'swap_offer':
+      // The header's three op-dependent fields already describe the leg the
+      // offerer locks — asset, amount, and (in `link`) the counterparty this
+      // offer is reserved for. Only the wanted leg and the advisory expiry need
+      // a payload, and it is fixed-width: 32 + 16 + 8.
+      return {
+        op: code,
+        assetId: hashBytes(op.asset, 'offered asset id'),
+        amount: amountBytes(op.amount, 'offered amount'),
+        link: op.counterparty === undefined ? ZERO_32 : accountBytes(op.counterparty),
+        payload: concat(
+          hashBytes(op.wantAsset, 'wanted asset id'),
+          amountBytes(op.wantAmount, 'wanted amount'),
+          timestampBytes(op.expiresAt, 'expiresAt'),
+        ),
+      }
+    case 'swap_accept':
+    case 'swap_cancel':
+      // Both name an offer and nothing else. Which assets move, in what
+      // quantities, and to whom is the offer's business — the same reasoning
+      // that leaves `asset_receive`'s id zero (decisions-m2.md §10), and what
+      // makes it impossible for the two legs to disagree about the price.
+      return {
+        op: code,
+        assetId: ZERO_32,
+        amount: new Uint8Array(16),
+        link: hashBytes(op.offer, 'offer hash'),
+        payload: new Uint8Array(0),
+      }
     default:
       fail('bad-block', `"${(op as AssetOp).kind}" has no wire layout.`)
   }
@@ -284,7 +347,7 @@ export function nodeLayoutGap(body: BlockBody): string | null {
       : 'a memo on a state block — decisions-m2.md §8 carries memos on the asset block, and the §14 layout has no field for this one'
   }
   return ASSET_OP[body.op.kind] === undefined
-    ? `the ${body.op.kind} operation — SPEC §5.6.4, which lands with M4/M5 and is not in nano::asset_op yet`
+    ? `the ${body.op.kind} operation — SPEC §5.6.4, which is not in nano::asset_op yet`
     : null
 }
 

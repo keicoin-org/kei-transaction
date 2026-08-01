@@ -52,6 +52,27 @@ describe('HttpNode', () => {
           return { commit: { root: 'C'.repeat(64), issuer: 'kei_1', asset: 'B'.repeat(64), count: 2, total: '3', closed: false } }
         case 'claim_status':
           return { claimed: true }
+        case 'swap_info':
+          return {
+            offer: {
+              hash: 'E'.repeat(64),
+              from: 'kei_1',
+              asset: 'B'.repeat(64),
+              amount: '1',
+              wantAsset: '0'.repeat(64),
+              wantAmount: '5000',
+              counterparty: null,
+              expiresAt: null,
+              state: 'open',
+              settledBy: null,
+              acceptedBy: null,
+              height: 4,
+              seenAt: 1_700_000_000_000,
+              settledAt: null,
+            },
+          }
+        case 'account_swaps':
+          return { offers: [] }
         case 'work_thresholds':
           return { thresholds: { A: '1', B: '2', C: '3' } }
         default:
@@ -64,6 +85,8 @@ describe('HttpNode', () => {
     expect(await node.holdings('kei_1')).toHaveLength(1)
     expect((await node.commitInfo('C'.repeat(64)))?.closed).toBe(false)
     expect(await node.hasClaimed('kei_1', 'C'.repeat(64))).toBe(true)
+    expect((await node.swapOffer('E'.repeat(64)))?.state).toBe('open')
+    expect(await node.accountSwaps('kei_1')).toEqual([])
     expect((await node.workThresholds()).B).toBe('2')
 
     expect(calls.map((call) => call.action)).toEqual([
@@ -72,10 +95,24 @@ describe('HttpNode', () => {
       'account_holdings',
       'commit_info',
       'claim_status',
+      'swap_info',
+      'account_swaps',
       'work_thresholds',
     ])
     expect(calls[0]?.body).toEqual({ action: 'account_info', account: 'kei_1' })
     expect(calls[1]?.body).toEqual({ action: 'asset_balance', asset: 'B'.repeat(64), account: 'kei_1' })
+    expect(calls[6]?.body).toEqual({ action: 'account_swaps', account: 'kei_1', count: 100 })
+  })
+
+  test('an unknown offer is null, not an error', async () => {
+    const { node } = stubNode(() => ({}))
+    expect(await node.swapOffer('E'.repeat(64))).toBeNull()
+  })
+
+  test('accountSwaps forwards limit and state exactly as asked', async () => {
+    const { node, calls } = stubNode(() => ({ offers: [] }))
+    await node.accountSwaps('kei_1', { limit: 10, state: 'accepted' })
+    expect(calls[0]?.body).toEqual({ action: 'account_swaps', account: 'kei_1', count: 10, state: 'accepted' })
   })
 
   test('an unknown account is null, not an error', async () => {
