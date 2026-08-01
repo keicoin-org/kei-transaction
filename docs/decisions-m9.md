@@ -147,19 +147,31 @@ and lets the shipping happen.
 
 ## What is left of M9
 
-- **Publishing.** Still nothing on npm — `kei-transaction`, every `@keicoin/*`,
-  and `create-kei-game` all 404, so the generated `package.json` asks for a
-  version the registry cannot serve. All seven pack cleanly and the `@keicoin`
-  org exists, so what is left is authentication and it is narrower than "npm
-  credentials": npm now refuses a token publish outright unless the token
-  bypasses 2FA, and it is [retiring that bypass](https://github.blog/changelog/2026-07-08-npm-install-time-security-and-gat-bypass2fa-deprecation/)
-  — account operations in August 2026, direct publishing around January 2027.
-  Trusted publishing (OIDC) is the successor and cannot do this job, because npm
-  requires a package to exist before a trusted publisher can be configured for
-  it. So the first publish of all seven is a human at a terminal with an
-  authenticator, and every publish after it can be automated. Everything else
-  here was verified against the workspace through a link, which is what SPEC
-  §10.5 prescribes for local development anyway.
+- **Publishing — done.** All seven are on npm at `0.1.0`: `kei-transaction`,
+  `create-kei-game`, and the five `@keicoin/*`. `npm create kei-game` now works
+  for anybody, from the registry rather than from a checkout.
+
+  It is worth recording how narrow the remaining door was, because the next
+  release has to go through it too. npm refuses a plain token publish, and an
+  account whose second factor is a security key has no six-digit code to pass —
+  npm answers that challenge in a browser, so the CLI has to be attached to an
+  interactive terminal or it fails with `EOTP` no matter how the account is
+  configured. Setting 2FA to authorization-only does not exempt publishing. What
+  worked was a granular access token with the 2FA bypass enabled, which npm is
+  [retiring](https://github.blog/changelog/2026-07-08-npm-install-time-security-and-gat-bypass2fa-deprecation/):
+  account operations in August 2026, direct publishing around January 2027.
+
+  So this route has an expiry date. Trusted publishing (OIDC) is the successor
+  and could not have done this first publish — npm requires a package to exist
+  before a trusted publisher can be configured for it — but now that all seven
+  exist, it can do every publish after this one, and configuring it is the
+  cheapest thing M10 can do for itself.
+
+  One trap for whoever runs `scripts/publish.sh` next: npm's public read replica
+  lags its write path by minutes, so a package can be published, refuse to be
+  published again, and still 404 for anyone reading. The script's
+  already-published check passes `--prefer-online` because the cached 404 from
+  before the first publish is otherwise believed.
 - **Skills** (§11.2) — one per task, distributed alongside `AGENTS.md` and
   `llms.txt`. Not started.
 - **The public testnet** — M2 and M3, and not this repository's.

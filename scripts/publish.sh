@@ -41,7 +41,9 @@ for package in $PACKAGES; do
   name=$(node -p "require('./$directory/package.json').name")
   version=$(node -p "require('./$directory/package.json').version")
 
-  if npm view "$name@$version" version >/dev/null 2>&1; then
+  # --prefer-online, because a 404 from before the first publish is cached, and a
+  # stale "not published" is the one wrong answer that makes this loop fail.
+  if npm view "$name@$version" version --prefer-online >/dev/null 2>&1; then
     echo "==> $name@$version is already published — skipping"
     continue
   fi

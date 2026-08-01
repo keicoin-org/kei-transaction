@@ -227,7 +227,8 @@ M1 of eleven, complete. What exists:
 | **The demo** | [Button](../button) — playable single-player, every number on the chain and none in a database |
 | **The market** | M5 — `@keicoin/market` does not exist yet |
 | **The wallet panel** | M6 — the headless summary is here, `WalletPanel.mount()` is not |
-| **The harness** | `npm create kei-game` — published, and the project it writes installs `kei-transaction` from the registry rather than from this checkout |
+| **npm** | All seven published at `0.1.0` — `kei-transaction`, `create-kei-game`, and the five `@keicoin/*` |
+| **The harness** | `npm create kei-game` works for anybody, and the project it writes installs `kei-transaction` from the registry rather than from this checkout |
 
 The mock is not a stub of the API: it enforces one chain per account, derived
 asset ids, receivable arrivals, work tiers, the issuance burn, circulating-supply
