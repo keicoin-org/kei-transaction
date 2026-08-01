@@ -288,13 +288,19 @@ somebody accepts it before its owner cancels it.
 
 ### `swap_accept` (via `process`)
 
-References the offer by hash. One block, both legs: debits the accepter for
-`wantAmount`, and creates two receivables — `wantAmount` to the offerer,
-`amount` to the accepter. Valid exactly once; a second accept, or an accept
-after the offer was cancelled, is rejected.
+References the offer by hash, and restates its `wantAsset`/`wantAmount` as
+this block's own `asset`/`amount` — the accepter's signature has to cover
+what it pays, the same as every other op signs its own cost, rather than
+trusting whatever the offer hash currently resolves to. A restatement that
+does not match the offer exactly is rejected (`swap-terms-mismatch`). One
+block, both legs: debits the accepter for `amount`, and creates two
+receivables — `amount` to the offerer, the offer's own locked `amount` to the
+accepter. Valid exactly once; a second accept, or an accept after the offer
+was cancelled, is rejected.
 
 ```json
-{ "type": "asset", "op": { "kind": "swap_accept", "offer": "F1E2...D3C4" } }
+{ "type": "asset", "op": { "kind": "swap_accept", "offer": "F1E2...D3C4",
+  "asset": "0000...0000", "amount": "5000000000000000000" } }
 ```
 
 ### `swap_cancel` (via `process`)

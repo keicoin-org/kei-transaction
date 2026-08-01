@@ -129,14 +129,21 @@ export interface SwapOfferOp {
  * Take an offer: one block that debits the accepter and credits both parties
  * (SPEC §9.2). Valid exactly once.
  *
- * It names only the offer's hash, because the offer already commits to what the
- * accepter pays — so the two legs cannot disagree about the price, and the
- * accepter's signature covers it through the reference.
+ * `asset`/`amount` restate the offer's own `wantAsset`/`wantAmount` — the
+ * accepter's signature has to cover what it is paying, the same way every
+ * other op signs its own cost, rather than trusting whatever a hash reference
+ * currently resolves to. The node refuses an accept whose restatement does not
+ * match the offer exactly, so the two legs still cannot disagree about price:
+ * they must agree in writing instead of by construction.
  */
 export interface SwapAcceptOp {
   kind: 'swap_accept'
   /** The `swap_offer` block's hash. */
   offer: string
+  /** Must equal the offer's `wantAsset`. */
+  asset: AssetId
+  /** Raw units of `asset` this accept pays. Must equal the offer's `wantAmount`. */
+  amount: string
 }
 
 /** Recover one's own locked asset. Valid only while the offer is unaccepted. */

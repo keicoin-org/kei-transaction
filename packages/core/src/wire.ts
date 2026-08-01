@@ -278,11 +278,22 @@ function assetFields(
         ),
       }
     case 'swap_accept':
+      // The header's asset/amount fields restate what the accepter pays — the
+      // offer's own wanted leg, signed again here so the accepter's signature
+      // covers the cost rather than trusting whatever the offer hash currently
+      // resolves to (SPEC §9.2). The node refuses a restatement that does not
+      // match the offer exactly.
+      return {
+        op: code,
+        assetId: hashBytes(op.asset, 'paid asset id'),
+        amount: amountBytes(op.amount, 'paid amount'),
+        link: hashBytes(op.offer, 'offer hash'),
+        payload: new Uint8Array(0),
+      }
     case 'swap_cancel':
-      // Both name an offer and nothing else. Which assets move, in what
-      // quantities, and to whom is the offer's business — the same reasoning
-      // that leaves `asset_receive`'s id zero (decisions-m2.md §10), and what
-      // makes it impossible for the two legs to disagree about the price.
+      // Names an offer and nothing else. What was locked is the offer's
+      // business, not the cancel's — the same reasoning that leaves
+      // `asset_receive`'s id zero (decisions-m2.md §10).
       return {
         op: code,
         assetId: ZERO_32,

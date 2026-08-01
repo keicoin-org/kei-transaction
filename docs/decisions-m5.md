@@ -34,11 +34,34 @@ other M2/M4 op already follows (§7 header, fixed-width payload appended):
   those are exactly the three the header already carries for `transfer`. The
   payload is fixed-width: the wanted asset id (32 bytes), the wanted amount (16
   bytes), and the advisory expiry (8 bytes, big-endian, zero meaning "none").
-- `swap_accept` and `swap_cancel` both carry nothing but the offer hash, in
-  `link`. Which assets move, in what quantities, and to whom is the offer's
-  business — deliberately the same reasoning `decisions-m2.md §10` gives for
-  leaving `asset_receive`'s own asset id at zero, and it is what makes it
-  structurally impossible for the two legs of a trade to disagree about price.
+- `swap_accept` reuses the same two header fields — `assetId`, `amount` — for
+  the accepter's own restatement of what it is paying, and `link` for the
+  offer hash. This is not the same reasoning as `asset_receive`'s zeroed id:
+  the accepter's signature has to cover its own cost, so the wire carries the
+  cost again rather than leaving it solely on the offer's chain. The node
+  checks the restatement against the offer's `wantAsset`/`wantAmount` exactly
+  and refuses a mismatch (`swap_terms_mismatch`) — this is not the SDK's own
+  invention; kei-node's ledger enforces it (SPEC §9.2, and see the correction
+  below).
+- `swap_cancel` carries nothing but the offer hash, in `link`, with `assetId`
+  and `amount` zeroed. What was locked is the offer's business, not the
+  cancel's — the same reasoning `decisions-m2.md §10` gives for leaving
+  `asset_receive`'s own asset id at zero.
+
+**Correction (post-M5-land):** the original version of this section put
+`swap_accept` in the same zeroed-fields bucket as `swap_cancel`, on the theory
+that the offer already commits to what the accepter pays and so the two legs
+"cannot disagree about the price" structurally. That theory does not match
+kei-node's actual ledger (`nano/secure/ledger.cpp`), which requires
+`swap_accept`'s own `asset_id`/`amount` to restate `lock.want_asset` /
+`lock.want_amount` and rejects a mismatch as `swap_terms_mismatch` — a
+deliberate choice, not an oversight: the accepter's signature is meant to
+cover its own cost explicitly, the same way every other op signs what it
+moves, rather than delegating that to a hash reference the accepter did not
+author. `SwapAcceptOp` now carries `asset`/`amount` alongside `offer`, `wire.ts`
+encodes them into the header fields, and `@keicoin/market`'s `accept()` sources
+them from the offer it just read back — never from caller input — so the
+restated terms are always the immutable offer's own.
 
 ## 2. The accept-vs-cancel race is resolved by arrival order in the mock, and that is a stand-in for the real rule
 

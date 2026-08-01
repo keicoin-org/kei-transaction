@@ -275,7 +275,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     await requireSpendable(offer.want, wantRaw, 'this offer asks for')
 
     const { hash: block } = await client.submitAsset(
-      { kind: 'swap_accept', offer: hash },
+      { kind: 'swap_accept', offer: hash, asset: offer.want.asset, amount: wantRaw.toString() },
       offer.want.asset === KEI_ASSET ? -wantRaw : 0n,
     )
     // Both legs are receivable the moment this block lands (SPEC §9.2). The

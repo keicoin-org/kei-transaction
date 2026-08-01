@@ -156,7 +156,7 @@ async function offerSword(owner: KeyPair, asset: string, wantAmount: string, ext
   })
 }
 
-async function acceptOffer(taker: KeyPair, offer: string, pay: bigint) {
+async function acceptOffer(taker: KeyPair, offer: string, pay: bigint, asset: string = KEI_ASSET) {
   const context = await draft(taker)
   return submit(taker, {
     type: 'asset',
@@ -164,7 +164,7 @@ async function acceptOffer(taker: KeyPair, offer: string, pay: bigint) {
     previous: context.previous,
     representative: context.representative,
     balance: (BigInt(context.balance) - pay).toString(),
-    op: { kind: 'swap_accept', offer },
+    op: { kind: 'swap_accept', offer, asset, amount: pay.toString() },
   })
 }
 
@@ -310,6 +310,47 @@ describe('settlement moves both legs in one block, or neither (SPEC §9.2, probl
     await expect(acceptOffer(bob, offer, price)).resolves.toHaveLength(64)
   })
 
+  describe('an accept must restate the offer\'s exact cost (SPEC §9.2)', () => {
+    test('understating the price is refused as a terms mismatch, not silently accepted', async () => {
+      const asset = await swordForAlice()
+      const price = 5n * 10n ** 18n
+      const offer = await offerSword(alice, asset, price.toString())
+      await expect(acceptOffer(bob, offer, price - 1n)).rejects.toThrow(/swap-terms-mismatch|restate/i)
+    })
+
+    test('overstating the price is refused too — the offer sets the cost, not the accepter', async () => {
+      const asset = await swordForAlice()
+      const price = 5n * 10n ** 18n
+      const offer = await offerSword(alice, asset, price.toString())
+      await expect(acceptOffer(bob, offer, price + 1n)).rejects.toThrow(/swap-terms-mismatch|restate/i)
+    })
+
+    test('restating a different asset than the offer wants is refused', async () => {
+      const asset = await swordForAlice()
+      const price = 5n * 10n ** 18n
+      const offer = await offerSword(alice, asset, price.toString())
+      const other = await issueAsset('open')
+      const context = await draft(bob)
+      await expect(
+        submit(bob, {
+          type: 'asset',
+          account: bob.address,
+          previous: context.previous,
+          representative: context.representative,
+          balance: context.balance,
+          op: { kind: 'swap_accept', offer, asset: other, amount: price.toString() },
+        }),
+      ).rejects.toThrow(/swap-terms-mismatch|restate/i)
+    })
+
+    test('an honest restatement settles normally', async () => {
+      const asset = await swordForAlice()
+      const price = 5n * 10n ** 18n
+      const offer = await offerSword(alice, asset, price.toString())
+      await expect(acceptOffer(bob, offer, price)).resolves.toHaveLength(64)
+    })
+  })
+
   test('an accepter who cannot cover the price is told the number, not just "no"', async () => {
     const asset = await swordForAlice()
     const price = 50_000n * 10n ** 18n
@@ -326,7 +367,7 @@ describe('settlement moves both legs in one block, or neither (SPEC §9.2, probl
         previous: context.previous,
         representative: context.representative,
         balance: context.balance,
-        op: { kind: 'swap_accept', offer },
+        op: { kind: 'swap_accept', offer, asset: KEI_ASSET, amount: price.toString() },
       }),
     ).rejects.toThrow(/not enough kei/i)
   })
@@ -475,7 +516,7 @@ describe('resubmission after a dropped connection or a restart is a no-op (docs/
       previous: context.previous,
       representative: context.representative,
       balance: (BigInt(context.balance) - price).toString(),
-      op: { kind: 'swap_accept', offer },
+      op: { kind: 'swap_accept', offer, asset: KEI_ASSET, amount: price.toString() },
     }
     const block: Block = {
       ...body,
@@ -499,7 +540,13 @@ describe('work tier B, like every other swap and send (SPEC §5.6.4)', () => {
         op: { kind: 'swap_offer', asset: 'a'.repeat(64), amount: '1', wantAsset: KEI_ASSET, wantAmount: '1' },
       }),
     ).toBe('B')
-    expect(tierFor({ ...base, type: 'asset', op: { kind: 'swap_accept', offer: 'a'.repeat(64) } })).toBe('B')
+    expect(
+      tierFor({
+        ...base,
+        type: 'asset',
+        op: { kind: 'swap_accept', offer: 'a'.repeat(64), asset: KEI_ASSET, amount: '1' },
+      }),
+    ).toBe('B')
     expect(tierFor({ ...base, type: 'asset', op: { kind: 'swap_cancel', offer: 'a'.repeat(64) } })).toBe('B')
   })
 

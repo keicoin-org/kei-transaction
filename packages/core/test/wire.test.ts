@@ -197,7 +197,7 @@ describe('consensus wire layout coverage', () => {
   test('the M5 swap legs have the native layout, spending op bytes 8-10 (decisions-m2.md §18)', () => {
     const swaps: AssetOp[] = [
       { kind: 'swap_offer', asset: ASSET_ID, amount: AMOUNT, wantAsset: ASSET_ID, wantAmount: AMOUNT },
-      { kind: 'swap_accept', offer: PREVIOUS },
+      { kind: 'swap_accept', offer: PREVIOUS, asset: ASSET_ID, amount: AMOUNT },
       { kind: 'swap_cancel', offer: PREVIOUS },
     ]
     for (const op of swaps) {
@@ -218,13 +218,24 @@ describe('consensus wire layout coverage', () => {
     expect(hashBlock(offerBody({ expiresAt: 1_700_000_000_000 }))).not.toBe(plain)
   })
 
-  test('swap_accept and swap_cancel hash the offer they reference, and nothing else', () => {
+  test('swap_cancel hashes the offer it references, and nothing else', () => {
     const other = 'AA'.repeat(32)
-    expect(hashBlock({ ...base, op: { kind: 'swap_accept', offer: PREVIOUS } })).not.toBe(
-      hashBlock({ ...base, op: { kind: 'swap_accept', offer: other } }),
-    )
     expect(hashBlock({ ...base, op: { kind: 'swap_cancel', offer: PREVIOUS } })).not.toBe(
       hashBlock({ ...base, op: { kind: 'swap_cancel', offer: other } }),
     )
+  })
+
+  test('swap_accept hashes the offer it references and the restated cost it pays (SPEC §9.2)', () => {
+    const other = 'AA'.repeat(32)
+    const plain = hashBlock({ ...base, op: { kind: 'swap_accept', offer: PREVIOUS, asset: ASSET_ID, amount: AMOUNT } })
+    expect(hashBlock({ ...base, op: { kind: 'swap_accept', offer: other, asset: ASSET_ID, amount: AMOUNT } })).not.toBe(
+      plain,
+    )
+    expect(
+      hashBlock({ ...base, op: { kind: 'swap_accept', offer: PREVIOUS, asset: other, amount: AMOUNT } }),
+    ).not.toBe(plain)
+    expect(
+      hashBlock({ ...base, op: { kind: 'swap_accept', offer: PREVIOUS, asset: ASSET_ID, amount: '1' } }),
+    ).not.toBe(plain)
   })
 })

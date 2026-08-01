@@ -861,6 +861,17 @@ export class MockLedger {
             `Offer ${lock.offer} is reserved for ${lock.counterparty}, so ${body.account} cannot accept it (SPEC §9.2).`,
           )
         }
+        // B restates what it is paying. Without this, B would sign a block whose
+        // cost is written on somebody else's chain — the offer, which B did not
+        // sign (SPEC §9.2).
+        const restatedAsset = String(op.asset ?? '').toUpperCase()
+        const restatedAmount = parseRaw(op.amount, 'accept amount')
+        if (restatedAsset !== lock.wantAsset || restatedAmount !== lock.wantAmount) {
+          fail(
+            'swap-terms-mismatch',
+            `This accept restates the cost as ${op.amount} of ${restatedAsset}, but offer ${lock.offer} asks for ${lock.wantAmount} of ${lock.wantAsset}. An accept must restate the offer's terms exactly (SPEC §9.2).`,
+          )
+        }
         const offered = lock.asset === KEI_ASSET ? null : this.requireAsset(lock.asset)
         const wanted = lock.wantAsset === KEI_ASSET ? null : this.requireAsset(lock.wantAsset)
         // Both parties are known now, so the policy is checked against the real
