@@ -12,7 +12,9 @@ export interface NodeTestNetwork {
 export async function nodeTestNetwork(): Promise<NodeTestNetwork> {
   const liveUrl = process.env.KEI_NODE_URL
   if (liveUrl) {
-    const connect = () => new HttpNode({ url: liveUrl, network: 'testnet', pollInterval: 50 })
+    // 50 ms is free against an in-process mock and 20 requests a second against
+    // a public endpoint, which is the whole per-edge budget the gateway allows.
+    const connect = () => new HttpNode({ url: liveUrl, network: 'testnet', pollInterval: 250 })
     let discoveredFaucet: string | undefined
     return {
       live: true,
