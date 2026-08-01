@@ -30,6 +30,35 @@ describe('mock-only HTTP handler behaviour', () => {
     expect(await http.workThresholds()).toEqual(await mock.workThresholds())
   })
 
+  test('an unknown action names the contract list exactly', async () => {
+    const { mock } = await connected()
+    const handler = mockRpcHandler({ node: mock })
+    const response = await handler(
+      new Request('http://node.test/rpc', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'account_balance' }),
+      }),
+    )
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({
+      error: 'This node has no "account_balance" action. See docs/rpc.md for the list.',
+    })
+  })
+
+  test('the default handler answers preflight exactly and adds CORS', async () => {
+    const { mock } = await connected()
+    const handler = mockRpcHandler({ node: mock })
+    const preflight = await handler(new Request('http://node.test/rpc', { method: 'OPTIONS' }))
+    expect(preflight.status).toBe(204)
+    expect(preflight.headers.get('access-control-allow-origin')).toBe('*')
+
+    const answered = await handler(
+      new Request('http://node.test/rpc', { method: 'POST', body: JSON.stringify({ action: 'work_thresholds' }) }),
+    )
+    expect(answered.headers.get('access-control-allow-origin')).toBe('*')
+  })
+
   test('cors: false leaves the headers off', async () => {
     const { mock } = await connected()
     const handler = mockRpcHandler({ node: mock, cors: false })
