@@ -138,6 +138,41 @@ describe('settlement (SPEC §9.2 — one block, both legs or neither)', () => {
   test('a made-up hash is told plainly that no such offer exists', async () => {
     await expect(bob.market.accept('F'.repeat(64))).rejects.toThrow(/no offer with hash/i)
   })
+
+  test('accept() signs the raw wantAmount exactly, even above Number.MAX_SAFE_INTEGER', async () => {
+    // 9007199254740993 is MAX_SAFE_INTEGER + 2 — the smallest odd integer a JS
+    // number cannot represent, so it rounds to 9007199254740992 the moment it
+    // passes through a number. Offer display does that on purpose (fromRaw());
+    // accept() must not sign the rounded number back — it has to restate the
+    // offer's own raw terms, or the node's ledger rejects it as a mismatch.
+    const wantAmount = '9007199254740993'
+    const coin = await game.token.issue({ name: 'Huge Coin', symbol: 'HUGE', decimals: 0 })
+    await coin.mint(bob.address, wantAmount)
+    await bob.sync()
+
+    const offer = await alice.market.offer({
+      give: { asset: sword, amount: 1 },
+      want: { asset: coin, amount: wantAmount },
+    })
+    // Display rounds, as expected — this is the number that would wrongly get
+    // signed if accept() round-tripped through it instead of the raw offer.
+    expect(offer.want.amount).toBe(9_007_199_254_740_992)
+
+    const settlement = await bob.market.accept(offer)
+    expect(settlement.paid.asset).toBe(coin.id)
+    expect(await bob.items.owner(sword.id)).toBe(bob.address)
+
+    // toBe(0) survives number rounding regardless, but the raw balances below
+    // are the exact proof: bob paid every last unit and alice received every
+    // last unit of the true 9007199254740993, not the rounded 9007199254740992
+    // — a mismatch there is exactly what swap-terms-mismatch would have caught.
+    expect(await coin.balanceOf(bob.address)).toBe(0)
+    expect(await node.holderBalance(coin.id, bob.address)).toBe('0')
+    expect(await node.holderBalance(coin.id, alice.address)).toBe(wantAmount)
+
+    const raw = await node.swapOffer(offer.hash)
+    expect(raw?.state).toBe('accepted')
+  })
 })
 
 describe('cancellation (SPEC §9.2 — the lock is its own garbage collector)', () => {

@@ -271,12 +271,15 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
         `Offer ${hash} is reserved for ${offer.to}, so this wallet cannot accept it (SPEC §9.2).`,
       )
     }
-    const wantRaw = toRaw(offer.want.amount, offer.want.decimals, 'Price')
+    // Sign `raw`'s own wantAsset/wantAmount, not offer.want.amount — that field
+    // round-tripped through a JS number for display and loses precision above
+    // Number.MAX_SAFE_INTEGER. The chain only ever sees the raw string.
+    const wantRaw = BigInt(raw.wantAmount)
     await requireSpendable(offer.want, wantRaw, 'this offer asks for')
 
     const { hash: block } = await client.submitAsset(
-      { kind: 'swap_accept', offer: hash, asset: offer.want.asset, amount: wantRaw.toString() },
-      offer.want.asset === KEI_ASSET ? -wantRaw : 0n,
+      { kind: 'swap_accept', offer: hash, asset: raw.wantAsset, amount: raw.wantAmount },
+      raw.wantAsset === KEI_ASSET ? -wantRaw : 0n,
     )
     // Both legs are receivable the moment this block lands (SPEC §9.2). The
     // wallet collects them in the background anyway; doing it here means the
