@@ -7,8 +7,9 @@ import { describe, expect, test } from 'bun:test'
 import { Kei, randomSeed } from 'kei-transaction'
 
 describe('the sixty-second test', () => {
-  test('start, then pay, with no arguments anywhere', async () => {
-    const kei = await Kei.start()
+  test('start, then pay, with no infrastructure setup in the public API', async () => {
+    const node = await Kei.mock()
+    const kei = await Kei.start({ node })
     const other = await Kei.start({ node: kei.client.node, seed: randomSeed() })
 
     await kei.faucet()

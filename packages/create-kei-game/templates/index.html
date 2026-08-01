@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>__PROJECT_TITLE__</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0a0d14;
+        overflow: hidden;
+      }
+      /* The only HTML in the game. The balance is a screen in the world rather
+         than an overlay on top of it — this is a canvas and a hint. */
+      #game {
+        display: block;
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+        outline: none;
+      }
+      #hint {
+        position: fixed;
+        left: 50%;
+        bottom: 18px;
+        transform: translateX(-50%);
+        margin: 0;
+        color: #66748c;
+        font: 500 13px/1.4 ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+        letter-spacing: 0.04em;
+        pointer-events: none;
+        user-select: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="game" touch-action="none"></canvas>
+    <p id="hint">click the crystal or press space · drag to look · click the plate to buy</p>
+    <script type="module" src="/build/main.js"></script>
+  </body>
+</html>

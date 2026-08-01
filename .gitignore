@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# Where test/purchase.test.ts writes the project it runs.
+.generated/
 *.tsbuildinfo
 bun.lockb
 bun.lock

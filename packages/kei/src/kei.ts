@@ -48,8 +48,10 @@ import { createMarket, type MarketApi } from '@keicoin/market'
 import { createWorkProvider } from '@keicoin/work'
 import { createWallet, type WalletApi } from '@keicoin/wallet'
 
-import { assertServerOnly } from './environment.js'
+import { assertServerOnly, deploymentSignal, testnetAllowedInDeployment } from './environment.js'
 import { defaultSeedStore, environmentSeed, seedStoreKey, type SeedStore } from './storage.js'
+
+const DEFAULT_TESTNET_NODE_URL = 'https://testnet.keicoin.org/rpc'
 
 export interface StartOptions {
   /**
@@ -195,13 +197,14 @@ export class Kei {
       )
     }
     const node = await resolveNode(options)
+    assertNetworkFitsDeployment(node.network)
     const keys = await keyPairFromSeed(normalizeSeed(options.seed, 'issuer seed'), options.index ?? 0)
     return Kei.assemble(node, keys, 'issuer', options)
   }
 
   /**
-   * A private in-process chain. Until M3 this is what `Kei.start()` falls back
-   * to; pass the same node to several clients to have them share one ledger.
+   * A private in-process chain for tests and offline development; pass the same
+   * node to several clients to have them share one ledger.
    */
   static async mock(options: { faucetAmount?: number } = {}): Promise<MockNode> {
     return MockNode.create(options)
@@ -347,6 +350,26 @@ function floorTo(value: number, decimals: number): number {
   return Math.floor(value * scale) / scale
 }
 
+/**
+ * Testnet is the right place to build and the wrong place to ship. Its Kei is
+ * not worth anything and its chain can be reset without notice, so a game that
+ * reaches real players on testnet is one whose economy disappears on a day
+ * nobody chose — which is the thing SPEC §5.9 asks nobody be encouraged into.
+ *
+ * So a deploy is pushed back on rather than warned about: it fires at boot, on
+ * the server half, where the fix is one word and nobody has earned anything yet.
+ * A warning at this point in a logfile is a warning nobody is reading.
+ */
+function assertNetworkFitsDeployment(network: NetworkName): void {
+  if (network !== 'testnet') return
+  const signal = deploymentSignal()
+  if (signal === undefined || testnetAllowedInDeployment()) return
+  fail(
+    'testnet-in-deployment',
+    `This looks like a deployment (${signal}) and your game is pointed at testnet. Testnet Kei is not worth anything and that chain can be reset without notice, so anything your players earn goes with it — move to mainnet before real players arrive: network: 'mainnet'. Kei mainnet is not open yet (SPEC §15), so until it is, keep this in front of testers who know the money is play money. Set KEI_ALLOW_TESTNET=1 to deploy on testnet anyway.`,
+  )
+}
+
 async function resolveNode(options: StartOptions): Promise<KeiNode> {
   if (options.node && typeof options.node === 'object') return options.node
   if (typeof options.node === 'string') {
@@ -355,12 +378,13 @@ async function resolveNode(options: StartOptions): Promise<KeiNode> {
   if (options.network === 'mainnet') {
     fail(
       'no-mainnet',
-      'Kei mainnet does not exist yet. Use the default testnet, or pass node: <url> for a network you run.',
+      'Kei mainnet is not open yet (SPEC §15) — it opens when the validator set is distributed enough that value is safe on it. Until then, build on the default testnet, or pass node: <url> for a network you run.',
     )
   }
-  // No public testnet until M3, so an unconfigured client gets a private
-  // in-process chain. `kei.network` reports 'mock' so this is never invisible.
-  return MockNode.create()
+  // `mock` remains an explicit offline-development choice. The default is the
+  // real M3 testnet, which is the transport swap this API was designed around.
+  if (options.network === 'mock') return MockNode.create()
+  return new HttpNode({ url: DEFAULT_TESTNET_NODE_URL, network: 'testnet' })
 }
 
 async function resolvePlayerKeys(options: StartOptions, network: NetworkName): Promise<KeyPair> {

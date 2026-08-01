@@ -7,6 +7,7 @@
     { "path": "packages/tokens" },
     { "path": "packages/market" },
     { "path": "packages/wallet" },
-    { "path": "packages/kei" }
+    { "path": "packages/kei" },
+    { "path": "packages/create-kei-game" }
   ]
 }
