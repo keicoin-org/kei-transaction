@@ -10,6 +10,7 @@
     "clean": "tsc --build --clean",
     "typecheck": "tsc --build && tsc -p tsconfig.tests.json",
     "test": "bun test",
+    "test:m3-live": "bun test packages/kei/test/m3-live.ts",
     "check": "npm run typecheck && npm run test"
   },
   "devDependencies": {

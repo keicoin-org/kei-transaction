@@ -2,8 +2,8 @@
 
 This is the contract between the SDK and a node. `MockNode` implements it in
 memory, `mockRpcHandler` serves that over HTTP, and `HttpNode` speaks it from the
-other side. The node fork (M2) has to serve exactly this; M3 changes what is
-behind the URL and nothing else.
+other side. The node fork serves exactly this; at M3 the SDK changed only what
+is behind its default URL.
 
 ```js
 import { MockNode, mockRpcHandler } from '@keicoin/core'

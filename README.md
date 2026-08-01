@@ -14,10 +14,10 @@ const kei = await Kei.start()          // wallet created, persisted, funded
 await kei.send('kei_3abc...', 0.001)   // sub-cent, instant, feeless
 ```
 
-> **Status: M1 complete.** The API is real and runs end to end, and
-> [Button](../button) is playable in a browser against it. The chain underneath is
-> still a mock — but it is now served over HTTP, so the SDK already talks to a node
-> across a URL. There is no testnet, and nothing here holds value. See
+> **Status: M3 testnet.** `Kei.start()` uses a real node at
+> `https://rpc.testnet.keicoin.org/rpc`; `Kei.mock()` remains available for tests.
+> This is one best-effort node with weak consensus, no uptime promise, and no
+> monetary value. See
 > [Where this is](#where-this-is).
 
 ---
@@ -201,13 +201,13 @@ Not enough Kei — balance is 0.4, tried to send 1.2.
 
 ## Where this is
 
-M1 of eleven, complete. What exists:
+M3 of eleven. What exists:
 
 | | |
 |---|---|
 | **The §6.7 API** | Complete, running end to end, types published |
-| **The chain** | A mock enforcing the SPEC §5.6 / §7 ledger rules, in process or over HTTP |
-| **The network** | No testnet. `Kei.start()` with no node gets a private in-process chain; point it at a `mockRpcHandler` and `kei.network` reports `'mock'` either way |
+| **The chain** | A real Kei node enforcing the SPEC §5.6 / §7 ledger rules; the reference mock remains for hermetic tests |
+| **The network** | One public, rate-limited, best-effort Hetzner testnet node. `Kei.start()` selects it by default; `Kei.mock()` is explicit |
 | **The demo** | [Button](../button) — playable single-player, every number on the chain and none in a database |
 | **The market** | M5 — `@keicoin/market` does not exist yet |
 | **The wallet panel** | M6 — the headless summary is here, `WalletPanel.mount()` is not |
@@ -222,7 +222,8 @@ M1 proved that across a process boundary rather than asserting it: `mockRpcHandl
 serves [`docs/rpc.md`](docs/rpc.md) as a plain `Request → Response`, and the whole
 economy — issue, top-up, mint, transfer, item, commit, parallel claims — runs
 between two clients that share nothing but a URL. **M2 changes what is behind that
-URL and nothing above it.**
+URL and nothing above it.** M3 made that swap: the same suites now pass against
+the native node, and `npm run test:m3-live` proves a public faucet-to-payment loop.
 
 Nothing here holds value, and until the validator set is meaningfully
 distributed, nothing should.
