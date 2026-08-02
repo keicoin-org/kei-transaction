@@ -11,12 +11,12 @@
 import { describe, expect, test } from 'bun:test'
 
 import { projectFrom } from '../src/naming.js'
-import { scaffold, type GeneratedFile } from '../src/scaffold.js'
+import { scaffold, type TextFile } from '../src/scaffold.js'
 
 const project = projectFrom({ name: 'Star Clicker', currency: 'Gold Pieces' })
 const files = await scaffold(project, { sdkVersion: '^0.3.0' })
 
-const at = (path: string): GeneratedFile => {
+const at = (path: string): TextFile => {
   const file = files.find((candidate) => candidate.path === path)
   if (!file) throw new Error(`${path} was not generated. Generated: ${files.map((f) => f.path).join(', ')}`)
   return file

@@ -20,6 +20,20 @@ import type { GameProject } from './naming.js'
 export interface GeneratedFile {
   /** Relative, POSIX-separated, and where it goes under the project directory. */
   path: string
+  /**
+   * Text for anything this package writes itself. Bytes only arrive from a
+   * downloaded template (`templates.ts`), which carries models, sounds, and
+   * textures that are not text and must not be round-tripped through a string.
+   */
+  contents: string | Uint8Array
+}
+
+/**
+ * What the templates in this package produce, which is always text — the
+ * narrower type is worth keeping so that everything reading a locally
+ * scaffolded project gets a `string` without having to ask.
+ */
+export interface TextFile extends GeneratedFile {
   contents: string
 }
 
@@ -44,7 +58,7 @@ export const TEMPLATE_ROOT = fileURLToPath(new URL('../templates/', import.meta.
  */
 const RENAME_ON_WRITE: Readonly<Record<string, string>> = { gitignore: '.gitignore' }
 
-export async function scaffold(project: GameProject, options: ScaffoldOptions): Promise<GeneratedFile[]> {
+export async function scaffold(project: GameProject, options: ScaffoldOptions): Promise<TextFile[]> {
   const root = options.templates ?? TEMPLATE_ROOT
   const substitutions: Readonly<Record<string, string>> = {
     __PROJECT_TITLE__: project.title,
@@ -54,7 +68,7 @@ export async function scaffold(project: GameProject, options: ScaffoldOptions): 
     __SDK_VERSION__: options.sdkVersion,
   }
 
-  const files: GeneratedFile[] = []
+  const files: TextFile[] = []
   for (const relative of (await listFiles(root)).sort()) {
     const contents = await readFile(join(root, relative.split(posix.sep).join(sep)), 'utf8')
     files.push({ path: rename(relative), contents: substitute(contents, substitutions) })

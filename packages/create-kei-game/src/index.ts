@@ -20,9 +20,9 @@ import { argv, cwd, exit, platform, stdout, versions } from 'node:process'
 import { DEFAULT_CURRENCY, DEFAULT_NAME, helpText, parseArgs } from './cli.js'
 import { HarnessError } from './errors.js'
 import { projectFrom, type GameProject } from './naming.js'
-import { scaffold } from './scaffold.js'
 import { assertWritable, writeFiles } from './write.js'
 import { createAsker, type Asker } from './prompt.js'
+import { DEFAULT_TEMPLATE, filesFor, templateNamed, type Template } from './templates.js'
 
 const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
   version: string
@@ -42,15 +42,22 @@ async function main(): Promise<void> {
     return
   }
 
+  const template = templateNamed(options.template ?? DEFAULT_TEMPLATE)
+
   // Nothing is asked if nothing needs asking, which is what makes this usable
-  // from a script (SPEC §12).
-  const needsAsking = !options.yes && (options.name === undefined || options.currency === undefined)
+  // from a script (SPEC §12). A template with no currency of its own is asked
+  // one question rather than two, because the second has nowhere to go.
+  const wantsCurrency = template.currency && options.currency === undefined
+  const needsAsking = !options.yes && (options.name === undefined || wantsCurrency)
   const asker = needsAsking ? createAsker() : undefined
 
   let project: GameProject
   try {
-    if (asker) stdout.write('\n  A browser game with a currency players own. Two questions.\n\n')
-    project = await answer(options, asker)
+    if (asker) {
+      const questions = template.currency ? 'Two questions' : 'One question'
+      stdout.write(`\n  ${template.summary}\n  ${questions}.\n\n`)
+    }
+    project = await answer(options, asker, template.currency)
   } finally {
     asker?.close()
   }
@@ -58,10 +65,14 @@ async function main(): Promise<void> {
   const directory = resolve(cwd(), project.slug)
   await assertWritable(directory, options.force)
 
-  const files = await scaffold(project, { sdkVersion: manifest.devDependencies['kei-transaction'] })
+  if (template.source.kind === 'github') {
+    stdout.write(`\n  Downloading ${template.name} from ${template.source.repo}...\n`)
+  }
+
+  const files = await filesFor(template, project, { sdkVersion: manifest.devDependencies['kei-transaction'] })
   await writeFiles(directory, files)
 
-  stdout.write(nextSteps(project, files.length))
+  stdout.write(nextSteps(template, project, files.length))
 }
 
 /**
@@ -71,13 +82,17 @@ async function main(): Promise<void> {
 async function answer(
   options: { name?: string; currency?: string },
   asker: Asker | undefined,
+  wantsCurrency: boolean,
 ): Promise<GameProject> {
   let name = options.name
+  // A template with no currency still gets one derived, because `GameProject`
+  // has the field. Nothing reads it, and asking for it would be worse than
+  // filling it in.
   let currency = options.currency
 
   for (;;) {
     if (asker && name === undefined) name = await asker.ask('Project name?', DEFAULT_NAME)
-    if (asker && currency === undefined) currency = await asker.ask('Currency name?', DEFAULT_CURRENCY)
+    if (asker && wantsCurrency && currency === undefined) currency = await asker.ask('Currency name?', DEFAULT_CURRENCY)
 
     try {
       return projectFrom({ name: name ?? DEFAULT_NAME, currency: currency ?? DEFAULT_CURRENCY })
@@ -92,11 +107,45 @@ async function answer(
   }
 }
 
-function nextSteps(project: GameProject, count: number): string {
-  const bun = hasBun()
-  return `
+function nextSteps(template: Template, project: GameProject, count: number): string {
+  const head = `
   ${project.title} — ${count} files in ${project.slug}/
+`
+  if (template.name === 'world-of-wonder') {
+    return `${head}
+    cd ${project.slug}
+    npm ci
+    npm run server-build && npm run server-start    # http://localhost:3000
+    npm run client-dev                              # http://localhost:8080
 
+  Your currency is ${project.currency}, and the chain knows it as ${project.symbol}.
+  It is declared once, as COIN in src/server/kei/Economy.ts.
+
+  This settles on the public Kei testnet by default — a real network, with no
+  uptime promise and nothing on it worth anything. KEI_NETWORK=mock runs a chain
+  inside the process instead, which is what you want offline.
+
+  Set KEI_GAME_SEED before you play twice. Without one the issuer changes every
+  restart, and every balance from the run before becomes unreachable.
+`
+  }
+
+  if (template.name === 'carpet-markets') {
+    return `${head}
+    cd ${project.slug}
+    bun install
+    bun run dev          # http://localhost:7788
+
+  No currency was asked for because this one has none: every coin is launched by
+  a player at runtime, and whether it can be rugged is the deed's transfer
+  policy, chosen at launch and enforced by consensus.
+
+  Read server/market.ts first — it is the launchpad, the curve, and the reserve.
+`
+  }
+
+  const bun = hasBun()
+  return `${head}
     cd ${project.slug}
     bun install
     bun run dev

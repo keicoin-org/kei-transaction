@@ -54,6 +54,20 @@ describe('parseArgs', () => {
   test('an unquoted two-word name is a mistake worth naming', () => {
     expect(() => parseArgs(['Star', 'Clicker'])).toThrow(/Quote it if the name has a space/)
   })
+
+  test('takes the template both ways round', () => {
+    expect(parseArgs(['--template', 'world-of-wonder']).template).toBe('world-of-wonder')
+    expect(parseArgs(['--template=world-of-wonder']).template).toBe('world-of-wonder')
+  })
+
+  test('refuses a template flag with nothing after it', () => {
+    expect(() => parseArgs(['--template'])).toThrow(/needs a name after it/)
+    expect(() => parseArgs(['--template', '--yes'])).toThrow(/needs a name after it/)
+  })
+
+  test('no template means the default is chosen later, not here', () => {
+    expect(parseArgs(['my-game']).template).toBeUndefined()
+  })
 })
 
 describe('helpText', () => {
