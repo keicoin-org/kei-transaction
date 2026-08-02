@@ -43,6 +43,10 @@ export async function writeFiles(directory: string, files: readonly GeneratedFil
   for (const file of files) {
     const target = join(directory, file.path.split(posix.sep).join(sep))
     await mkdir(dirname(target), { recursive: true })
-    await writeFile(target, file.contents, 'utf8')
+    // Bytes are written as bytes. Passing an encoding alongside a Uint8Array
+    // would be ignored here and misleading to read, and a `.glb` that has been
+    // through a utf8 round trip is a corrupt `.glb`.
+    if (typeof file.contents === 'string') await writeFile(target, file.contents, 'utf8')
+    else await writeFile(target, file.contents)
   }
 }

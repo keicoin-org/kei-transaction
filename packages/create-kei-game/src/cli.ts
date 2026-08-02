@@ -9,11 +9,14 @@
  */
 
 import { fail } from './errors.js'
+import { DEFAULT_TEMPLATE, TEMPLATES } from './templates.js'
 
 export interface CliOptions {
   /** The project name, given as the first positional argument. */
   name?: string
   currency?: string
+  /** Which game to write. Defaults to `star-clicker`. */
+  template?: string
   /** Take the defaults for whatever was not given, and ask nothing. */
   yes: boolean
   /** Write into a directory that already has files in it. */
@@ -26,7 +29,7 @@ export interface CliOptions {
 export const DEFAULT_NAME = 'kei-game'
 export const DEFAULT_CURRENCY = 'Coins'
 
-const FLAGS = ['--currency', '--yes', '-y', '--force', '--help', '-h', '--version', '-v']
+const FLAGS = ['--template', '--currency', '--yes', '-y', '--force', '--help', '-h', '--version', '-v']
 
 export function parseArgs(argv: readonly string[]): CliOptions {
   const options: CliOptions = { yes: false, force: false, help: false, version: false }
@@ -58,11 +61,23 @@ export function parseArgs(argv: readonly string[]): CliOptions {
         options.currency = value
         break
       }
+      case '--template': {
+        const value = argv[++index]
+        if (value === undefined || value.startsWith('-')) {
+          fail('--template needs a name after it, for example: --template world-of-wonder.')
+        }
+        options.template = value
+        break
+      }
       default: {
         // `--currency=Gems` is the other spelling of the same thing, and a
         // developer who types it should not be told it is not a flag.
         if (arg.startsWith('--currency=')) {
           options.currency = arg.slice('--currency='.length)
+          break
+        }
+        if (arg.startsWith('--template=')) {
+          options.template = arg.slice('--template='.length)
           break
         }
         if (arg.startsWith('-')) {
@@ -82,6 +97,8 @@ export function parseArgs(argv: readonly string[]): CliOptions {
 }
 
 export function helpText(version: string): string {
+  const templates = TEMPLATES.map((template) => `    ${template.name.padEnd(16)}${template.summary}`).join('\n')
+
   return `
   create-kei-game ${version}
 
@@ -92,15 +109,24 @@ export function helpText(version: string): string {
 
     npm create kei-game
     npm create kei-game <project> -- --currency <name>
-    bun create kei-game <project> --currency <name>
+    bun create kei-game <project> --template world-of-wonder
 
   Options
 
+    --template <name>   Which game to start from. Default: ${DEFAULT_TEMPLATE}
     --currency <name>   What the in-game currency is called. Default: ${DEFAULT_CURRENCY}
     --yes, -y           Take the defaults and ask nothing. For CI and agents.
     --force             Write into a directory that already has files in it.
     --help, -h          This.
     --version, -v       Print the version and exit.
+
+  Templates
+
+${templates}
+
+  ${DEFAULT_TEMPLATE} is written from inside this package. The others are whole
+  example projects, downloaded from their own repositories when you ask for one,
+  so that nobody pays for 30MB of 3D models to get a star and a button.
 
   It asks two things and derives the rest, including the ticker the chain knows
   your currency by. Everything it writes is yours to edit.
