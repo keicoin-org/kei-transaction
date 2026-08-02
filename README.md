@@ -237,8 +237,8 @@ M6 of eleven. What exists:
 | **The demo** | [Button](../button) — playable single-player, every number on the chain and none in a database |
 | **The market** | M5 — `@keicoin/market` does not exist yet |
 | **The wallet panel** | M6 — `WalletPanel.mount()` is real and tested end to end, with the SPEC §6.6 seed-reveal friction |
-| **npm** | All seven have a `0.1.0`, but public `create-kei-game@0.1.0` predates the safe purchase/restart work in PR #6 and is stale; the coordinated `0.1.1` release is tracked in [#12](https://github.com/keicoin-org/kei-transaction/issues/12) |
-| **The harness** | The source in this tree generates and runs the hash-correlated, restart-safe purchase path. Do not use the public `0.1.0` scaffold for durable payment settlement |
+| **npm** | The six SDK packages are published at `0.2.0`; `create-kei-game` is at `0.1.1` and includes the safe purchase/restart work from PR #6 — see the coordinated release in [#12](https://github.com/keicoin-org/kei-transaction/issues/12) |
+| **The harness** | The source in this tree generates and runs the hash-correlated, restart-safe purchase path. The published `create-kei-game@0.1.1` scaffold now matches it |
 
 The mock is not a stub of the API: it enforces one chain per account, derived
 asset ids, receivable arrivals, work tiers, the issuance burn, circulating-supply
