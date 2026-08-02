@@ -2,7 +2,10 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    // The mountable panel (M6) is the one place in this monorepo that touches a
+    // real DOM, so it is the one package that needs the ambient DOM lib.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
   "include": [
     "src"

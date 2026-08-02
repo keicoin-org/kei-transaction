@@ -1,7 +1,7 @@
 {
   "name": "@keicoin/wallet",
   "version": "0.2.0",
-  "description": "In-game wallet for Kei: headless balance, inventory and claim summaries. The mountable panel lands at M6.",
+  "description": "In-game wallet for Kei: mountable balance/inventory/claims panel, plus the headless summary API underneath it.",
   "license": "MIT",
   "author": "Sano",
   "homepage": "https://keicoin.org#wallet",
