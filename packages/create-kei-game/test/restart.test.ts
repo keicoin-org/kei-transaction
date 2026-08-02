@@ -57,7 +57,7 @@ let startGame: StartGame
 beforeAll(async () => {
   await rm(directory, { recursive: true, force: true })
   const project = projectFrom({ name: 'Star Clicker', currency: 'Gold Pieces' })
-  await writeFiles(directory, await scaffold(project, { sdkVersion: '^0.1.0' }))
+  await writeFiles(directory, await scaffold(project, { sdkVersion: '^0.3.0' }))
   ;({ startGame } = (await import(pathToFileURL(join(directory, 'server', 'game.ts')).href)) as {
     startGame: StartGame
   })

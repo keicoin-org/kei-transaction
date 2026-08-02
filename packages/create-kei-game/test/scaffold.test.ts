@@ -14,7 +14,7 @@ import { projectFrom } from '../src/naming.js'
 import { scaffold, type GeneratedFile } from '../src/scaffold.js'
 
 const project = projectFrom({ name: 'Star Clicker', currency: 'Gold Pieces' })
-const files = await scaffold(project, { sdkVersion: '^0.1.0' })
+const files = await scaffold(project, { sdkVersion: '^0.3.0' })
 
 const at = (path: string): GeneratedFile => {
   const file = files.find((candidate) => candidate.path === path)
@@ -80,7 +80,7 @@ describe('the two answers reach every corner', () => {
   })
 
   test('the SDK version it was built alongside is the one it asks for', () => {
-    expect(manifest.dependencies['kei-transaction']).toBe('^0.1.0')
+    expect(manifest.dependencies['kei-transaction']).toBe('^0.3.0')
   })
 })
 

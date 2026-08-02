@@ -41,6 +41,6 @@
     "access": "public"
   },
   "dependencies": {
-    "@keicoin/core": "^0.1.0"
+    "@keicoin/core": "^0.3.0"
   }
 }

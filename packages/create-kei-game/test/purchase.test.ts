@@ -67,7 +67,7 @@ const realLocation = (globalThis as { location?: unknown }).location
 beforeAll(async () => {
   await rm(directory, { recursive: true, force: true })
   const project = projectFrom({ name: 'Star Clicker', currency: 'Gold Pieces' })
-  const files = await scaffold(project, { sdkVersion: '^0.1.0' })
+  const files = await scaffold(project, { sdkVersion: '^0.3.0' })
   await writeFiles(directory, files)
   mainSource = files.find((file) => file.path === 'server/main.ts')?.contents ?? ''
 
