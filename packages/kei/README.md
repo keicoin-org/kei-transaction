@@ -16,9 +16,10 @@ await kei.send('kei_3abc...', 0.001)   // sub-cent, instant, feeless
 
 > **Status: M6 in progress.** `Kei.start()` uses the real node at
 > `https://testnet.keicoin.org/rpc`; `Kei.mock()` remains available for tests.
-> `@keicoin/market` provides swap offers, atomic settlement, and price history
-> against the reference ledger while the native swap node work is completed, and
-> `WalletPanel.mount()` gives games a drop-in balance/inventory/claims UI.
+> `@keicoin/market` provides swap offers, atomic settlement, and price history —
+> the native `swap_offer`/`swap_accept`/`swap_cancel` blocks it reads are merged
+> in the node — and `WalletPanel.mount()` gives games a drop-in
+> balance/inventory/claims UI.
 > The public testnet is one best-effort node with weak consensus, published dev
 > keys, no uptime promise, and no monetary value. See
 > [Where this is](#where-this-is).
@@ -234,7 +235,7 @@ M6 of eleven. What exists:
 | | |
 |---|---|
 | **The §6.7 API** | Complete, running end to end, types published |
-| **The chain** | A real Kei node enforcing the SPEC §5.6 / §7 ledger rules; native claims are merged and native swaps are the remaining M5 node work |
+| **The chain** | A real Kei node enforcing the SPEC §5.6 / §7 ledger rules; native claims and native swaps are both merged |
 | **The network** | One public, rate-limited, best-effort Hetzner testnet node. `Kei.start()` selects it by default; `Kei.mock()` is explicit |
 | **The demo** | [Button](https://github.com/keicoin-org/button) — playable single-player, every number on the chain and none in a database |
 | **The market** | `@keicoin/market` — offers, atomic settlement, price history, all read from the chain |
