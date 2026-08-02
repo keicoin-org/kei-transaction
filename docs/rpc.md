@@ -260,10 +260,100 @@ human step on mainnet is somebody sending Kei to the printed address (SPEC §12)
 
 ---
 
-## Not yet specified here
+## The market (SPEC §9)
 
-`swap_offer` / `swap_accept` / `swap_cancel` and the market read model are M5.
-They will add actions here; they will not change the ones above.
+An offer is a `swap_offer` block on the offerer's own chain — there is no
+separate listing action to call. `process` already carries all three swap
+blocks; `swap_info` and `account_swaps` below are the read model over them.
+The op bytes this SDK proposes for the three legs, and why, are recorded in
+[`docs/decisions-m5.md`](decisions-m5.md) §1.
+
+### `swap_offer` (via `process`)
+
+Locks `amount` of `asset` out of the offerer's spendable balance — Kei itself
+if `asset` is `0000…0000` — into an entry keyed by this block's own hash.
+Nothing moves to anyone yet.
+
+```json
+{ "type": "asset", "op": { "kind": "swap_offer",
+  "asset": "0000...0000", "amount": "1000000000000000000",
+  "wantAsset": "A1B2...", "wantAmount": "1",
+  "counterparty": "kei_3abc...", "expiresAt": 1735689600000 } }
+```
+
+`counterparty` is optional — absent means anyone may accept. `expiresAt` is
+optional, advisory, milliseconds since the epoch, and never consensus-enforced
+(SPEC §9.3): the chain has no clock, so an expired offer still settles if
+somebody accepts it before its owner cancels it.
+
+### `swap_accept` (via `process`)
+
+References the offer by hash, and restates its `wantAsset`/`wantAmount` as
+this block's own `asset`/`amount` — the accepter's signature has to cover
+what it pays, the same as every other op signs its own cost, rather than
+trusting whatever the offer hash currently resolves to. A restatement that
+does not match the offer exactly is rejected (`swap-terms-mismatch`). One
+block, both legs: debits the accepter for `amount`, and creates two
+receivables — `amount` to the offerer, the offer's own locked `amount` to the
+accepter. Valid exactly once; a second accept, or an accept after the offer
+was cancelled, is rejected.
+
+```json
+{ "type": "asset", "op": { "kind": "swap_accept", "offer": "F1E2...D3C4",
+  "asset": "0000...0000", "amount": "5000000000000000000" } }
+```
+
+### `swap_cancel` (via `process`)
+
+References the offer by hash. Returns the locked amount to the offerer's own
+spendable balance. Valid only while the offer is still open — an offer already
+settled by an accept cannot be cancelled, and this is the one place a node
+sees the accept-vs-cancel race SPEC §9.2 describes: whichever of the two
+blocks the node applies first wins outright, and the other is rejected with
+nothing partially applied.
+
+```json
+{ "type": "asset", "op": { "kind": "swap_cancel", "offer": "F1E2...D3C4" } }
+```
+
+### `swap_info`
+
+```json
+{ "action": "swap_info", "hash": "F1E2...D3C4" }
+```
+```json
+{ "offer": {
+  "hash": "F1E2...D3C4", "from": "kei_3abc...",
+  "asset": "A1B2...", "amount": "1",
+  "wantAsset": "0000...0000", "wantAmount": "1000000000000000000",
+  "counterparty": null, "expiresAt": null,
+  "state": "open", "settledBy": null, "acceptedBy": null,
+  "height": 4, "seenAt": 1735689600000, "settledAt": null
+} }
+```
+
+`null` for a hash that is not a `swap_offer` block, per this document's usual
+convention. `state` is `"open"`, `"accepted"`, or `"cancelled"`. `seenAt` and
+`settledAt` are the *node's own* wall-clock time in milliseconds — not
+consensus, and two nodes will disagree — good for hiding old listings, never
+for settling a dispute (`decisions-m5.md` §3).
+
+### `account_swaps`
+
+```json
+{ "action": "account_swaps", "account": "kei_3abc...", "count": 100, "state": "open" }
+```
+```json
+{ "offers": [ { "hash": "F1E2...D3C4", "...": "..." } ] }
+```
+
+Newest first, and bounded to one account's own chain — SPEC §9.1's answer to
+"what is on sale": a scan of the accounts a client already cares about, never a
+network-wide index (SPEC §9.4 — Kei does not run a matching engine or a
+listing service). `state` is optional; omit it for offers in any state. This is
+also how price history is read: a settled offer *is* a trade, so
+`{ "state": "accepted" }` against the chains you name is the whole of
+`@keicoin/market`'s `trades()`.
 
 ## Subscriptions
 

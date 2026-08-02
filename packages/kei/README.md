@@ -14,11 +14,12 @@ const kei = await Kei.start()          // wallet created, persisted, funded
 await kei.send('kei_3abc...', 0.001)   // sub-cent, instant, feeless
 ```
 
-> **Status: M3 testnet.** `Kei.start()` uses a real node at
+> **Status: M5 in progress.** `Kei.start()` uses the real node at
 > `https://testnet.keicoin.org/rpc`; `Kei.mock()` remains available for tests.
-> This is one best-effort node with weak consensus, no uptime promise, and no
-> monetary value: a dev-network chain whose keys are published, so anyone can
-> fund or reset it and it may be rebuilt without notice. See
+> `@keicoin/market` provides swap offers, atomic settlement, and price history
+> against the reference ledger while the native swap node work is completed.
+> The public testnet is one best-effort node with weak consensus, published dev
+> keys, no uptime promise, and no monetary value. See
 > [Where this is](#where-this-is).
 
 ---
@@ -227,15 +228,15 @@ commit, because that is where the decision is actually made.
 
 ## Where this is
 
-M3 of eleven. What exists:
+M5 of eleven, in progress. What exists:
 
 | | |
 |---|---|
 | **The §6.7 API** | Complete, running end to end, types published |
-| **The chain** | A real Kei node enforcing the SPEC §5.6 / §7 ledger rules; the reference mock remains for hermetic tests |
+| **The chain** | A real Kei node enforcing the SPEC §5.6 / §7 ledger rules; native claims are merged and native swaps are the remaining M5 node work |
 | **The network** | One public, rate-limited, best-effort Hetzner testnet node. `Kei.start()` selects it by default; `Kei.mock()` is explicit |
 | **The demo** | [Button](https://github.com/keicoin-org/button) — playable single-player, every number on the chain and none in a database |
-| **The market** | M5 — `@keicoin/market` does not exist yet |
+| **The market** | `@keicoin/market` — offers, atomic settlement, price history, all read from the chain |
 | **The wallet panel** | M6 — the headless summary is here, `WalletPanel.mount()` is not |
 
 The mock is not a stub of the API: it enforces one chain per account, derived
@@ -272,7 +273,7 @@ for people who care about bundle size, not as a puzzle everyone must solve.
 | `@keicoin/claims` | Merkle roots, proofs, claim blocks |
 | `@keicoin/work` | proof-of-work tiers, local generation, work-server client |
 | `@keicoin/wallet` | in-game wallet: balances, inventory, pending claims |
-| `@keicoin/market` | M5 |
+| `@keicoin/market` | offers, atomic swap settlement, price history — depends on `@keicoin/core` alone |
 
 `@keicoin/core` depends on nothing else in the tree.
 
@@ -280,7 +281,7 @@ for people who care about bundle size, not as a puzzle everyone must solve.
 
 ```sh
 bun install
-bun test          # 211 tests
+bun test
 bun run build     # tsc --build, emits dist/ and .d.ts across the workspace
 ```
 

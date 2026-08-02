@@ -6,9 +6,9 @@
  *   const kei = await Kei.start()          // wallet created, persisted, funded
  *   await kei.send('kei_3abc...', 0.001)   // sub-cent, instant, feeless
  *
- * Sub-packages (`@keicoin/core`, `@keicoin/tokens`, `@keicoin/claims`, `@keicoin/work`,
- * `@keicoin/wallet`) exist for people who care about bundle size, not as a puzzle
- * everyone must solve (SPEC §10.1).
+ * Sub-packages (`@keicoin/core`, `@keicoin/tokens`, `@keicoin/claims`, `@keicoin/market`,
+ * `@keicoin/work`, `@keicoin/wallet`) exist for people who care about bundle size,
+ * not as a puzzle everyone must solve (SPEC §10.1).
  */
 
 export { Kei } from './kei.js'
@@ -69,7 +69,9 @@ export type {
   Receivable,
   RevealPolicy,
   Role,
+  SwapOffer,
   SwapPolicy,
+  SwapState,
   TransferPolicy,
   WorkTier,
 } from '@keicoin/core'
@@ -90,6 +92,25 @@ export type {
   PublishedCommit,
   TokenTransfer,
 } from '@keicoin/tokens'
+
+export { createMarket, durationMs } from '@keicoin/market'
+export type {
+  BidOptions,
+  Cancellation,
+  ListOptions,
+  MarketApi,
+  MarketOptions,
+  MineOptions,
+  Offer,
+  OfferLeg,
+  OfferOptions,
+  OfferState,
+  PriceSummary,
+  SellOptions,
+  Settlement,
+  Trade,
+  TradeOptions,
+} from '@keicoin/market'
 
 export { LocalWorkProvider, WorkServerProvider, createWorkProvider } from '@keicoin/work'
 export { createWallet } from '@keicoin/wallet'

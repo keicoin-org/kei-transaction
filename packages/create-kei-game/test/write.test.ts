@@ -64,7 +64,7 @@ describe('writeFiles', () => {
   test('writes the whole tree, subdirectories and all', async () => {
     const directory = join(await temp(), 'star-clicker')
     const project = projectFrom({ name: 'Star Clicker', currency: 'Gems' })
-    const files = await scaffold(project, { sdkVersion: '^0.1.0' })
+    const files = await scaffold(project, { sdkVersion: '^0.3.0' })
 
     await writeFiles(directory, files)
 

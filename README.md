@@ -14,9 +14,11 @@ const kei = await Kei.start()          // wallet created, persisted, funded
 await kei.send('kei_3abc...', 0.001)   // sub-cent, instant, feeless
 ```
 
-> **Status: public M3 testnet; native M4 claims merged.** `Kei.start()` uses a real node at
+> **Status: M5 in progress.** `Kei.start()` uses the real node at
 > `https://testnet.keicoin.org/rpc`; `Kei.mock()` remains available for tests.
-> This is one best-effort node with weak consensus, no uptime promise, and no
+> `@keicoin/market` now provides swap offers, atomic settlement, and price history
+> against the reference ledger while the native swap node work is completed.
+> The public testnet is one best-effort node with weak consensus, no uptime promise, and no
 > monetary value: a dev-network chain whose keys are published, so anyone can
 > fund or reset it and it may be rebuilt without notice. The 0.2.0 SDK and the
 > native node's pinned M4 CI gate cover commit, claim, commit-close, and the work
@@ -162,6 +164,34 @@ When a batch is old, close it: `await gems.close(drop.root)`. Closed roots take
 no further claims and become prunable. Nothing expires on a timer — this chain
 has no clock, deliberately.
 
+## The market
+
+An auction house is usually weeks of work: listings, bids, settlement, price
+history, and a database in front of all of it. Here a listing is one block, and
+settlement is atomic — there is no server and no database to run.
+
+```js
+// Seller: locks the item, asks 5 Kei
+const offer = await kei.market.sell({ asset: sword, price: 5 })
+
+// Buyer: one block moves both legs, or neither
+await kei.market.accept(offer)
+
+// Anyone: price history is transaction history, already there
+await kei.market.medianPrice(sword, { window: '7d' })
+```
+
+Only the seller ever locks anything, and it is their own item — the same sword
+cannot be listed twice, because after the first offer it is not in their wallet
+to offer again. `market.cancel(offer)` gets it back any time before someone
+accepts. An `expiresAt` is advisory only — this chain has no clock — and the
+SDK cancels a wallet's own expired listings in the background, which is what
+actually clears them off the ledger.
+
+`market.offers({ from })` and `market.trades({ from })` read a bounded walk of
+the chains you name — there is no network-wide listing index, on purpose
+(the chain moves and records assets; it does not run a matching engine).
+
 ## The wallet
 
 ```js
@@ -229,15 +259,15 @@ commit, because that is where the decision is actually made.
 
 ## Where this is
 
-M4 implementation is merged, on top of the public M3 testnet. What exists:
+M5 of eleven, in progress. What exists:
 
 | | |
 |---|---|
 | **The §6.7 API** | Complete, running end to end, types published |
-| **The chain** | A real Kei node enforcing the SPEC §5.6 / §7 ledger rules, including native M4 commit/claim/commit-close in its pinned CI gate; the reference mock remains for hermetic tests |
+| **The chain** | A real Kei node enforcing the SPEC §5.6 / §7 ledger rules, including native M4 commit/claim/commit-close in its pinned CI gate; native swaps are the remaining M5 node work and the reference mock remains for hermetic tests |
 | **The network** | One public, rate-limited, best-effort Hetzner testnet node. `Kei.start()` selects it by default; `Kei.mock()` is explicit |
 | **The demo** | [Button](../button) — playable single-player, every number on the chain and none in a database |
-| **The market** | M5 — `@keicoin/market` does not exist yet |
+| **The market** | `@keicoin/market` — offers, atomic settlement, price history, all read from the chain |
 | **The wallet panel** | M6 — the headless summary is here, `WalletPanel.mount()` is not |
 | **npm** | All SDK packages are published at `0.2.0`; `create-kei-game` is published at `0.1.1` |
 | **The harness** | `npm create kei-game@0.1.1` generates and runs the hash-correlated, restart-safe purchase path |
@@ -245,9 +275,13 @@ M4 implementation is merged, on top of the public M3 testnet. What exists:
 
 The mock is not a stub of the API: it enforces one chain per account, derived
 asset ids, receivable arrivals, work tiers, the issuance burn, circulating-supply
-caps, transfer policy, the (account, root) double-claim index, and the genesis
-allocation. The mock keeps local development cheap; the native node supplies the
-production transport, and M3 deploys it without moving the API.
+caps, transfer policy, the (account, root) double-claim index, self-locking
+swaps, and the accept-vs-cancel race (SPEC §9.2, conflict 4) — so the SDK is
+written against the intended semantics before the native swap node lands. What
+the mock cannot rehearse is stated in
+[`docs/decisions-m5.md`](docs/decisions-m5.md) §2: the race is resolved by
+arrival order in one process, standing in for the fork-resolution rule a real
+node needs across many.
 
 M1 proved that across a process boundary rather than asserting it: `mockRpcHandler`
 serves [`docs/rpc.md`](docs/rpc.md) as a plain `Request → Response`, and the whole
@@ -278,7 +312,7 @@ for people who care about bundle size, not as a puzzle everyone must solve.
 | `@keicoin/claims` | Merkle roots, proofs, claim blocks |
 | `@keicoin/work` | proof-of-work tiers, local generation, work-server client |
 | `@keicoin/wallet` | in-game wallet: balances, inventory, pending claims |
-| `@keicoin/market` | M5 |
+| `@keicoin/market` | offers, atomic swap settlement, price history — depends on `@keicoin/core` alone |
 
 `@keicoin/core` depends on nothing else in the tree.
 
@@ -299,7 +333,7 @@ in somebody's new project.
 
 ```sh
 bun install
-bun test          # 211 tests
+bun test
 bun run build     # tsc --build, emits dist/ and .d.ts across the workspace
 ```
 
@@ -309,6 +343,8 @@ Documentation worth reading before changing anything:
   spec left open, and what M2 inherits
 - [`docs/decisions-m1.md`](docs/decisions-m1.md) — what a real browser and a real
   process boundary changed, including the two bugs the test suite could not see
+- [`docs/decisions-m5.md`](docs/decisions-m5.md) — the swap wire layout proposal,
+  and what the mock's accept-vs-cancel race does and does not prove
 - [`docs/rpc.md`](docs/rpc.md) — the node contract the fork has to serve
 
 ## Credit
