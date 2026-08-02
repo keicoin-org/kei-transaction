@@ -19,7 +19,7 @@
 
 import type { Block } from '../blocks.js'
 import { KeiError } from '../errors.js'
-import type { KeiNode } from '../node.js'
+import type { KeiNode, SwapState } from '../node.js'
 
 export interface MockRpcOptions {
   node: KeiNode
@@ -146,6 +146,17 @@ async function dispatch(node: KeiNode, action: string, body: RpcRequest): Promis
     case 'claim_status':
       return { claimed: await node.hasClaimed(text(body.account, 'account'), text(body.root, 'root')) }
 
+    case 'swap_info':
+      return { offer: await node.swapOffer(text(body.hash, 'hash')) }
+
+    case 'account_swaps':
+      return {
+        offers: await node.accountSwaps(text(body.account, 'account'), {
+          limit: count(body.count, 100),
+          ...(body.state === undefined ? {} : { state: swapState(body.state) }),
+        }),
+      }
+
     case 'faucet':
       return node.faucet(
         text(body.account, 'account'),
@@ -162,6 +173,14 @@ function text(value: unknown, field: string): string {
     throw new KeiError('bad-request', `This call needs a "${field}".`)
   }
   return value
+}
+
+function swapState(value: unknown): SwapState {
+  if (value === 'open' || value === 'accepted' || value === 'cancelled') return value
+  throw new KeiError(
+    'bad-request',
+    `"state" is one of open, accepted or cancelled — got "${String(value)}". Leave it out for all three.`,
+  )
 }
 
 function count(value: unknown, fallback: number): number {

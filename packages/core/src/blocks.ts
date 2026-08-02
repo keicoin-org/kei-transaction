@@ -98,6 +98,60 @@ export interface ClaimOp {
   proof: string[]
 }
 
+/**
+ * Lock one's own asset and declare what it is wanted for (SPEC §9.2).
+ *
+ * The offerer is the only party who locks anything, and it is their own asset:
+ * `amount` of `asset` leaves their spendable balance into a locked entry keyed by
+ * this block's hash. Nothing moves to anyone.
+ */
+export interface SwapOfferOp {
+  kind: 'swap_offer'
+  /** The asset being locked. Kei is `KEI_ASSET`. */
+  asset: AssetId
+  /** Raw units of `asset` to lock. */
+  amount: string
+  wantAsset: AssetId
+  /** Raw units of `wantAsset` the offerer wants for it. */
+  wantAmount: string
+  /** Only this account may accept. Absent means anyone may (SPEC §9.2). */
+  counterparty?: string
+  /**
+   * Advisory wall-clock expiry, milliseconds since the epoch. **Never
+   * consensus-enforced and it cannot be** — this chain has no clock (SPEC §9.3).
+   * Clients hide expired listings; the offerer's own `swap_cancel` is what
+   * actually removes one from the ledger.
+   */
+  expiresAt?: number
+}
+
+/**
+ * Take an offer: one block that debits the accepter and credits both parties
+ * (SPEC §9.2). Valid exactly once.
+ *
+ * `asset`/`amount` restate the offer's own `wantAsset`/`wantAmount` — the
+ * accepter's signature has to cover what it is paying, the same way every
+ * other op signs its own cost, rather than trusting whatever a hash reference
+ * currently resolves to. The node refuses an accept whose restatement does not
+ * match the offer exactly, so the two legs still cannot disagree about price:
+ * they must agree in writing instead of by construction.
+ */
+export interface SwapAcceptOp {
+  kind: 'swap_accept'
+  /** The `swap_offer` block's hash. */
+  offer: string
+  /** Must equal the offer's `wantAsset`. */
+  asset: AssetId
+  /** Raw units of `asset` this accept pays. Must equal the offer's `wantAmount`. */
+  amount: string
+}
+
+/** Recover one's own locked asset. Valid only while the offer is unaccepted. */
+export interface SwapCancelOp {
+  kind: 'swap_cancel'
+  offer: string
+}
+
 export type AssetOp =
   | IssueOp
   | MintOp
@@ -107,6 +161,9 @@ export type AssetOp =
   | CommitOp
   | CommitCloseOp
   | ClaimOp
+  | SwapOfferOp
+  | SwapAcceptOp
+  | SwapCancelOp
 
 export type StateSubtype = 'open' | 'send' | 'receive' | 'change'
 
@@ -162,6 +219,13 @@ export function tierFor(body: BlockBody): WorkTier {
     case 'commit_close':
       return 'A'
     case 'transfer':
+    // All three swap legs are tier B (SPEC §5.6.4). A cancel is cheap to
+    // validate, but it is the block an offerer races an accept with, so pricing
+    // it below the accept would hand the racer an advantage the protocol has no
+    // reason to give (SPEC §9.2, conflict 4).
+    case 'swap_offer':
+    case 'swap_accept':
+    case 'swap_cancel':
       return 'B'
     case 'burn':
     case 'claim':

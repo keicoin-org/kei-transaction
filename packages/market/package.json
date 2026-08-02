@@ -1,24 +1,25 @@
 {
-  "name": "@keicoin/wallet",
-  "version": "0.3.0",
-  "description": "In-game wallet for Kei: mountable balance/inventory/claims panel, plus the headless summary API underneath it.",
+  "name": "@keicoin/market",
+  "version": "0.1.0",
+  "description": "The market for Kei: offers that are blocks, atomic settlement, and price history read from the chain.",
   "license": "MIT",
   "author": "Sano",
-  "homepage": "https://keicoin.org#wallet",
+  "homepage": "https://keicoin.org#market",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/keicoin-org/kei-transaction.git",
-    "directory": "packages/wallet"
+    "directory": "packages/market"
   },
   "bugs": {
     "url": "https://github.com/keicoin-org/kei-transaction/issues"
   },
   "keywords": [
     "kei",
-    "wallet",
-    "inventory",
-    "game",
-    "balances"
+    "market",
+    "auction-house",
+    "atomic-swap",
+    "trading",
+    "price-history"
   ],
   "type": "module",
   "exports": {
@@ -40,8 +41,6 @@
     "access": "public"
   },
   "dependencies": {
-    "@keicoin/claims": "^0.3.0",
-    "@keicoin/core": "^0.3.0",
-    "@keicoin/tokens": "^0.3.0"
+    "@keicoin/core": "^0.3.0"
   }
 }

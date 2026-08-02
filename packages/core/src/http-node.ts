@@ -20,6 +20,8 @@ import type {
   NetworkName,
   Notification,
   Receivable,
+  SwapOffer,
+  SwapState,
   Unsubscribe,
 } from './node.js'
 
@@ -164,6 +166,23 @@ export class HttpNode implements KeiNode {
   async hasClaimed(address: string, root: string): Promise<boolean> {
     const result = await this.call<{ claimed?: boolean }>('claim_status', { account: address, root })
     return result.claimed === true
+  }
+
+  async swapOffer(hash: string): Promise<SwapOffer | null> {
+    const result = await this.call<{ offer?: SwapOffer | null }>('swap_info', { hash })
+    return result.offer ?? null
+  }
+
+  async accountSwaps(
+    address: string,
+    options?: { limit?: number; state?: SwapState },
+  ): Promise<SwapOffer[]> {
+    const result = await this.call<{ offers?: SwapOffer[] }>('account_swaps', {
+      account: address,
+      count: options?.limit ?? 100,
+      ...(options?.state === undefined ? {} : { state: options.state }),
+    })
+    return result.offers ?? []
   }
 
   /** Polling, because a plain RPC node has nothing to push with. */
