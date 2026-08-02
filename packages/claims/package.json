@@ -1,6 +1,6 @@
 {
   "name": "@keicoin/claims",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Merkle-rooted claims for Kei: root building, proofs, and player-signed claim blocks.",
   "license": "MIT",
   "author": "Sano",
@@ -41,6 +41,6 @@
     "access": "public"
   },
   "dependencies": {
-    "@keicoin/core": "^0.1.0"
+    "@keicoin/core": "^0.2.0"
   }
 }

@@ -24,9 +24,11 @@ import { scaffold } from './scaffold.js'
 import { assertWritable, writeFiles } from './write.js'
 import { createAsker, type Asker } from './prompt.js'
 
-const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
   version: string
+  devDependencies: { 'kei-transaction': string }
 }
+const { version } = manifest
 
 async function main(): Promise<void> {
   const options = parseArgs(argv.slice(2))
@@ -56,7 +58,7 @@ async function main(): Promise<void> {
   const directory = resolve(cwd(), project.slug)
   await assertWritable(directory, options.force)
 
-  const files = await scaffold(project, { sdkVersion: `^${version}` })
+  const files = await scaffold(project, { sdkVersion: manifest.devDependencies['kei-transaction'] })
   await writeFiles(directory, files)
 
   stdout.write(nextSteps(project, files.length))
