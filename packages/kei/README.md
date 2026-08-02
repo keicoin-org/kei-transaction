@@ -227,7 +227,7 @@ commit, because that is where the decision is actually made.
 
 ## Where this is
 
-M3 of eleven. What exists:
+M6 of eleven. What exists:
 
 | | |
 |---|---|
@@ -236,7 +236,7 @@ M3 of eleven. What exists:
 | **The network** | One public, rate-limited, best-effort Hetzner testnet node. `Kei.start()` selects it by default; `Kei.mock()` is explicit |
 | **The demo** | [Button](https://github.com/keicoin-org/button) — playable single-player, every number on the chain and none in a database |
 | **The market** | M5 — `@keicoin/market` does not exist yet |
-| **The wallet panel** | M6 — the headless summary is here, `WalletPanel.mount()` is not |
+| **The wallet panel** | M6 — `WalletPanel.mount()` is real and tested end to end, with the SPEC §6.6 seed-reveal friction |
 
 The mock is not a stub of the API: it enforces one chain per account, derived
 asset ids, receivable arrivals, work tiers, the issuance burn, circulating-supply

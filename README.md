@@ -227,7 +227,7 @@ commit, because that is where the decision is actually made.
 
 ## Where this is
 
-M3 of eleven. What exists:
+M6 of eleven. What exists:
 
 | | |
 |---|---|
@@ -236,7 +236,7 @@ M3 of eleven. What exists:
 | **The network** | One public, rate-limited, best-effort Hetzner testnet node. `Kei.start()` selects it by default; `Kei.mock()` is explicit |
 | **The demo** | [Button](../button) — playable single-player, every number on the chain and none in a database |
 | **The market** | M5 — `@keicoin/market` does not exist yet |
-| **The wallet panel** | M6 — the headless summary is here, `WalletPanel.mount()` is not |
+| **The wallet panel** | M6 — `WalletPanel.mount()` is real and tested end to end, with the SPEC §6.6 seed-reveal friction |
 | **npm** | All seven have a `0.1.0`, but public `create-kei-game@0.1.0` predates the safe purchase/restart work in PR #6 and is stale; the coordinated `0.1.1` release is tracked in [#12](https://github.com/keicoin-org/kei-transaction/issues/12) |
 | **The harness** | The source in this tree generates and runs the hash-correlated, restart-safe purchase path. Do not use the public `0.1.0` scaffold for durable payment settlement |
 
