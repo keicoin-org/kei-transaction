@@ -16,12 +16,13 @@ await kei.send('kei_3abc...', 0.001)   // sub-cent, instant, feeless
 
 > **Status: M6 in progress.** `Kei.start()` uses the real node at
 > `https://testnet.keicoin.org/rpc`; `Kei.mock()` remains available for tests.
-> `@keicoin/market` provides swap offers, atomic settlement, and price history
-> against the reference ledger while the native swap node work is completed, and
-> `WalletPanel.mount()` gives games a drop-in balance/inventory/claims UI.
+> `@keicoin/market` provides swap offers, atomic settlement, and price history —
+> the native swap blocks it reads have since merged into the node — and
+> `WalletPanel.mount()` gives games a drop-in balance/inventory/claims UI. Both
+> ship in `0.3.0`, so installing the SDK gets them.
 > The public testnet is one best-effort node with weak consensus, no uptime promise, and no
 > monetary value: a dev-network chain whose keys are published, so anyone can
-> fund or reset it and it may be rebuilt without notice. The 0.2.0 SDK and the
+> fund or reset it and it may be rebuilt without notice. The 0.3.0 SDK and the
 > native node's pinned M4 CI gate cover commit, claim, commit-close, and the work
 > server; that does not by itself prove which build the public endpoint runs. See
 > [Where this is](#where-this-is).
@@ -265,12 +266,12 @@ M6 of eleven. What exists:
 | | |
 |---|---|
 | **The §6.7 API** | Complete, running end to end, types published |
-| **The chain** | A real Kei node enforcing the SPEC §5.6 / §7 ledger rules, including native M4 commit/claim/commit-close in its pinned CI gate; native swaps are the remaining M5 node work and the reference mock remains for hermetic tests |
+| **The chain** | A real Kei node enforcing the SPEC §5.6 / §7 ledger rules, including native M4 commit/claim/commit-close in its pinned CI gate. Native `swap_offer`/`swap_accept`/`swap_cancel` are merged too; the reference mock remains for hermetic tests |
 | **The network** | One public, rate-limited, best-effort Hetzner testnet node. `Kei.start()` selects it by default; `Kei.mock()` is explicit |
 | **The demo** | [Button](../button) — playable single-player, every number on the chain and none in a database |
-| **The market** | `@keicoin/market` — offers, atomic settlement, price history, all read from the chain |
+| **The market** | `@keicoin/market@0.1.0` — offers, atomic settlement, price history, all read from the chain. Published; `0.1.0` rather than `0.3.0` because it is the newest package here and has the least mileage |
 | **The wallet panel** | `WalletPanel.mount()` is real and tested end to end, with the SPEC §6.6 seed-reveal friction |
-| **npm** | All SDK packages are published at `0.2.0`; `create-kei-game` is published at `0.1.1` |
+| **npm** | `kei-transaction@0.3.0` and every `@keicoin/*` package are published, carrying M5 and M6; `@keicoin/market` at `0.1.0` and `create-kei-game` at `0.1.2`. What is installable and what is merged are the same thing again |
 | **The harness** | `npm create kei-game@0.1.1` generates and runs the hash-correlated, restart-safe purchase path |
 | **The work server** | `@keicoin/work@0.2.0` exports the bounded handler/server integration and the `kei-work-server` CLI; operating a public instance is separate deployment work |
 
