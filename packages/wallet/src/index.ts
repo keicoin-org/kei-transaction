@@ -2,10 +2,10 @@
  * The in-game wallet, headless half.
  *
  * SPEC §6.5: most players will never open the standalone wallet, so the in-game
- * panel is what they actually use. M0 ships the data behind it — one summary
+ * panel is what they actually use. This ships the data behind it — one summary
  * call and a change event — which is also the escape hatch for a developer
- * drawing their own UI. `WalletPanel.mount()` and the seed-reveal friction land
- * at M6, along with the `kei.pay()` confirmation dialog that §6.8 moved here.
+ * drawing their own UI. The mountable `WalletPanel` (panel.ts) is built on top
+ * of it and lands at M6, along with the seed-reveal friction from §6.6.
  */
 
 import type { AssetId, KeiClient } from '@keicoin/core'
@@ -104,3 +104,13 @@ export function createWallet(client: KeiClient, options: WalletOptions = {}): Wa
     },
   }
 }
+
+export { WalletPanel } from './panel.js'
+export type {
+  WalletPanelHandle,
+  WalletPanelKei,
+  WalletPanelOptions,
+  WalletPanelSection,
+  WalletPanelTheme,
+  WalletPanelThemeVars,
+} from './panel.js'

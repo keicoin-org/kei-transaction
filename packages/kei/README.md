@@ -14,10 +14,11 @@ const kei = await Kei.start()          // wallet created, persisted, funded
 await kei.send('kei_3abc...', 0.001)   // sub-cent, instant, feeless
 ```
 
-> **Status: M5 in progress.** `Kei.start()` uses the real node at
+> **Status: M6 in progress.** `Kei.start()` uses the real node at
 > `https://testnet.keicoin.org/rpc`; `Kei.mock()` remains available for tests.
 > `@keicoin/market` provides swap offers, atomic settlement, and price history
-> against the reference ledger while the native swap node work is completed.
+> against the reference ledger while the native swap node work is completed, and
+> `WalletPanel.mount()` gives games a drop-in balance/inventory/claims UI.
 > The public testnet is one best-effort node with weak consensus, published dev
 > keys, no uptime promise, and no monetary value. See
 > [Where this is](#where-this-is).
@@ -228,7 +229,7 @@ commit, because that is where the decision is actually made.
 
 ## Where this is
 
-M5 of eleven, in progress. What exists:
+M6 of eleven. What exists:
 
 | | |
 |---|---|
@@ -237,7 +238,7 @@ M5 of eleven, in progress. What exists:
 | **The network** | One public, rate-limited, best-effort Hetzner testnet node. `Kei.start()` selects it by default; `Kei.mock()` is explicit |
 | **The demo** | [Button](https://github.com/keicoin-org/button) — playable single-player, every number on the chain and none in a database |
 | **The market** | `@keicoin/market` — offers, atomic settlement, price history, all read from the chain |
-| **The wallet panel** | M6 — the headless summary is here, `WalletPanel.mount()` is not |
+| **The wallet panel** | `WalletPanel.mount()` is real and tested end to end, with the SPEC §6.6 seed-reveal friction |
 
 The mock is not a stub of the API: it enforces one chain per account, derived
 asset ids, receivable arrivals, work tiers, the issuance burn, circulating-supply

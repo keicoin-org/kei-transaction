@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "types": ["bun"],
+    // The one package with a real DOM to test (M6's mountable panel). Kept out
+    // of tsconfig.tests.json — see the comment there — because @types/node's
+    // fetch/Buffer typings, used elsewhere in this monorepo, conflict with
+    // lib.dom's once both are in scope in the same program.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "forceConsistentCasingInFileNames": false
+  },
+  "include": ["packages/wallet/test/**/*.ts"]
+}

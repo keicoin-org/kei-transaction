@@ -113,5 +113,16 @@ export type {
 } from '@keicoin/market'
 
 export { LocalWorkProvider, WorkServerProvider, createWorkProvider } from '@keicoin/work'
-export { createWallet } from '@keicoin/wallet'
-export type { ItemHolding, TokenBalance, WalletApi, WalletSummary } from '@keicoin/wallet'
+export { WalletPanel, createWallet } from '@keicoin/wallet'
+export type {
+  ItemHolding,
+  TokenBalance,
+  WalletApi,
+  WalletPanelHandle,
+  WalletPanelKei,
+  WalletPanelOptions,
+  WalletPanelSection,
+  WalletPanelTheme,
+  WalletPanelThemeVars,
+  WalletSummary,
+} from '@keicoin/wallet'

@@ -10,5 +10,12 @@
     // project root on Windows, which is a path artifact and not a code problem.
     "forceConsistentCasingInFileNames": false
   },
+  // packages/wallet/test needs the ambient "DOM" lib (M6's mountable panel) and
+  // is checked separately by tsconfig.tests.dom.json instead: adding "DOM" here
+  // would make it global to every package's tests, and @types/node's own
+  // fetch/Buffer typings (e.g. packages/work/src/server.ts's `new Request(url,
+  // { body: Buffer })`) stop resolving once lib.dom's conflicting BodyInit/
+  // RequestInit declarations are also in scope.
+  "exclude": ["packages/wallet/test/**/*.ts"],
   "include": ["packages/*/test/**/*.ts"]
 }
