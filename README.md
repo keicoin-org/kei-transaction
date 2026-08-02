@@ -18,8 +18,12 @@ await kei.send('kei_3abc...', 0.001)   // sub-cent, instant, feeless
 > `https://testnet.keicoin.org/rpc`; `Kei.mock()` remains available for tests.
 > `@keicoin/market` now provides swap offers, atomic settlement, and price history
 > against the reference ledger while the native swap node work is completed.
-> The public testnet is one best-effort node with weak consensus, published dev
-> keys, no uptime promise, and no monetary value. See [Where this is](#where-this-is).
+> The public testnet is one best-effort node with weak consensus, no uptime promise, and no
+> monetary value: a dev-network chain whose keys are published, so anyone can
+> fund or reset it and it may be rebuilt without notice. The 0.2.0 SDK and the
+> native node's pinned M4 CI gate cover commit, claim, commit-close, and the work
+> server; that does not by itself prove which build the public endpoint runs. See
+> [Where this is](#where-this-is).
 
 ---
 
@@ -74,7 +78,7 @@ game.onPayment(async ({ from, amount, hash: receiveHash }) => {
 })
 ```
 
-A Kei payment has no memo field until M4. The SDK rejects `pay({ memo })` rather
+A Kei payment has no memo field in the current wire contract. The SDK rejects `pay({ memo })` rather
 than silently dropping it. `pay()` returns the player's send-block hash;
 `onPayment.hash` is the game's receive-block hash, and that receive block's
 `link` is the send hash. Persist orders and confirmed payments independently by
@@ -260,13 +264,14 @@ M5 of eleven, in progress. What exists:
 | | |
 |---|---|
 | **The §6.7 API** | Complete, running end to end, types published |
-| **The chain** | A real Kei node enforcing the SPEC §5.6 / §7 ledger rules; native claims are merged and native swaps are the remaining M5 node work |
+| **The chain** | A real Kei node enforcing the SPEC §5.6 / §7 ledger rules, including native M4 commit/claim/commit-close in its pinned CI gate; native swaps are the remaining M5 node work and the reference mock remains for hermetic tests |
 | **The network** | One public, rate-limited, best-effort Hetzner testnet node. `Kei.start()` selects it by default; `Kei.mock()` is explicit |
 | **The demo** | [Button](../button) — playable single-player, every number on the chain and none in a database |
 | **The market** | `@keicoin/market` — offers, atomic settlement, price history, all read from the chain |
 | **The wallet panel** | M6 — the headless summary is here, `WalletPanel.mount()` is not |
-| **npm** | All seven have a `0.1.0`, but public `create-kei-game@0.1.0` predates the safe purchase/restart work in PR #6 and is stale; the coordinated `0.1.1` release is tracked in [#12](https://github.com/keicoin-org/kei-transaction/issues/12) |
-| **The harness** | The source in this tree generates and runs the hash-correlated, restart-safe purchase path. Do not use the public `0.1.0` scaffold for durable payment settlement |
+| **npm** | All SDK packages are published at `0.2.0`; `create-kei-game` is published at `0.1.1` |
+| **The harness** | `npm create kei-game@0.1.1` generates and runs the hash-correlated, restart-safe purchase path |
+| **The work server** | `@keicoin/work@0.2.0` exports the bounded handler/server integration and the `kei-work-server` CLI; operating a public instance is separate deployment work |
 
 The mock is not a stub of the API: it enforces one chain per account, derived
 asset ids, receivable arrivals, work tiers, the issuance burn, circulating-supply
@@ -286,10 +291,11 @@ URL and nothing above it.** M3 made that swap: the same suites now pass against
 the public node with `KEI_NODE_URL` as the only switch, and `npm run test:m3-live`
 runs SPEC §6.2's no-argument `Kei.start()` against it, faucet to payment.
 
-Read that precisely. Issue, top-up, mint, transfer and item all run against the
-node today; **`commit` and `claim` do not** — they are M4, they stay covered
-against the mock, and they are deliberately not in the suite that gates the
-public endpoint.
+Read that precisely. Issue, top-up, mint, transfer and item run through the
+public M3 endpoint. Native `commit`, `claim`, and `commit_close` are merged and
+run through the exact pinned M4 SDK contract against a clean node in CI. That is
+implementation evidence, not a claim that the public node has been redeployed
+with M4; deployment remains separately observable work.
 
 Nothing here holds value, and until the validator set is meaningfully
 distributed, nothing should.
