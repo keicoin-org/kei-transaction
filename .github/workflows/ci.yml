@@ -1,0 +1,63 @@
+name: CI
+
+# The SDK moves other people's balances, and until this file existed nothing
+# ran its 339 tests except a human remembering to. `kei-node` has had a build
+# gate since M2; this is the same idea for the half that developers install.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: typecheck & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows as well as Linux because this package is installed by people
+        # building games on whatever machine they own, and path casing and
+        # separators are where that difference actually shows up.
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # `--frozen-lockfile`: a dependency that only resolves because the
+      # lockfile got rewritten mid-install is a dependency nobody chose.
+      - run: bun install --frozen-lockfile
+
+      # Builds every package's project references on the way through, so this
+      # also proves the workspace still compiles as a whole.
+      - run: bun run typecheck
+
+      - run: bun test
+
+  # M3 points the default network at a real testnet, so the SDK's own contract
+  # against it can rot without any of the above noticing. It is best-effort
+  # infrastructure with no uptime promise, so this reports rather than blocks.
+  live:
+    name: against the public testnet (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run test:m3-live
