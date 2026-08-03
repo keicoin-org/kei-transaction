@@ -11,6 +11,13 @@ installed before the generated game runs. Those are here.
 As with [`decisions-m0.md`](decisions-m0.md) and [`decisions-m1.md`](decisions-m1.md),
 nothing here overrides SPEC.md.
 
+> **Migration note (2026-08-03):** This document records the original in-tree
+> M9 design and its validation at that time. The harness has since moved to the
+> standalone [`create-kei-game`](https://github.com/keicoin-org/create-kei-game)
+> repository. Section 1's repository-location decision is superseded; ongoing
+> M9 implementation is tracked in
+> [standalone PR #1](https://github.com/keicoin-org/create-kei-game/pull/1).
+
 ---
 
 ## 1. The harness lives in this repository

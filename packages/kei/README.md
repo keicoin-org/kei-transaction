@@ -201,7 +201,10 @@ cannot ask a follow-up question:
 Not enough Kei — balance is 0.4, tried to send 1.2.
 ```
 
-`AGENTS.md` and `llms.txt` ship at M9.
+The ongoing M9 harness work lives in the standalone
+[`create-kei-game`](https://github.com/keicoin-org/create-kei-game) repository;
+follow [PR #1](https://github.com/keicoin-org/create-kei-game/pull/1) for its
+current implementation.
 
 ## Shipping
 

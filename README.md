@@ -272,7 +272,10 @@ cannot ask a follow-up question:
 Not enough Kei — balance is 0.4, tried to send 1.2.
 ```
 
-`AGENTS.md` and `llms.txt` ship at M9.
+The ongoing M9 harness work lives in the standalone
+[`create-kei-game`](https://github.com/keicoin-org/create-kei-game) repository;
+its current implementation is tracked in
+[PR #1](https://github.com/keicoin-org/create-kei-game/pull/1).
 
 ## Shipping
 
@@ -311,8 +314,8 @@ M6 of eleven. What exists:
 | **The demo** | [Button](../button) — playable single-player, every number on the chain and none in a database |
 | **The market** | `@keicoin/market@0.1.0` — offers, atomic settlement, price history, all read from the chain. Published; `0.1.0` rather than `0.3.0` because it is the newest package here and has the least mileage |
 | **The wallet panel** | `WalletPanel.mount()` is real and tested end to end, with the SPEC §6.6 seed-reveal friction |
-| **npm** | `kei-transaction@0.3.0` and every `@keicoin/*` package are published, carrying M5 and M6; `@keicoin/market` at `0.1.0` and `create-kei-game` at `0.1.2`. What is installable and what is merged are the same thing again |
-| **The harness** | `npm create kei-game@0.1.1` generates and runs the hash-correlated, restart-safe purchase path |
+| **npm** | `kei-transaction@0.3.0` and every `@keicoin/*` package are published, carrying M5 and M6; `@keicoin/market` at `0.1.0`. `create-kei-game@0.2.0` was released before the package moved to its standalone repository; future harness releases are owned there |
+| **The harness** | [`create-kei-game`](https://github.com/keicoin-org/create-kei-game) owns `npm create kei-game`; its M9 transition into an ongoing game-creation harness is tracked in [PR #1](https://github.com/keicoin-org/create-kei-game/pull/1) |
 | **The work server** | `@keicoin/work@0.2.0` exports the bounded handler/server integration and the `kei-work-server` CLI; operating a public instance is separate deployment work |
 
 The mock is not a stub of the API: it enforces one chain per account, derived
@@ -358,18 +361,13 @@ for people who care about bundle size, not as a puzzle everyone must solve.
 
 `@keicoin/core` depends on nothing else in the tree.
 
-One package in the tree is not part of the SDK: **`create-kei-game`** is the
-harness behind `npm create kei-game` (SPEC §11.3). It writes a working
-single-player game — wallet, currency, purchasable item, Babylon.js scene, and a
-mock node to develop against — and exits. It has no dependencies, and nothing it
-generates depends on it. It lives here because it emits code against this API and
-has to move when this API moves; it versions with the tree for the same reason.
-
-That last part is enforced rather than intended: `bun test` writes the project
-out, imports both halves of it, and buys the item against the SDK in this tree.
-The generated shop is the `pay()` flow above end to end — pay, then hand the
-game the hash of what you signed — and the emitted code breaks here rather than
-in somebody's new project.
+The harness behind `npm create kei-game` (SPEC §11.3) is not part of the SDK.
+It moved from this workspace to the standalone
+[`create-kei-game`](https://github.com/keicoin-org/create-kei-game) repository so
+its release and game-creation workflow can evolve independently. The original
+in-tree design and validation record remains in
+[`docs/decisions-m9.md`](docs/decisions-m9.md); ongoing M9 implementation is in
+[standalone PR #1](https://github.com/keicoin-org/create-kei-game/pull/1).
 
 ## Development
 
