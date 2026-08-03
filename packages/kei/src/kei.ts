@@ -41,6 +41,8 @@ import {
   type IssuerToken,
   type Item,
   type ItemCommitEntry,
+  type MintedItem,
+  type MintItemOptions,
   type PlayerItemsApi,
   type PlayerToken,
 } from '@keicoin/tokens'
@@ -123,7 +125,7 @@ export type TokenNamespace = ((symbolOrId: string, issuer?: string) => Promise<P
 
 export type ItemsNamespace = PlayerItemsApi & {
   create(options: Parameters<IssuerItemsApi['create']>[0]): Promise<Item>
-  mint(item: AssetId, owner: string): Promise<{ id: AssetId; hash: string; owner: string }>
+  mint(item: AssetId, owner: string, options?: MintItemOptions): Promise<MintedItem>
   commit(entries: readonly ItemCommitEntry[]): ReturnType<IssuerItemsApi['commit']>
   token(item: AssetId): Promise<IssuerToken>
 }

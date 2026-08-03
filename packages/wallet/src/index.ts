@@ -10,7 +10,8 @@
 
 import type { AssetId, KeiClient } from '@keicoin/core'
 import { KEI_DECIMALS, fromRaw } from '@keicoin/core'
-import { looksLikeItem } from '@keicoin/tokens'
+import { decodeDescription, looksLikeItem } from '@keicoin/tokens'
+import type { ItemStats } from '@keicoin/tokens'
 import type { ClaimsApi, PendingClaim } from '@keicoin/claims'
 
 export interface TokenBalance {
@@ -28,7 +29,9 @@ export interface ItemHolding {
   count: number
   issuer: string
   image?: string
+  /** Prose only: the stat block the chain packs in alongside it is split out. */
   description?: string
+  stats?: ItemStats
 }
 
 export interface WalletSummary {
@@ -61,6 +64,7 @@ export function createWallet(client: KeiClient, options: WalletOptions = {}): Wa
       const asset = await client.node.assetInfo(holding.asset)
       if (!asset) continue
       if (looksLikeItem(asset)) {
+        const { description, stats } = decodeDescription(asset.description)
         items.push({
           asset: asset.id,
           name: asset.name,
@@ -68,7 +72,8 @@ export function createWallet(client: KeiClient, options: WalletOptions = {}): Wa
           count: Number(holding.balance),
           issuer: asset.issuer,
           ...(asset.image === undefined ? {} : { image: asset.image }),
-          ...(asset.description === undefined ? {} : { description: asset.description }),
+          ...(description === undefined ? {} : { description }),
+          ...(stats === undefined ? {} : { stats }),
         })
       } else {
         tokens.push({
