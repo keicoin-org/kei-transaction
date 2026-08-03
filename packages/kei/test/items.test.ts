@@ -151,3 +151,135 @@ describe('the wallet summary', () => {
     expect(await changed).toBe(7)
   })
 })
+
+describe('item stats', () => {
+  test('an item carries stats, and the description stays prose', async () => {
+    const sword = await game.items.create({
+      name: 'Iron Sword',
+      description: 'Heavy, and it shows.',
+      stats: { attack: 12, weight: 3.5, twoHanded: true, element: 'none' },
+    })
+
+    expect(sword.stats).toEqual({ attack: 12, weight: 3.5, twoHanded: true, element: 'none' })
+    expect(sword.description).toBe('Heavy, and it shows.')
+
+    // And they survive the chain, rather than only the object that was returned.
+    const readBack = await player.items.get(sword.id)
+    expect(readBack?.stats).toEqual(sword.stats)
+    expect(readBack?.description).toBe('Heavy, and it shows.')
+  })
+
+  test('stats are part of the identity, so re-creating with new stats is a new item', async () => {
+    const weak = await game.items.create({ name: 'Iron Sword', stats: { attack: 4 } })
+    const strong = await game.items.create({ name: 'Iron Sword', stats: { attack: 40 } })
+    expect(strong.id).not.toBe(weak.id)
+    // Otherwise this would silently hand back attack 4: issuance metadata is
+    // immutable, so "create it again with better stats" cannot be an edit.
+    expect((await player.items.get(strong.id))?.stats).toEqual({ attack: 40 })
+  })
+
+  test('minting with stats gives the player a variant, not the base item', async () => {
+    const base = await game.items.create({
+      name: 'Iron Sword',
+      image: './sword.png',
+      stats: { attack: 10, weight: 3 },
+    })
+
+    const drop = await game.items.mint(base.id, player.address, {
+      label: 'Flaming',
+      stats: { attack: 17, element: 'fire' },
+    })
+
+    expect(drop.id).not.toBe(base.id)
+    expect(drop.owner).toBe(player.address)
+    // The roll merges over the base: weight is inherited, attack is overridden.
+    expect(drop.stats).toEqual({ attack: 17, weight: 3, element: 'fire' })
+
+    await player.sync()
+    const held = await player.items.ownedBy()
+    expect(held.map((item) => item.name)).toEqual(['Flaming Iron Sword'])
+    expect(held[0]?.stats).toEqual({ attack: 17, weight: 3, element: 'fire' })
+    expect(held[0]?.image).toBe(base.image)
+    expect(await player.items.owner(drop.id)).toBe(player.address)
+    // The base is untouched — nobody holds it.
+    expect(await player.items.owner(base.id)).toBeNull()
+  })
+
+  test('the same roll twice is the same asset, and burns Kei only once', async () => {
+    const base = await game.items.create({ name: 'Iron Sword', supply: 100 })
+
+    const first = await game.items.mint(base.id, player.address, { stats: { attack: 17 }, supply: 100 })
+    const afterFirst = await game.balance()
+    const second = await game.items.mint(base.id, other.address, { stats: { attack: 17 }, supply: 100 })
+
+    expect(second.id).toBe(first.id)
+    // Issuance is idempotent and minting is free, so the second drop is free.
+    expect(await game.balance()).toBe(afterFirst)
+  })
+
+  test('a different roll is a different asset', async () => {
+    const base = await game.items.create({ name: 'Iron Sword', supply: 100 })
+    const hot = await game.items.mint(base.id, player.address, { stats: { attack: 17 } })
+    const cold = await game.items.mint(base.id, other.address, { stats: { attack: 18 } })
+    expect(cold.id).not.toBe(hot.id)
+  })
+
+  test('a variant of a soulbound item is still soulbound', async () => {
+    const badge = await game.items.create({ name: 'First Login', transfer: 'none' })
+    const drop = await game.items.mint(badge.id, player.address, { stats: { season: 1 } })
+    await player.sync()
+    await expect(player.items.transfer(drop.id, other.address)).rejects.toThrow(/soulbound/)
+  })
+
+  test('minting without stats is unchanged', async () => {
+    const sword = await game.items.create({ name: 'Plain Sword' })
+    const minted = await game.items.mint(sword.id, player.address)
+    expect(minted.id).toBe(sword.id)
+    expect(minted.stats).toBeUndefined()
+  })
+
+  test('the wallet shows stats and never the raw stat block', async () => {
+    const base = await game.items.create({ name: 'Iron Sword', description: 'Heavy.' })
+    await game.items.mint(base.id, player.address, { stats: { attack: 17 } })
+    await player.sync()
+
+    const [item] = (await player.wallet.summary()).items
+    expect(item?.stats).toEqual({ attack: 17 })
+    expect(item?.description).toBe('Heavy.')
+    expect(item?.description).not.toContain('kei:stats:')
+  })
+
+  test('stats that do not fit the chain are refused, not truncated', async () => {
+    await expect(
+      game.items.create({
+        name: 'Overloaded',
+        description: 'x'.repeat(240),
+        stats: { attack: 12, defence: 9, speed: 4 },
+      }),
+    ).rejects.toThrow(/256/)
+  })
+
+  test('a nested stat is refused, because it has no one canonical spelling', async () => {
+    await expect(
+      // @ts-expect-error — the type forbids it; the check is for JavaScript callers.
+      game.items.create({ name: 'Nested', stats: { rolls: { attack: 1 } } }),
+    ).rejects.toThrow(/flat/)
+  })
+
+  test('an empty stats object says nothing, and is refused rather than guessed at', async () => {
+    const base = await game.items.create({ name: 'Iron Sword' })
+    await expect(game.items.mint(base.id, player.address, { stats: {} })).rejects.toThrow(/empty stats/)
+  })
+
+  test('prose that mentions the marker is not mistaken for stats', async () => {
+    const { decodeDescription } = await import('@keicoin/tokens')
+    expect(decodeDescription('Type kei:stats: to inspect.')).toEqual({
+      description: 'Type kei:stats: to inspect.',
+    })
+    // A real block still wins, even below prose that imitates one.
+    expect(decodeDescription('See\nkei:stats: below.\nkei:stats:{"attack":3}')).toEqual({
+      description: 'See\nkei:stats: below.',
+      stats: { attack: 3 },
+    })
+  })
+})

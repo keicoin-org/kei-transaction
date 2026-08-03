@@ -70,7 +70,8 @@ const ASSET_KIND: Record<string, number> = { unspecified: 0, token: 1, item: 2 }
 /** Payload string bounds, enforced here so the SDK cannot sign an unparseable block. */
 const MAX_NAME = 64
 const MAX_SYMBOL = 20
-const MAX_DESCRIPTION = 256
+/** The node's `max_description`. Exported because item stats share the field. */
+export const MAX_DESCRIPTION = 256
 const MAX_IMAGE = 128
 const MAX_MEMO = 128
 

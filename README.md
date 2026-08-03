@@ -139,6 +139,38 @@ await kei.items.ownedBy(address)     // [ item, ... ]
 await kei.items.transfer(sword.id, toAddress)   // player-signed
 ```
 
+### Stats
+
+Items carry stats if you want them — a sword with no attack number is a picture.
+
+```js
+const sword = await game.items.create({
+  name: 'Iron Sword',
+  stats: { attack: 10, weight: 3 },
+})
+
+// Mint with stats and the player gets a variant of the sword.
+const drop = await game.items.mint(sword.id, playerAddress, {
+  label: 'Flaming',
+  stats: { attack: 17, element: 'fire' },
+})
+
+drop.id       // not sword.id — the variant is its own item
+drop.stats    // { attack: 17, weight: 3, element: 'fire' } — the roll over the base
+```
+
+Stats are flat (numbers, strings, booleans), immutable, and on-chain: they ride
+in the description field the chain already carries, so reading them is free and
+does not cost an IPFS fetch. `item.description` stays prose.
+
+**A variant is its own asset, and stats are part of its id.** That is what makes
+it safe — an item cannot be re-statted behind a player's back, because different
+stats are a different item rather than an edit. It is also the cost model to
+design around: issuing the nth asset burns n Kei (SPEC §5.6.5), but the same
+stats always derive the same id, so the hundredth Flaming Sword reuses the first
+one's asset and burns nothing. **A bounded table of rolls is cheap. A fresh
+random roll per drop issues an asset every time and gets expensive fast.**
+
 ## A thousand loot drops, one block
 
 Minting per drop makes your issuer account a global write lock. So the issuer
