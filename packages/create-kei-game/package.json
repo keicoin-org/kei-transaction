@@ -1,6 +1,6 @@
 {
   "name": "create-kei-game",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Scaffold a browser game with a real currency and real items. Writes files and exits.",
   "license": "MIT",
   "author": "Sano",
