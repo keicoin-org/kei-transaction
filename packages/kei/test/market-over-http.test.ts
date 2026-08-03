@@ -41,6 +41,31 @@ describe('the market over HTTP — no server, no database (SPEC §9)', () => {
     buyer.close()
   }, 30_000)
 
+  test('the lock is the ledger\'s, so the same units cannot be offered twice', async () => {
+    const node = await httpNodeFactory()
+    const game = await Kei.server({ seed: randomSeed(), node: node() })
+    const seller = await Kei.start({ seed: randomSeed(), node: node(), autoCancelExpired: false })
+    await game.faucet(2_000)
+    await game.send(seller.address, 100)
+    await seller.sync()
+
+    const gems = await game.token.issue({ name: 'Gems', symbol: 'GEM', decimals: 0 })
+    await gems.mint(seller.address, 10)
+    await seller.sync()
+
+    const offer = await seller.market.sell({ asset: gems.id, amount: 4, price: 5 })
+    // Read it back as a block. Everything else here would still pass if `sell()`
+    // had only built one and the node had refused it.
+    expect((await seller.client.node.swapOffer(offer.hash))?.hash).toBe(offer.hash)
+
+    // Six are left, so seven is one more than exists to offer. If the lock lived
+    // in the SDK rather than the ledger, this is where that would show.
+    await expect(seller.market.sell({ asset: gems.id, amount: 7, price: 5 })).rejects.toThrow()
+
+    game.close()
+    seller.close()
+  }, 30_000)
+
   test('an unaccepted offer cancels back to its owner over the wire', async () => {
     const node = await httpNodeFactory()
     const game = await Kei.server({ seed: randomSeed(), node: node() })
