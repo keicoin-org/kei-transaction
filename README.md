@@ -147,6 +147,7 @@ Items carry stats if you want them — a sword with no attack number is a pictur
 const sword = await game.items.create({
   name: 'Iron Sword',
   stats: { attack: 10, weight: 3 },
+  supply: 1000,               // how many swords can exist, rolls included
 })
 
 // Mint with stats and the player gets a variant of the sword.
@@ -170,6 +171,13 @@ design around: issuing the nth asset burns n Kei (SPEC §5.6.5), but the same
 stats always derive the same id, so the hundredth Flaming Sword reuses the first
 one's asset and burns nothing. **A bounded table of rolls is cheap. A fresh
 random roll per drop issues an asset every time and gets expensive fast.**
+
+Reusing that asset only helps if it has room, so **a roll is as plentiful as the
+item it varies.** `create` defaults to a supply of 1 — genuinely unique, and one
+Flaming Iron Sword is then all there will ever be — so give the base item a
+supply if many players are meant to hold rolls of it, as above. Supply is fixed
+at a roll's first mint: issuance is idempotent, so raising it afterwards does
+nothing.
 
 ## A thousand loot drops, one block
 

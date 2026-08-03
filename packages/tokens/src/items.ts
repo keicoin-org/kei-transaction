@@ -54,7 +54,11 @@ export interface MintItemOptions {
   image?: ImageSource
   /** Defaults to the base item's, so a soulbound base stays soulbound. */
   transfer?: TransferPolicy
-  /** Omit for a unique variant. */
+  /**
+   * How many players can hold this roll. Defaults to the base item's, so a
+   * unique sword rolls unique variants. Fixed at the roll's first issuance:
+   * issuance is idempotent, so raising it later does nothing.
+   */
   supply?: number
 }
 
@@ -161,7 +165,7 @@ export function createIssuerItems(client: KeiClient, options: ItemsOptions = {})
   }
 
   /**
-   * A stat-bearing variant of a base item, as its own supply-1 asset.
+   * A stat-bearing variant of a base item, as its own asset.
    *
    * It has to be its own asset. Issuance metadata is immutable (SPEC §7), so
    * "the same sword but with these stats" cannot be an edit — and per-holder
@@ -173,6 +177,13 @@ export function createIssuerItems(client: KeiClient, options: ItemsOptions = {})
    * hundredth Flaming Sword reuses the first one's asset and burns nothing. A
    * bounded table of rolls is cheap; a fresh random roll per drop is a new asset
    * every time and gets expensive fast.
+   *
+   * Reusing that asset only helps if it has room, so the variant is as plentiful
+   * as the base item unless told otherwise: a unique sword rolls unique
+   * variants, and a sword issued with `supply: 100` rolls variants a hundred
+   * players can hold. Supply is fixed at the roll's *first* issuance, because
+   * issuance is idempotent — passing a bigger `supply` for a roll that already
+   * exists does nothing.
    */
   const variantOf = async (item: AssetId, options: MintItemOptions): Promise<Item> => {
     const base = await readItem(item)
@@ -189,6 +200,8 @@ export function createIssuerItems(client: KeiClient, options: ItemsOptions = {})
     const name = options.name ?? (options.label ? `${options.label} ${base.name}` : base.name)
     const image = options.image === undefined ? base.image : await uploader.upload(options.image)
     const description = encodeDescription(options.description ?? base.description, stats)
+    // `null` is the base being uncapped, which the variant inherits as uncapped.
+    const supply = options.supply ?? base.supply
 
     // Scoped to the base id, so a variant of this sword is never the same asset
     // as an identically statted variant of some other item.
@@ -196,7 +209,7 @@ export function createIssuerItems(client: KeiClient, options: ItemsOptions = {})
       name,
       symbol: statSymbolFor(name, stats, base.id),
       decimals: 0,
-      maxSupply: options.supply ?? 1,
+      ...(supply === null ? {} : { maxSupply: supply }),
       transfer: options.transfer ?? base.transferPolicy,
       swap: 'off',
       kind: 'item',
@@ -245,6 +258,15 @@ export function createIssuerItems(client: KeiClient, options: ItemsOptions = {})
       const info = await client.node.assetInfo(target)
       if (!info) {
         fail('no-such-item', `No item with id ${target} exists. Create it first with items.create().`)
+      }
+      // A roll that runs out reports itself as an ordinary token over its max
+      // supply, and that error's advice — burn some — is the wrong fix here. The
+      // roll is scarce because the item it varies is.
+      if (options !== undefined && info.maxSupply !== null && BigInt(info.circulating) >= BigInt(info.maxSupply)) {
+        fail(
+          'roll-exhausted',
+          `Every ${info.name} that can exist is already held: this roll has a supply of ${info.maxSupply}, inherited from the base item. Give the base item a larger supply, or pass { supply } for this roll — but do it before the roll's first mint, because issuance is idempotent and a roll that exists keeps the supply it was issued with.`,
+        )
       }
       const token = wrapIssuerToken(client, info)
       const { hash } = await token.mint(assertAddress(owner, 'owner address'), 1)

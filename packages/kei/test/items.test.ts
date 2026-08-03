@@ -217,6 +217,32 @@ describe('item stats', () => {
     expect(await game.balance()).toBe(afterFirst)
   })
 
+  test('a roll is as plentiful as the item it varies, so a common sword drops to many players', async () => {
+    const base = await game.items.create({ name: 'Iron Sword', supply: 100 })
+
+    const first = await game.items.mint(base.id, player.address, { label: 'Flaming', stats: { attack: 17 } })
+    const second = await game.items.mint(base.id, other.address, { label: 'Flaming', stats: { attack: 17 } })
+
+    // The claim the README makes: the hundredth Flaming Sword is the first one's
+    // asset, so it burns no further issuance — and it has room to be minted.
+    expect(second.id).toBe(first.id)
+    await player.sync()
+    await other.sync()
+    expect((await player.items.ownedBy()).map((item) => item.name)).toEqual(['Flaming Iron Sword'])
+    expect((await other.items.ownedBy()).map((item) => item.name)).toEqual(['Flaming Iron Sword'])
+  })
+
+  test('a roll of a unique item is unique, and says so rather than telling the issuer to burn', async () => {
+    const base = await game.items.create({ name: 'Iron Sword' })
+    await game.items.mint(base.id, player.address, { label: 'Flaming', stats: { attack: 17 } })
+
+    // The generic over-max-supply error advises burning, which would destroy a
+    // player's sword to make room for another player's.
+    await expect(
+      game.items.mint(base.id, other.address, { label: 'Flaming', stats: { attack: 17 } }),
+    ).rejects.toThrow(/already held/)
+  })
+
   test('a different roll is a different asset', async () => {
     const base = await game.items.create({ name: 'Iron Sword', supply: 100 })
     const hot = await game.items.mint(base.id, player.address, { stats: { attack: 17 } })
