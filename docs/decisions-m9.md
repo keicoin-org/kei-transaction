@@ -1,5 +1,18 @@
 # M9 decisions — the harness
 
+> **Historical document — superseded (2026-08-03).** Every statement below
+> about repository or package location, implementation or validation state,
+> release or package versions, publication, and remaining work describes the
+> former in-tree scaffolder at the time it was written. None of it is current
+> M9 status or the current M9 plan. Create Kei Game now lives and releases
+> independently at
+> [`keicoin-org/create-kei-game`](https://github.com/keicoin-org/create-kei-game),
+> with current implementation tracked in
+> [standalone PR #1](https://github.com/keicoin-org/create-kei-game/pull/1).
+> For normative requirements and current progress, use the parent workspace
+> `SPEC.md` (§11.3 and §13) and `README.md` (Layout and Milestones), not the
+> historical body retained below.
+
 M9 is `npm create kei-game` working, skills complete, the package published, and
 the testnet public (SPEC §13). **This covers the harness only.** The other three
 are not started, and the last two are not this repository's to finish.
@@ -10,13 +23,6 @@ installed before the generated game runs. Those are here.
 
 As with [`decisions-m0.md`](decisions-m0.md) and [`decisions-m1.md`](decisions-m1.md),
 nothing here overrides SPEC.md.
-
-> **Migration note (2026-08-03):** This document records the original in-tree
-> M9 design and its validation at that time. The harness has since moved to the
-> standalone [`create-kei-game`](https://github.com/keicoin-org/create-kei-game)
-> repository. Section 1's repository-location decision is superseded; ongoing
-> M9 implementation is tracked in
-> [standalone PR #1](https://github.com/keicoin-org/create-kei-game/pull/1).
 
 ---
 
