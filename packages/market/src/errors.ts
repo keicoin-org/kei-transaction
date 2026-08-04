@@ -40,6 +40,8 @@ export type MarketErrorCode =
   | 'bad-duration'
   /** Dense candle filling would exceed the public emitted-output limit. */
   | 'too-many-candles'
+  /** An advisory trade time cannot form a safe whole-millisecond candle bucket. */
+  | 'bad-candle-time'
   /** A generated-candle budget that is not a positive safe integer within the public cap. */
   | 'bad-max-candles'
   /** `concurrency` outside the supported integer range. */
@@ -87,6 +89,7 @@ const CODES = new Set<string>([
   'bad-expiry',
   'bad-duration',
   'too-many-candles',
+  'bad-candle-time',
   'bad-max-candles',
   'bad-concurrency',
   'bad-sweep-interval',

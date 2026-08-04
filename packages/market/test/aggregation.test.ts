@@ -305,6 +305,34 @@ describe('price series — consensus numbers, advisory order', () => {
     expect((error as Error).message).toContain('18014398509481983 candles')
   })
 
+  test('negative extreme times cannot form unsafe sparse or single filled buckets', () => {
+    for (const fill of [false, true]) {
+      const error = caught(() =>
+        toCandles([sale('A', 1, 5, Number.MIN_SAFE_INTEGER)], {
+          asset: 'SWORD',
+          quote: KEI_ASSET,
+          every: 2,
+          fill,
+        }),
+      )
+      expect(error).toMatchObject({ code: 'bad-candle-time' })
+      expect(isMarketError(error, 'bad-candle-time')).toBe(true)
+    }
+
+    const neighboringSafe = Number.MIN_SAFE_INTEGER + 1
+    for (const fill of [false, true]) {
+      const candles = toCandles([sale('A', 1, 5, neighboringSafe)], {
+        asset: 'SWORD',
+        quote: KEI_ASSET,
+        every: 2,
+        fill,
+      })
+      expect(candles).toHaveLength(1)
+      expect(candles[0]?.at).toBe(neighboringSafe)
+      expect(Number.isSafeInteger(candles[0]?.at)).toBe(true)
+    }
+  })
+
   test('fill false stays sparse across a multi-year gap', () => {
     const decade = 10 * 365 * 24 * 60 * 60 * 1_000
     const candles = toCandles([sale('A', 1, 5, 0), sale('B', 1, 7, decade)], {
