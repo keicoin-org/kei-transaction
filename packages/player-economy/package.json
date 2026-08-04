@@ -43,7 +43,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@keicoin/core": "^0.4.0",
+    "@keicoin/core": "^0.5.0",
     "@keicoin/market": "^0.3.0"
   }
 }

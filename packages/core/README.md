@@ -22,6 +22,26 @@ bun add @keicoin/core     # or npm / pnpm / yarn
 
 `@keicoin/core` depends on nothing else in the tree.
 
+## Bounded node requests
+
+`HttpNode` bounds the complete request, including reading the response body, to
+30 seconds by default. A custom positive finite timeout is explicit:
+
+```js
+import { HttpNode } from '@keicoin/core'
+
+const node = new HttpNode({
+  url: 'https://testnet.keicoin.org/rpc',
+  requestTimeout: 15_000,
+})
+```
+
+A deadline fails with `KeiError` code `node-timeout`; invalid timeout options
+fail with `bad-request-timeout`. Receivable polling keeps one request in flight,
+backs off after failures, and cancellation stops its active request. Errors name
+the node without repeating URL credentials, query strings, fragments, or opaque
+credential-like path segments.
+
 ## Status
 
 **M3 of eleven.** The public API now uses a real node at

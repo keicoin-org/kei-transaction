@@ -653,26 +653,41 @@ published outside that range may as well not exist. The **npm** row above is
 that lesson learned the expensive way, and this section exists so the next
 release is read as a set rather than as nine independent publishes.
 
-### Unreleased — coordinated market and wallet release
+### Unreleased — coordinated SDK release
 
 The source is merged; the registry release is tracked in [#53]. Until its
 publish and clean-install verification finish, the latest npm versions remain
-`kei-transaction@0.6.0`, `@keicoin/market@0.2.0`, and
-`@keicoin/wallet@0.4.2`. A release manifest may name the next versions before
-npm accepts them; that is a release candidate, not evidence that they are
-installable.
+`kei-transaction@0.6.0`, `@keicoin/core@0.4.0`,
+`@keicoin/market@0.2.0`, and `@keicoin/wallet@0.4.2`. A release manifest may
+name the next versions before npm accepts them; that is a release candidate,
+not evidence that they are installable.
 
 | Package | Planned | Why |
 |---|---:|---|
+| `@keicoin/core` | `0.5.0` | Bounded HTTP requests and response bodies, single-flight receivable polling with backoff, cancellation, typed timeout errors, and credential-safe endpoint diagnostics |
+| `@keicoin/work` | `0.4.1` | Dependency-only move to `@keicoin/core@^0.5.0` |
+| `@keicoin/claims` | `0.5.1` | Dependency-only move to `@keicoin/core@^0.5.0` |
+| `@keicoin/tokens` | `0.5.2` | Dependency-only move to `@keicoin/core@^0.5.0` and `@keicoin/claims@^0.5.1` |
 | `@keicoin/market` | `0.3.0` | Bounded and abortable aggregate reads, explicit coverage provenance, deterministic precision/race/paging conformance, validated limits and retry timers |
 | `@keicoin/wallet` | `0.5.0` | Durable-seed reporting plus bounded immutable metadata caching and a coalesced, ordered refresh stream |
-| `@keicoin/economy` | `0.2.1` | Dependency-only move to `@keicoin/market@^0.3.0` |
-| `@keicoin/player-economy` | `0.1.1` | Dependency-only move to `@keicoin/market@^0.3.0` |
-| `kei-transaction` | `0.7.0` | The coordinated umbrella range that exposes one copy of the market and wallet releases above |
+| `@keicoin/economy` | `0.2.1` | Dependency-only move to core `^0.5.0`, claims `^0.5.1`, and market `^0.3.0` |
+| `@keicoin/player-economy` | `0.1.1` | Dependency-only move to core `^0.5.0` and market `^0.3.0` |
+| `kei-transaction` | `0.7.0` | The coordinated umbrella range that exposes one copy of every release above and records its public npm access policy in the manifest |
 
-The order is market and wallet first, the two dependency-only packages next,
-and the umbrella last. The published-release table and website move only after
-an empty-project install proves that npm resolves one copy of every package.
+`HttpNodeOptions.requestTimeout` is new public configuration, so core takes a
+strict-semver minor rather than hiding that surface in a patch. Under 0.x caret
+rules `^0.4.0` excludes `0.5.0`; every direct core consumer therefore moves its
+floor and is republished. Packages whose own source did not change take a patch,
+while market, wallet, and the umbrella keep the minor versions warranted by
+their own public additions.
+
+The publish order is core, work, claims, tokens, market, wallet, economy,
+player-economy, and the umbrella last. Before publication, `sh
+scripts/publish.sh --check` requires the committed Bun lockfile, installs it
+frozen, cleans and rebuilds every declaration and JavaScript artifact, runs the
+suite, and validates each dry-run tarball. The published-release table and
+website move only after an empty-project install proves that npm resolves one
+copy of every package.
 
 [#53]: https://github.com/keicoin-org/kei-transaction/issues/53
 
