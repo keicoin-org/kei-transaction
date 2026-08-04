@@ -38,6 +38,10 @@ export type MarketErrorCode =
   | 'bad-expiry'
   /** A window or interval that is not `'7d'`-shaped and not a count of ms. */
   | 'bad-duration'
+  /** Dense candle filling would exceed the public emitted-output limit. */
+  | 'too-many-candles'
+  /** A generated-candle budget that is not a positive safe integer within the public cap. */
+  | 'bad-max-candles'
   /** `concurrency` outside the supported integer range. */
   | 'bad-concurrency'
   /** A background expiry retry interval that a JavaScript timer cannot represent safely. */
@@ -82,6 +86,8 @@ const CODES = new Set<string>([
   'bad-amount',
   'bad-expiry',
   'bad-duration',
+  'too-many-candles',
+  'bad-max-candles',
   'bad-concurrency',
   'bad-sweep-interval',
   'bad-limit',
