@@ -60,6 +60,7 @@ import {
   type InstrumentApi,
   type InstrumentOptions,
 } from './instrument.js'
+import type { UnixCandle, UnixLinePoint } from './instrument.js'
 import {
   accountLimitOf,
   coverageOf,
@@ -92,6 +93,16 @@ type CandleQueryOptions = Omit<CandleOptions, 'every'> &
   Partial<Pick<CandleOptions, 'every'>> &
   { interval?: Duration } &
   TradeOptions
+
+export interface MarketChart {
+  /** Closed-form line data suitable for chart renderers, with untimed points omitted. */
+  line: UnixLinePoint[]
+  series: Series
+  /** OHLCV candles in raw time units (node-local milliseconds). */
+  candles: Covered<Candle>
+  /** OHLCV candles in epoch seconds for common chart APIs. */
+  unixCandles: UnixCandle[]
+}
 
 export interface MarketApi {
   /** Bind one explicit base/quote/source once, then read and trade it coherently. */
@@ -153,10 +164,7 @@ export interface MarketApi {
    * `every` defaults to `1h` so the cheapest useful chart has one fewer required
    * option and can be called with the same shape as `series(...)`.
    */
-  chart(options: CandleQueryOptions): Promise<{
-    series: Series
-    candles: Covered<Candle>
-  }>
+  chart(options: CandleQueryOptions): Promise<MarketChart>
   /** Every traded asset's summary out of one walk, instead of one walk each. */
   prices(options?: TradeOptions & { assets?: Iterable<AssetId | { id: AssetId }> }): Promise<PriceIndex>
   /** Re-read a snapshot of listings and say what became of each one. */
@@ -806,19 +814,23 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
         asset: chartOptions.asset,
         quote,
       })
-      return {
-        series: toSeries(read, { ...chartOptions, quote }),
-        candles: withCoverage(
-          toCandles(
-            read,
-            {
-              ...chartQuery,
-              every,
-              quote,
-            },
-          ),
-          coverageOf(read) ?? emptyCoverage(),
+      const series = toSeries(read, { ...chartOptions, quote })
+      const candles = withCoverage(
+        toCandles(
+          read,
+          {
+            ...chartQuery,
+            every,
+            quote,
+          },
         ),
+        coverageOf(read) ?? emptyCoverage(),
+      )
+      return {
+        series,
+        candles,
+        line: toLine(series),
+        unixCandles: toUnixCandles(candles),
       }
     },
 
@@ -848,6 +860,27 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
       armedFor = undefined
     },
   }
+}
+
+function toLine(series: Series): UnixLinePoint[] {
+  const rows = series.points
+    .map((point): UnixLinePoint | null =>
+      point.at === null ? null : { time: Math.floor(point.at / 1_000), value: point.price },
+    )
+    .filter((row): row is UnixLinePoint => row !== null)
+  return rows
+}
+
+function toUnixCandles(candles: Covered<Candle>): UnixCandle[] {
+  return candles.map((candle) => ({
+    time: Math.floor(candle.at / 1_000),
+    open: candle.open,
+    high: candle.high,
+    low: candle.low,
+    close: candle.close,
+    volume: candle.volume,
+    trades: candle.trades,
+  }))
 }
 
 function validSweepInterval(value: number | undefined): number {
