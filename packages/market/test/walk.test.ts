@@ -23,6 +23,7 @@ import { KeiError, keyPairFromSeed, randomSeed } from '@keicoin/core'
 import {
   DEFAULT_ACCOUNT_LIMIT,
   DEFAULT_CONCURRENCY,
+  MAX_ACCOUNTS_PER_WALK,
   MAX_CONCURRENCY,
   coverageOf,
   createDirectory,
@@ -113,6 +114,14 @@ describe('walkAccounts — the answer is not a race', () => {
     expect(walk.rows).toEqual(roster)
   })
 
+  test('a single address keeps its compatibility shape', async () => {
+    const [only] = (await addresses(1)) as [string]
+    const walk = await walkAccounts(only, rows())
+    expect(walk.accounts).toEqual([only])
+    expect(walk.rows).toEqual([only])
+    expect(walk.coverage).toMatchObject({ asked: 1, read: 1, complete: true })
+  })
+
   test('concurrency outside the supported integer range is refused rather than adjusted', async () => {
     const [only] = (await addresses(1)) as [string]
     for (const concurrency of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, MAX_CONCURRENCY + 1]) {
@@ -146,6 +155,162 @@ describe('walkAccounts — the answer is not a race', () => {
     )
     expect(isMarketError(failure, 'bad-concurrency')).toBe(true)
     expect(calls).toBe(0)
+  })
+
+  test('the total source-entry ceiling is explicit, accepts its edge, and deduplicates', async () => {
+    const [only] = (await addresses(1)) as [string]
+    let reads = 0
+    const walk = await walkAccounts(
+      Array<string>(MAX_ACCOUNTS_PER_WALK).fill(only),
+      async (account) => {
+        reads += 1
+        return { rows: [account], truncated: false }
+      },
+    )
+    expect(MAX_ACCOUNTS_PER_WALK).toBeGreaterThan(0)
+    expect(walk.accounts).toEqual([only])
+    expect(walk.coverage).toMatchObject({ asked: 1, read: 1, complete: true })
+    expect(reads).toBe(1)
+  })
+
+  test('an oversized direct array refuses before any account read or work allocation', async () => {
+    const [only] = (await addresses(1)) as [string]
+    let reads = 0
+    const failure = await walkAccounts(
+      Array<string>(MAX_ACCOUNTS_PER_WALK + 1).fill(only),
+      async (account) => {
+        reads += 1
+        return { rows: [account], truncated: false }
+      },
+      { what: 'Reading an oversized book' },
+    ).catch((error: unknown) => error)
+
+    expect(reads).toBe(0)
+    expect(isMarketError(failure, 'too-many-accounts')).toBe(true)
+    expect((failure as Error).message).toContain('No account chains were read')
+    expect(failure).toMatchObject({
+      message: expect.stringContaining(`at most ${MAX_ACCOUNTS_PER_WALK}`),
+    })
+  })
+
+  test('an oversized asynchronous directory refuses before node reads', async () => {
+    const [only] = (await addresses(1)) as [string]
+    let directoryCalls = 0
+    let reads = 0
+    const directory = {
+      accounts: async () => {
+        directoryCalls += 1
+        return Array<string>(MAX_ACCOUNTS_PER_WALK + 1).fill(only)
+      },
+    }
+    const failure = await walkAccounts(directory, async (account) => {
+      reads += 1
+      return { rows: [account], truncated: false }
+    }).catch((error: unknown) => error)
+
+    expect(directoryCalls).toBe(1)
+    expect(reads).toBe(0)
+    expect(isMarketError(failure, 'too-many-accounts')).toBe(true)
+  })
+
+  test('an oversized directory size hint refuses before calling the directory', async () => {
+    let directoryCalls = 0
+    let reads = 0
+    const directory = {
+      size: MAX_ACCOUNTS_PER_WALK + 1,
+      accounts: async () => {
+        directoryCalls += 1
+        return []
+      },
+    }
+    const failure = await walkAccounts(directory, async (account) => {
+      reads += 1
+      return { rows: [account], truncated: false }
+    }).catch((error: unknown) => error)
+
+    expect(directoryCalls).toBe(0)
+    expect(reads).toBe(0)
+    expect(isMarketError(failure, 'too-many-accounts')).toBe(true)
+  })
+
+  test('invalid directory size hints are typed refusals, never unlimited hints', async () => {
+    for (const size of [
+      -1,
+      1.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.MAX_SAFE_INTEGER + 1,
+    ]) {
+      let directoryCalls = 0
+      let reads = 0
+      const directory = {
+        size,
+        accounts: async () => {
+          directoryCalls += 1
+          return []
+        },
+      }
+      const failure = await walkAccounts(directory, async (account) => {
+        reads += 1
+        return { rows: [account], truncated: false }
+      }).catch((error: unknown) => error)
+
+      expect(directoryCalls).toBe(0)
+      expect(reads).toBe(0)
+      expect(isMarketError(failure, 'bad-account-source')).toBe(true)
+    }
+  })
+
+  test('a non-array directory result is rejected without touching a hostile length', async () => {
+    let lengthReads = 0
+    let reads = 0
+    const hostile = {
+      get length() {
+        lengthReads += 1
+        throw new Error('length getter must not run')
+      },
+      *[Symbol.iterator]() {
+        throw new Error('iterator must not run')
+      },
+    }
+    const directory = {
+      accounts: async () => hostile as unknown as readonly string[],
+    }
+    const failure = await walkAccounts(directory, async (account) => {
+      reads += 1
+      return { rows: [account], truncated: false }
+    }).catch((error: unknown) => error)
+
+    expect(lengthReads).toBe(0)
+    expect(reads).toBe(0)
+    expect(isMarketError(failure, 'bad-account-source')).toBe(true)
+  })
+
+  test('invalid dropped provenance refuses before reads instead of forging complete coverage', async () => {
+    const [only] = (await addresses(1)) as [string]
+    let reads = 0
+    const directory = {
+      dropped: Number.NaN,
+      accounts: () => [only],
+    }
+    const failure = await walkAccounts(directory, async (account) => {
+      reads += 1
+      return { rows: [account], truncated: false }
+    }).catch((error: unknown) => error)
+
+    expect(reads).toBe(0)
+    expect(isMarketError(failure, 'bad-account-source')).toBe(true)
+  })
+
+  test('sparse runtime arrays are recorded as skipped and cannot claim complete coverage', async () => {
+    const [only] = (await addresses(1)) as [string]
+    const sparse: string[] = Array(2)
+    sparse[1] = only
+    const walk = await walkAccounts(sparse, rows())
+
+    expect(walk.accounts).toEqual([only])
+    expect(walk.coverage.skipped).toEqual(['[missing account at index 0]'])
+    expect(walk.coverage.complete).toBe(false)
   })
 
   test('per-account limits are positive safe integers, not timer-style coercions', () => {
@@ -701,6 +866,34 @@ describe('walkAccounts — a read that can be stopped', () => {
     expect(isAborted(await walk.catch((error: unknown) => error))).toBe(true)
     rejectDirectory(new Error('late directory failure'))
     await wait(0)
+  })
+
+  test('an oversized directory resolution after abort stays handled and starts no reads', async () => {
+    const [only] = (await addresses(1)) as [string]
+    const controller = new AbortController()
+    let resolveDirectory: (accounts: readonly string[]) => void = () => {}
+    let reads = 0
+    const directory = {
+      accounts: () =>
+        new Promise<readonly string[]>((resolve) => {
+          resolveDirectory = resolve
+        }),
+    }
+    const walk = walkAccounts(
+      directory,
+      async (account) => {
+        reads += 1
+        return { rows: [account], truncated: false }
+      },
+      { signal: controller.signal },
+    )
+
+    await wait(0)
+    controller.abort(new Error('the screen closed'))
+    expect(isAborted(await walk.catch((error: unknown) => error))).toBe(true)
+    resolveDirectory(Array<string>(MAX_ACCOUNTS_PER_WALK + 1).fill(only))
+    await wait(0)
+    expect(reads).toBe(0)
   })
 })
 

@@ -40,6 +40,12 @@ export type MarketErrorCode =
   | 'bad-duration'
   /** `concurrency` outside the supported integer range. */
   | 'bad-concurrency'
+  /** A built-in directory retention limit that is invalid or above its absolute cap. */
+  | 'bad-directory-limit'
+  /** An account source exceeds the finite total-entry budget for one walk. */
+  | 'too-many-accounts'
+  /** A custom account directory returned an invalid runtime shape or count. */
+  | 'bad-account-source'
   /** A background expiry retry interval that a JavaScript timer cannot represent safely. */
   | 'bad-sweep-interval'
   /** A per-account read limit that is not a positive safe integer. */
@@ -83,6 +89,9 @@ const CODES = new Set<string>([
   'bad-expiry',
   'bad-duration',
   'bad-concurrency',
+  'bad-directory-limit',
+  'too-many-accounts',
+  'bad-account-source',
   'bad-sweep-interval',
   'bad-limit',
   'coverage-mismatch',

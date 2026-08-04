@@ -30,7 +30,7 @@
 
 import { KeiError, isAddress } from '@keicoin/core'
 
-import { directoryDropped, resolveAccounts, type AccountSource } from './directory.js'
+import { MAX_DIRECTORY_LIMIT, directoryDropped, isDirectory, type AccountSource } from './directory.js'
 
 /**
  * Chains read at once, unless told otherwise.
@@ -52,6 +52,16 @@ export const DEFAULT_CONCURRENCY = 8
  * shard deliberately across nodes they operate and can measure.
  */
 export const MAX_CONCURRENCY = 32
+
+/**
+ * Absolute number of source entries one account walk will inspect or schedule.
+ *
+ * Concurrency only bounds requests at one instant; without this separate cap a
+ * 32-lane walk could still schedule millions of calls. It matches the built-in
+ * directory's absolute retention cap so every directory it can create is
+ * walkable, while larger custom rosters must shard or paginate explicitly.
+ */
+export const MAX_ACCOUNTS_PER_WALK = MAX_DIRECTORY_LIMIT
 
 /**
  * Offers or blocks read from one chain before the walk gives up on that chain.
@@ -118,7 +128,12 @@ export interface Coverage {
  */
 export type Covered<T> = T[] & { readonly coverage: Coverage }
 
-/** What every read that walks chains accepts, on top of its own options. */
+/**
+ * What every read that walks chains accepts, on top of its own options.
+ *
+ * These tune peak work, not total work. Every account source is separately
+ * capped at `MAX_ACCOUNTS_PER_WALK`; that ceiling has no unlimited override.
+ */
 export interface ReadOptions {
   /**
    * Stop the walk. A poll that outlives its screen is the case this exists for.
@@ -305,12 +320,31 @@ export async function walkAccounts<T>(
   // directory can be remote or never settle; an invalid bound must not call it.
   const concurrency = concurrencyOf(options.concurrency)
   const requested = await untilAborted(
-    Promise.resolve().then(() => resolveAccounts(source)),
+    Promise.resolve().then(() => accountsForWalk(source, what)),
     signal,
     what,
   )
-  const skipped = requested.filter((address) => !isAddress(address))
-  const accounts = [...new Set(requested.filter((address) => isAddress(address)))]
+  const skipped: string[] = []
+  const accounts: string[] = []
+  const seen = new Set<string>()
+  for (let index = 0; index < requested.length; index += 1) {
+    if (!Object.hasOwn(requested, index)) {
+      skipped.push(`[missing account at index ${index}]`)
+      continue
+    }
+    const candidate = requested[index]
+    if (typeof candidate !== 'string') {
+      skipped.push(`[non-string account at index ${index}]`)
+      continue
+    }
+    if (!isAddress(candidate)) {
+      skipped.push(candidate)
+      continue
+    }
+    if (seen.has(candidate)) continue
+    seen.add(candidate)
+    accounts.push(candidate)
+  }
   const dropped = directoryDropped(source)
 
   const answers = await mapConcurrentWith(
@@ -358,6 +392,57 @@ export async function walkAccounts<T>(
       complete: failed.length === 0 && truncated.length === 0 && skipped.length === 0 && dropped === 0,
     },
   }
+}
+
+/**
+ * Resolve a source without copying an oversized array first.
+ *
+ * A custom directory is allowed to be asynchronous, so both its optional size
+ * hint and its actual result are checked. The caller wraps this promise with
+ * `untilAborted`, which also keeps a late rejection handled after an abort.
+ */
+async function accountsForWalk(source: AccountSource, what: string): Promise<readonly unknown[]> {
+  if (typeof source === 'string') return [source]
+  if (!isDirectory(source)) {
+    if (!Array.isArray(source)) throw badAccountSource(what, 'it must be an address, an array, or an AccountDirectory')
+    assertWalkSize(source.length, what)
+    return source
+  }
+
+  const declaredSize = source.size
+  if (declaredSize !== undefined) {
+    if (!Number.isSafeInteger(declaredSize) || declaredSize < 0) {
+      throw badAccountSource(
+        what,
+        `its size must be a non-negative safe whole number when present, not ${String(declaredSize)}`,
+      )
+    }
+    if (declaredSize > MAX_ACCOUNTS_PER_WALK) throw tooManyAccounts(declaredSize, what)
+  }
+  const accounts: unknown = await source.accounts()
+  if (!Array.isArray(accounts)) {
+    throw badAccountSource(what, 'accounts() must return an actual bounded readonly array')
+  }
+  assertWalkSize(accounts.length, what)
+  return accounts
+}
+
+function assertWalkSize(size: number, what: string): void {
+  if (size > MAX_ACCOUNTS_PER_WALK) throw tooManyAccounts(size, what)
+}
+
+function tooManyAccounts(size: number, what: string): KeiError {
+  return new KeiError(
+    'too-many-accounts',
+    `${what} was given ${size} account entries, but one walk accepts at most ${MAX_ACCOUNTS_PER_WALK}. Split the roster into explicit shards or add bounded pagination and merge their separately labelled results. No account chains were read and nothing was signed.`,
+  )
+}
+
+function badAccountSource(what: string, problem: string): KeiError {
+  return new KeiError(
+    'bad-account-source',
+    `${what} cannot use this account source: ${problem}. Return a finite readonly array with at most ${MAX_ACCOUNTS_PER_WALK} entries. No account chains were read and nothing was signed.`,
+  )
 }
 
 /**

@@ -23,7 +23,7 @@
  * reported rather than swallowed (see `Coverage` in `book.ts`).
  */
 
-import { isAddress } from '@keicoin/core'
+import { KeiError, isAddress } from '@keicoin/core'
 
 /**
  * Somewhere to get a list of accounts from.
@@ -62,12 +62,13 @@ export interface MutableDirectory extends AccountDirectory {
 
 export interface DirectoryOptions {
   /**
-   * How many accounts to keep. Default 128.
+   * How many accounts to keep. Positive safe integer, 1–256; default 128.
    *
    * Chosen against what a walk costs rather than against how many players a
    * world might have: a book is one `account_swaps` call per account, so this is
    * a ceiling of ~128 node calls per read. Far above any session a game template
-   * will see, and still a request that finishes.
+   * will see, and still a request that finishes. Invalid or larger values throw
+   * `bad-directory-limit` before `accounts` is touched.
    */
   limit?: number
   /** Addresses to start with. Anything that is not an address is skipped. */
@@ -76,8 +77,20 @@ export interface DirectoryOptions {
 
 export const DEFAULT_DIRECTORY_LIMIT = 128
 
+/**
+ * Largest roster the built-in directory may retain.
+ *
+ * Two default-sized directories are already 256 node calls in one refresh.
+ * Larger markets need explicit sharding or pagination rather than a number that
+ * lets an unauthenticated announcement route set every future read's cost.
+ * This is also the absolute account ceiling for one walk (see `walk.ts`).
+ */
+export const MAX_DIRECTORY_LIMIT = 256
+
 export function createDirectory(options: DirectoryOptions = {}): MutableDirectory {
-  const limit = Math.max(1, Math.floor(options.limit ?? DEFAULT_DIRECTORY_LIMIT))
+  // Validate before even reading `options.accounts`: it is a public Iterable
+  // and may run code, throw, or never end when touched.
+  const limit = directoryLimitOf(options.limit)
   // A Map rather than a Set because insertion order is what bounds it: the first
   // key is the address heard from longest ago.
   const held = new Map<string, true>()
@@ -120,6 +133,18 @@ export function createDirectory(options: DirectoryOptions = {}): MutableDirector
   return directory
 }
 
+/** Resolve the retained-account ceiling without coercion or an unlimited escape. */
+function directoryLimitOf(requested: number | undefined): number {
+  if (requested === undefined) return DEFAULT_DIRECTORY_LIMIT
+  if (!Number.isSafeInteger(requested) || requested < 1 || requested > MAX_DIRECTORY_LIMIT) {
+    throw new KeiError(
+      'bad-directory-limit',
+      `Directory limit is how many announced accounts to retain — a positive safe whole number from 1 through ${MAX_DIRECTORY_LIMIT}, and ${DEFAULT_DIRECTORY_LIMIT} by default. Got ${String(requested)}. Split a larger market into explicit directories or pages; no initial accounts were read.`,
+    )
+  }
+  return requested
+}
+
 export function isDirectory(source: unknown): source is AccountDirectory {
   return typeof source === 'object' && source !== null && typeof (source as AccountDirectory).accounts === 'function'
 }
@@ -133,5 +158,13 @@ export async function resolveAccounts(source: AccountSource): Promise<string[]> 
 
 /** What a directory admits about itself, or nothing when it is a plain list. */
 export function directoryDropped(source: AccountSource): number {
-  return isDirectory(source) ? (source.dropped ?? 0) : 0
+  if (!isDirectory(source)) return 0
+  const dropped = source.dropped ?? 0
+  if (!Number.isSafeInteger(dropped) || dropped < 0) {
+    throw new KeiError(
+      'bad-account-source',
+      `An account directory's dropped count must be a non-negative safe whole number when present, not ${String(dropped)}. Fix the directory before using its coverage; no account chains were read.`,
+    )
+  }
+  return dropped
 }

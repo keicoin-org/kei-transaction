@@ -10,9 +10,9 @@
  * restatement exactly (SPEC §9.2, `swap-terms-mismatch`).
  */
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import { KeiError, type AssetId } from '@keicoin/core'
-import { createDirectory } from '@keicoin/market'
+import { MAX_ACCOUNTS_PER_WALK, createDirectory, isMarketError } from '@keicoin/market'
 
 import { PagingNode, TwoFacedNode } from './harness/net.js'
 import { World, evidence, syntheticAddress, type Actor } from './harness/world.js'
@@ -202,6 +202,20 @@ describe('a lying read model cannot move funds (SPEC §9.2, §9.4)', () => {
 })
 
 describe('adversarial directories', () => {
+  test('an oversized scope is a typed refusal before an aggregate node read', async () => {
+    const accountSwaps = spyOn(bob.client.node, 'accountSwaps')
+    const failure = await bob.market
+      .book({
+        from: Array<string>(MAX_ACCOUNTS_PER_WALK + 1).fill(alice.address),
+        asset: sword,
+      })
+      .catch((error: unknown) => error)
+
+    expect(isMarketError(failure, 'too-many-accounts')).toBe(true)
+    expect(accountSwaps).toHaveBeenCalledTimes(0)
+    accountSwaps.mockRestore()
+  })
+
   test('a directory full of garbage is skipped and counted, never signed against', async () => {
     await alice.market.sell({ asset: sword, amount: 1, price: 5 })
     const junk = {

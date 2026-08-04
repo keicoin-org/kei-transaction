@@ -68,6 +68,12 @@ Anywhere a `from` is taken, an address, a list, or a directory all work. **Nothi
 read through one is trusted** — every offer it leads to is re-read from the chain
 before anything is signed.
 
+The built-in directory defaults to 128 retained accounts and accepts only a
+positive safe whole-number `limit`, up to `MAX_DIRECTORY_LIMIT` (256). Invalid
+configuration throws `bad-directory-limit` before an initial iterable is
+touched. Re-announcing still refreshes LRU order, and evictions still appear as
+`coverage.dropped`.
+
 ### A book, and an honest account of what it could not see
 
 ```js
@@ -119,6 +125,20 @@ numbers from 1 through 32. Results keep request order even when responses arrive
 out of order. Aborting rejects with the typed `read-aborted` market error, stops
 new chain reads from starting, and does not claim to cancel a node request
 already in flight.
+
+Peak concurrency and total work are separate bounds. A plain array or custom
+directory may provide at most `MAX_ACCOUNTS_PER_WALK` (256) entries to one walk,
+including duplicates and invalid addresses; a larger source throws the typed
+`too-many-accounts` refusal before any account-chain request starts. This raw
+entry ceiling bounds validation and deduplication work as well as node calls.
+Custom directories are runtime-checked too: `accounts()` must return an actual
+array, and optional `size`/`dropped` hints must be finite non-negative safe
+integers. Invalid shapes throw `bad-account-source`; `NaN` or `Infinity` is never
+treated as an unlimited hint.
+There is no unlimited option: shard or page a larger roster explicitly, then
+keep each result's coverage attached to the scope that produced it. The cap
+matches `MAX_DIRECTORY_LIMIT`, so every roster the built-in directory can retain
+is walkable.
 
 Each walk reads at most `limit` rows from each account, 100 by default. A limit
 must be a positive safe whole number; an invalid value rejects with
