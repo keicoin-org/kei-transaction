@@ -81,11 +81,17 @@ import type {
   Offer,
   OfferOptions,
   PriceSummary,
+  Duration,
   SellOptions,
   Settlement,
   Trade,
   TradeOptions,
 } from './types.js'
+
+type CandleQueryOptions = Omit<CandleOptions, 'every'> &
+  Partial<Pick<CandleOptions, 'every'>> &
+  { interval?: Duration } &
+  TradeOptions
 
 export interface MarketApi {
   /** Bind one explicit base/quote/source once, then read and trade it coherently. */
@@ -138,10 +144,19 @@ export interface MarketApi {
   /** Market-friendly alias for `series(...)` when you are building a chart. */
   history(options: SeriesOptions & TradeOptions): Promise<Series>
   /** The same series as OHLCV buckets. Bucketing is advisory — read `series.ts`. */
-  candles(options: CandleOptions & TradeOptions): Promise<Covered<Candle>>
+  candles(options: CandleQueryOptions): Promise<Covered<Candle>>
   /** Market-friendly alias for `candles(...)` when charting an instrument. */
-  ohlc(options: CandleOptions & TradeOptions): Promise<Covered<Candle>>
-  chart(options: SeriesOptions & CandleOptions & TradeOptions): Promise<{ series: Series; candles: Covered<Candle> }>
+  ohlc(options: CandleQueryOptions): Promise<Covered<Candle>>
+  /**
+   * One call that returns both line and candle views from one trade read.
+   *
+   * `every` defaults to `1h` so the cheapest useful chart has one fewer required
+   * option and can be called with the same shape as `series(...)`.
+   */
+  chart(options: CandleQueryOptions): Promise<{
+    series: Series
+    candles: Covered<Candle>
+  }>
   /** Every traded asset's summary out of one walk, instead of one walk each. */
   prices(options?: TradeOptions & { assets?: Iterable<AssetId | { id: AssetId }> }): Promise<PriceIndex>
   /** Re-read a snapshot of listings and say what became of each one. */
@@ -161,6 +176,7 @@ const KEI_META: LegMeta = {
 }
 
 const DEFAULT_SWEEP_INTERVAL = 30_000
+const DEFAULT_CHART_EVERY: Duration = '1h'
 // Node, Bun, browsers, and Workers clamp larger delays instead of waiting for
 // them. Accepting one here would turn a failed sweep into an immediate retry.
 const MAX_SWEEP_INTERVAL = 2_147_483_647
@@ -173,6 +189,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
   const autoCancelExpired = options.autoCancelExpired !== false
   const sweepInterval = validSweepInterval(options.sweepInterval)
   const concurrency = options.concurrency
+  const defaultTradeSource = options.from
   const metaCache = new Map<AssetId, LegMeta>()
   // In flight as well as cached, because the walks below are concurrent now: a
   // cold cache and eight lanes converting offers in the same asset would
@@ -201,6 +218,16 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     }
     if (cacheResult) metaCache.set(id, found)
     return found
+  }
+
+  const resolveEvery = (
+    requested: Omit<CandleOptions, 'every'> & Partial<Pick<CandleOptions, 'every'>> & { interval?: Duration },
+  ): Duration => {
+    const every = requested.every ?? requested.interval
+    if (requested.every !== undefined && requested.interval !== undefined) {
+      fail('bad-duration', 'pass either every or interval, not both.')
+    }
+    return every === undefined ? DEFAULT_CHART_EVERY : every
   }
 
   const meta = async (asset: AssetId): Promise<LegMeta> => {
@@ -628,6 +655,9 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     return listing
   }
 
+  const tradesSource = (requested: AccountSource | undefined): AccountSource | undefined =>
+    requested ?? defaultTradeSource
+
   const mine = async (options: MineOptions = {}): Promise<Covered<Offer>> =>
     list([client.address], {
       state: options.state === undefined ? 'open' : options.state,
@@ -640,7 +670,11 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     })
 
   const trades = (options: TradeOptions = {}): Promise<Covered<Trade>> =>
-    readTrades(context, { concurrency, ...options })
+    readTrades(context, {
+      concurrency,
+      ...options,
+      from: tradesSource(options.from),
+    })
 
   const price = async (
     asset: AssetId | { id: AssetId },
@@ -648,7 +682,13 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
   ): Promise<PriceSummary | null> => {
     const id = assetIdOf(asset)
     const quote = options.quote === undefined ? KEI_ASSET : assetIdOf(options.quote)
-    const matched = await readTrades(context, { concurrency, ...options, asset: id, quote })
+    const matched = await readTrades(context, {
+      concurrency,
+      ...options,
+      from: options.from ?? defaultTradeSource,
+      asset: id,
+      quote,
+    })
     return summarise(matched, id, quote)
   }
 
@@ -714,6 +754,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
       const read = await readTrades(context, {
         concurrency,
         ...seriesOptions,
+        from: tradesSource(seriesOptions.from),
         asset: seriesOptions.asset,
         quote,
       })
@@ -728,13 +769,26 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
 
     async candles(candleOptions) {
       const quote = candleOptions.quote === undefined ? KEI_ASSET : assetIdOf(candleOptions.quote)
+      const every = resolveEvery(candleOptions)
+      const readOptions = candleOptions as CandleQueryOptions
       const read = await readTrades(context, {
         concurrency,
-        ...candleOptions,
+        ...readOptions,
+        from: tradesSource(candleOptions.from),
         asset: candleOptions.asset,
         quote,
       })
-      return withCoverage(toCandles(read, { ...candleOptions, quote }), coverageOf(read) ?? emptyCoverage())
+      return withCoverage(
+        toCandles(
+          read,
+          {
+            ...readOptions,
+            every,
+            quote,
+          },
+        ),
+        coverageOf(read) ?? emptyCoverage(),
+      )
     },
 
     ohlc(candleOptions) {
@@ -743,20 +797,37 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
 
     async chart(chartOptions) {
       const quote = chartOptions.quote === undefined ? KEI_ASSET : assetIdOf(chartOptions.quote)
+      const every = resolveEvery(chartOptions)
+      const chartQuery = chartOptions as CandleQueryOptions
       const read = await readTrades(context, {
         concurrency,
-        ...chartOptions,
+        ...chartQuery,
+        from: tradesSource(chartOptions.from),
         asset: chartOptions.asset,
         quote,
       })
       return {
         series: toSeries(read, { ...chartOptions, quote }),
-        candles: withCoverage(toCandles(read, { ...chartOptions, quote }), coverageOf(read) ?? emptyCoverage()),
+        candles: withCoverage(
+          toCandles(
+            read,
+            {
+              ...chartQuery,
+              every,
+              quote,
+            },
+          ),
+          coverageOf(read) ?? emptyCoverage(),
+        ),
       }
     },
 
     async prices(priceOptions = {}) {
-      const read = await readTrades(context, { concurrency, ...priceOptions })
+      const read = await readTrades(context, {
+        concurrency,
+        ...priceOptions,
+        from: tradesSource(priceOptions.from),
+      })
       return priceIndex(read, {
         ...(priceOptions.quote === undefined ? {} : { quote: priceOptions.quote }),
         ...(priceOptions.assets === undefined ? {} : { assets: priceOptions.assets }),
