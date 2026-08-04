@@ -4,6 +4,66 @@ export { summarise } from './history.js'
 export type { LegMeta, MarketContext } from './history.js'
 export { assetIdOf, durationMs } from './util.js'
 
+export { createMemoryMarketStorage } from './storage.js'
+export type {
+  MarketMemoryStorageCapabilities,
+  MarketMemoryStorageAdapter,
+  MarketStorageEnvelope,
+  MemoryMarketStorage,
+} from './storage.js'
+
+export {
+  DEFAULT_CATALOG_PAGE_SIZE,
+  DEFAULT_CATALOG_RESULT_BYTES,
+  DEFAULT_MARKET_DEADLINE_MS,
+  MAX_CATALOG_PAGE_SIZE,
+  MAX_CATALOG_RESULT_BYTES,
+  MAX_MARKET_DEADLINE_MS,
+  createMarketCatalog,
+} from './catalog.js'
+export type {
+  AnnouncementReceipt,
+  CatalogPage,
+  CatalogQuery,
+  InstrumentQuery,
+  MarketCatalog,
+  MarketCatalogOptions,
+  MarketInstrumentIdentity,
+  MarketInstrumentRecord,
+  MarketParticipant,
+  ParticipantAnnouncement,
+  ParticipantQuery,
+} from './catalog.js'
+
+export {
+  MAX_MARKET_QUARANTINE_ROWS,
+  MAX_MATERIALIZED_ROWS_PER_COMMIT,
+  createMarketStore,
+} from './store.js'
+export type {
+  MarketIngestStopReason,
+  MarketStore,
+  MarketStoreOptions,
+  MaterializedPageInput,
+  MaterializedPageReceipt,
+  RejectedMarketRowInput,
+  SourceCheckpointInput,
+  StoredMarketOffer,
+  StoredMarketOfferInput,
+  StoredOfferPage,
+  StoredOfferQuery,
+} from './store.js'
+
+export { DEFAULT_MARKET_READ_BUDGET, createAccountChainIngestor } from './account-chain-ingestor.js'
+export type {
+  AccountChainIngestRequest,
+  AccountChainIngestResult,
+  AccountChainIngestor,
+  AccountChainIngestorOptions,
+  AccountChainProvider,
+  MarketReadBudget,
+} from './account-chain-ingestor.js'
+
 export {
   DEFAULT_SUBSCRIPTION_READ_TIMEOUT,
   createAccountChainSource,

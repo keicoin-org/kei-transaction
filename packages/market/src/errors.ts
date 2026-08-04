@@ -94,6 +94,28 @@ export type MarketErrorCode =
   | 'offer-failed'
   /** The read was stopped through its `signal`. Nothing was signed. */
   | 'read-aborted'
+  /** A catalog/store/source budget is invalid or exceeds its hard public cap. */
+  | 'bad-market-budget'
+  /** An opaque page cursor is malformed or belongs to another page kind. */
+  | 'bad-market-cursor'
+  /** A snapshot cursor cannot continue after the underlying revision changed. */
+  | 'stale-market-cursor'
+  /** A participant observation is malformed or reuses an id with other facts. */
+  | 'bad-market-observation'
+  | 'market-observation-conflict'
+  /** A persisted adapter/envelope does not satisfy the atomic storage contract. */
+  | 'bad-market-storage'
+  | 'market-storage-conflict'
+  /** A materialized offer/checkpoint/quarantine record is unsafe. */
+  | 'bad-market-row'
+  /** A provider or account-chain source is malformed. */
+  | 'bad-market-source'
+  /** A bounded market operation passed its total deadline. */
+  | 'market-deadline'
+  /** An injected market clock threw or returned an unsafe time. */
+  | 'bad-market-clock'
+  /** One indivisible catalog/store result cannot fit the caller's byte budget. */
+  | 'market-result-too-large'
   /** One bounded instrument refresh exceeded its configured deadline. */
   | 'read-timeout'
 
@@ -132,6 +154,18 @@ const CODES = new Set<string>([
   'offer-changed',
   'offer-failed',
   'read-aborted',
+  'bad-market-budget',
+  'bad-market-cursor',
+  'stale-market-cursor',
+  'bad-market-observation',
+  'market-observation-conflict',
+  'bad-market-storage',
+  'market-storage-conflict',
+  'bad-market-row',
+  'bad-market-source',
+  'market-deadline',
+  'bad-market-clock',
+  'market-result-too-large',
   'read-timeout',
 ])
 

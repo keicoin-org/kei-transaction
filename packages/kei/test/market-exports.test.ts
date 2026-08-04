@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  createAccountChainIngestor as createMarketAccountChainIngestor,
   createAccountChainSource as createMarketAccountChainSource,
   DEFAULT_SUBSCRIPTION_READ_TIMEOUT as MARKET_DEFAULT_SUBSCRIPTION_READ_TIMEOUT,
   MAX_ACCOUNTS_PER_WALK as MARKET_MAX_ACCOUNTS_PER_WALK,
@@ -9,6 +10,7 @@ import {
 } from '@keicoin/market'
 
 import {
+  createAccountChainIngestor,
   createAccountChainSource,
   DEFAULT_SUBSCRIPTION_READ_TIMEOUT,
   MAX_ACCOUNTS_PER_WALK,
@@ -17,6 +19,7 @@ import {
   toUnixLine,
   type InstrumentApi,
   type InstrumentSnapshot,
+  type AccountChainIngestor,
   type MarketDataSource,
 } from '../src/index.js'
 
@@ -31,12 +34,15 @@ describe('market bounds umbrella exports', () => {
   })
 
   test('exposes the instrument data and chart surface with its public types', () => {
+    expect(createAccountChainIngestor).toBe(createMarketAccountChainIngestor)
+    expect(createAccountChainIngestor).not.toBe(createAccountChainSource)
     expect(createAccountChainSource).toBe(createMarketAccountChainSource)
     expect(toUnixCandles).toBe(marketToUnixCandles)
     expect(toUnixLine).toBe(marketToUnixLine)
     const typesCompile = <T>(_value?: T): true => true
     expect(typesCompile<InstrumentApi>()).toBe(true)
     expect(typesCompile<InstrumentSnapshot>()).toBe(true)
+    expect(typesCompile<AccountChainIngestor>()).toBe(true)
     expect(typesCompile<MarketDataSource>()).toBe(true)
   })
 })

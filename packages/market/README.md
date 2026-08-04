@@ -180,6 +180,67 @@ configuration throws `bad-directory-limit` before an initial iterable is
 touched. Re-announcing still refreshes LRU order, and evictions still appear as
 `coverage.dropped`.
 
+### Reference discovery and materialized observations
+
+`createDirectory()` is deliberately a live, process-local LRU. For a market
+that needs a richer in-process read model, use the bounded catalog/store
+reference. This PR deliberately does not claim restart-safe production storage:
+
+```js
+const storage = createMemoryMarketStorage()
+const catalog = createMarketCatalog({ storage })
+const store = createMarketStore({ storage })
+
+await catalog.announce({
+  network: 'testnet',
+  address: player,
+  source: 'my-market',
+  observationId: requestId,
+  observedAt: Date.now(),
+  instrument: { base: sword.id, quote: KEI_ASSET },
+})
+
+const ingestor = createAccountChainIngestor({
+  id: 'public-node',
+  provider: node,
+  catalog,
+  store,
+})
+await ingestor.ingest({ instrument: { base: sword.id, quote: KEI_ASSET } })
+const page = await store.offers({ network: 'testnet', base: sword.id })
+```
+
+`MarketMemoryStorageAdapter` is a deliberately narrow whole-snapshot reference:
+`load()` plus in-process compare-and-swap. Rows discovered in one account page
+and its checkpoint are acknowledged together or not at all within that
+reference. Sharing `createMemoryMarketStorage()` across SDK instances
+demonstrates restart of the SDK object, not restart of the process. A future
+production driver needs operation-level transactions, migrations, indexes, and
+conformance tests; this whole-envelope API must not be presented as that driver.
+
+Catalog observations are append-only and idempotent by
+`network/source/observationId`. Participant and instrument pages use opaque,
+revision-, query-, and integrity-bound cursors. A catalog write makes an old cursor fail with
+`stale-market-cursor`, so callers restart the traversal rather than accepting a
+page with gaps or duplicates. Store pages keep exact raw integer strings and
+provenance; a second source cannot rewrite immutable terms for the same
+`network/hash`. Conflicts are quarantined and the first canonical row stays.
+
+The current `account_swaps` RPC only returns a bounded newest window. The
+account-chain ingestor can re-poll that window and resume catalog paging,
+but it always reports `sourceBackfill.complete: false`, reason
+`unsupported_pagination`, and `scannedBlocks: 'unsupported'`. Stored results are
+**materialized observations**, not network-global history. Complete historical
+backfill requires the cursor, explicit exhaustion, and independent scan budget
+tracked in kei-node issue #27; no local timestamp, offset, or hash fabricates
+that proof.
+
+Every public operation validates finite row, byte, page, request, account, and
+deadline budgets before touching its adapter. The catalog and store remain
+untrusted read models: they can hide, reorder, or inject discovery data, but
+they never hold seeds or sign. Re-read an offer from the configured node and
+verify its exact terms immediately before execution.
+
 ### A book, and an honest account of what it could not see
 
 ```js
