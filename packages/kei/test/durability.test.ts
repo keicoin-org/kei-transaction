@@ -343,6 +343,50 @@ describe('a seed store reports what a write was actually worth (issue #34)', () 
     })
   })
 
+  test('storage disappearing after its own verification keeps one session identity', () => {
+    const disk = new Map<string, string>()
+    let reads = 0
+    const storage: WebStorage = {
+      getItem: (key) => {
+        reads++
+        if (reads > 1) throw new Error('storage access disappeared')
+        return disk.get(key) ?? null
+      },
+      setItem: (key, value) => void disk.set(key, value),
+    }
+    const store = createBrowserSeedStore(storage, new Map())
+    const key = 'kei:seed:test-transient-read'
+    const seed = randomSeed()
+
+    expect(persistSeed(store, key, seed)).toEqual({ durability: 'session', reason: 'storage-unreadable' })
+    expect(readSeed(store, key)).toBe(seed)
+    expect(store.status?.()).toEqual({ durability: 'session', reason: 'storage-unreadable' })
+  })
+
+  test('a custom store cannot claim persistent while dropping the write', () => {
+    const store: SeedStore = {
+      read: () => null,
+      write: () => ({ durability: 'persistent' }),
+    }
+    expect(persistSeed(store, 'kei:seed:test-false-persistent', randomSeed())).toEqual({
+      durability: 'session',
+      reason: 'storage-write-refused',
+    })
+  })
+
+  test('a custom store cannot claim persistent when the seed cannot be read', () => {
+    const store: SeedStore = {
+      read: () => {
+        throw new Error('storage is disabled')
+      },
+      write: () => ({ durability: 'persistent' }),
+    }
+    expect(persistSeed(store, 'kei:seed:test-false-readable', randomSeed())).toEqual({
+      durability: 'session',
+      reason: 'storage-unreadable',
+    })
+  })
+
   test("a store whose write throws does not take the caller's wallet down with it", () => {
     const store: SeedStore = {
       read: () => null,

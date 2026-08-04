@@ -214,7 +214,7 @@ export class Kei {
   /**
    * Where this wallet's seed came from and whether it survives a reload
    * (SPEC §6.4). `durability: 'session'` means memory only — the wallet works,
-   * and anything sent to it is lost the moment the page reloads.
+   * but a reload cannot find it again unless its seed was backed up separately.
    *
    * `WalletPanel` reads this and warns the player; a game drawing its own UI
    * should do the same before it lets a wallet hold anything.

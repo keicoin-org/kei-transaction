@@ -20,7 +20,7 @@
  * - `'persistent'` — written to browser storage and read back from it, so a
  *   reload finds the same wallet.
  * - `'session'` — memory only. A reload, or a second tab, is a different
- *   wallet, and anything sent to this address is lost with it.
+ *   wallet; only a separately backed-up seed can restore the old one.
  * - `'supplied'` — you passed the seed (or `KEI_PLAYER_SEED`), so keeping it is
  *   yours to do and the SDK stored nothing.
  */
@@ -140,9 +140,17 @@ class BrowserSeedStore implements SeedStore {
   ) {}
 
   read(key: string): string | null {
+    const kept = this.kept.get(key)
     try {
       const stored = this.storage.getItem(key)
       if (stored) {
+        // If this page already handed out a newer seed that storage failed to
+        // confirm, preserve that identity for the rest of the session. A stale
+        // durable value must not make the page switch wallets underneath it.
+        if (kept && kept.seed !== stored) {
+          this.last = { durability: 'session', reason: kept.reason }
+          return kept.seed
+        }
         this.last = { durability: 'persistent' }
         return stored
       }
@@ -152,7 +160,6 @@ class BrowserSeedStore implements SeedStore {
     // Kept by a failed write earlier in this session, under this key and with
     // the reason recorded for this key — this read is only how a second
     // `Kei.start()` on the same page finds the wallet the first one made.
-    const kept = this.kept.get(key)
     if (kept) {
       this.last = { durability: 'session', reason: kept.reason }
       return kept.seed
@@ -175,6 +182,10 @@ class BrowserSeedStore implements SeedStore {
       return this.keepForSession(key, seed, 'storage-unreadable')
     }
     if (readBack !== seed) return this.keepForSession(key, seed, 'storage-write-refused')
+    // Retain a same-session fallback too. `persistSeed` performs an independent
+    // read below; if access disappears between the two reads, the wallet stays
+    // on this seed and is downgraded to session-only instead of changing again.
+    this.kept.set(key, { seed, reason: 'storage-unreadable' })
     this.last = { durability: 'persistent' }
     return this.last
   }
@@ -266,11 +277,11 @@ export function readDurability(store: SeedStore): SeedWriteResult {
 /**
  * Write a seed and report what that was actually worth.
  *
- * A store that returns a result is believed, because it knows more than this
- * function can. A store that returns nothing is verified the only way left: the
- * seed is read back and compared, so a `setItem` that throws, silently drops the
- * value, or truncates it is a `'session'` result rather than a promise nobody
- * checked.
+ * A store that reports a session write is believed, because it knows more than
+ * this function can. Every claimed persistent write is still read back and
+ * compared, so a custom store cannot opt out of the one check the SDK can make:
+ * a write that throws, silently drops the value, truncates it, or cannot be read
+ * is a `'session'` result rather than a promise nobody checked.
  */
 export function persistSeed(store: SeedStore, key: string, seed: string): SeedWriteResult {
   let reported: SeedWriteResult | void
@@ -282,15 +293,13 @@ export function persistSeed(store: SeedStore, key: string, seed: string): SeedWr
   if (reported && reported.durability === 'session') {
     return { durability: 'session', reason: reported.reason ?? 'store-session-only' }
   }
-  if (!reported) {
-    let readBack: string | null
-    try {
-      readBack = store.read(key)
-    } catch {
-      return { durability: 'session', reason: 'storage-unreadable' }
-    }
-    if (readBack !== seed) return { durability: 'session', reason: 'storage-write-refused' }
+  let readBack: string | null
+  try {
+    readBack = store.read(key)
+  } catch {
+    return { durability: 'session', reason: 'storage-unreadable' }
   }
+  if (readBack !== seed) return { durability: 'session', reason: 'storage-write-refused' }
   const declared = readDurability(store)
   if (declared.durability === 'session') {
     return { durability: 'session', reason: declared.reason ?? 'store-session-only' }

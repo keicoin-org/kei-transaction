@@ -305,7 +305,8 @@ whatever the UI does.
 Browser storage is not always there. Private browsing, a switched-off store, a
 full quota, and browser policy all make `localStorage.setItem()` throw, and some
 of them make `getItem()` throw too. A generated seed that nothing kept is a
-wallet that a reload replaces — with everything sent to the old address gone —
+wallet that a reload replaces — leaving the old address accessible only with a
+separately backed-up seed —
 so `Kei.start()` says which one you have rather than looking identical either
 way:
 
@@ -347,7 +348,9 @@ const kei = await Kei.start({ requireDurableSeed: true })
 A custom `storage` store keeps working unchanged. If it cannot survive a reload,
 say so — return `{ durability: 'session' }` from `write()`, or implement
 `status()` — and it will be reported as session rather than assumed durable. A
-store that returns nothing is verified by reading the seed back.
+claimed persistent write is always verified by reading the seed back. The store
+itself remains trusted code: only its implementation can know whether its
+backing service truly survives a process restart.
 
 ## For agents
 

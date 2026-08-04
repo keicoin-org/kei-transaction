@@ -37,6 +37,13 @@ Both halves are load-bearing:
 from process memory is a session wallet, restoring from `localStorage` is not,
 and the store is the only thing that knows which.
 
+A custom store is trusted code at this boundary: the SDK can verify that its
+current `write()` is immediately readable and can honour a session-only
+`status()`, but it cannot prove what the store's backing service will do after a
+process restart. Even a write that reports `persistent` is read back; a custom
+store cannot bypass that observable check merely by returning the result it
+wants.
+
 **Backward compatible on purpose.** `write(): void` is still a valid
 implementation and the existing `{ read, write }` object literal in
 `sixty-seconds.test.ts` — the shape a game would have copied — still typechecks
