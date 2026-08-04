@@ -197,7 +197,7 @@ export function createWallet(client: KeiClient, options: WalletOptions = {}): Wa
   interface Subscription {
     listener: (summary: WalletSummary) => void
   }
-  const listeners = new Set<Subscription>()
+  const listeners = new Map<(summary: WalletSummary) => void, Subscription>()
   let unsubscribeUpdates: (() => void) | undefined
   let refreshing = false
   let refreshAgain = false
@@ -242,7 +242,7 @@ export function createWallet(client: KeiClient, options: WalletOptions = {}): Wa
         refreshAgain = false
         // Freeze this pass's audience before its first read. New listeners get
         // only updates whose refresh began after they subscribed.
-        const audience = [...listeners]
+        const audience = [...listeners.values()]
         // A failed refresh is nobody's to catch — no caller awaited it — so it
         // is dropped rather than left as an unhandled rejection, and the
         // follow-up pass still runs. `summary()` itself still rejects for a
@@ -259,7 +259,12 @@ export function createWallet(client: KeiClient, options: WalletOptions = {}): Wa
           // Taking this second snapshot also preserves delivery to everyone who
           // was subscribed at completion if one listener removes another while
           // callbacks are being invoked.
-          deliver(snapshot, audience.filter((subscription) => listeners.has(subscription)))
+          deliver(
+            snapshot,
+            audience.filter(
+              (subscription) => listeners.get(subscription.listener) === subscription,
+            ),
+          )
         }
       } while (refreshAgain)
     } finally {
@@ -278,8 +283,11 @@ export function createWallet(client: KeiClient, options: WalletOptions = {}): Wa
     summary,
     on(event, listener) {
       if (event !== 'change') return () => undefined
-      const subscription: Subscription = { listener }
-      listeners.add(subscription)
+      // Match the SDK emitter contract: registering the same callback twice is
+      // one listener. The subscription object is still an incarnation token,
+      // so unsubscribe/re-subscribe cannot revive an older refresh audience.
+      const subscription = listeners.get(listener) ?? { listener }
+      listeners.set(listener, subscription)
       // Every block this wallet writes, and every arrival it collects, can move
       // one of the numbers above. Subscribed to once for the whole wallet,
       // however many panels are mounted on it.
@@ -292,7 +300,8 @@ export function createWallet(client: KeiClient, options: WalletOptions = {}): Wa
       })
 
       return () => {
-        if (!listeners.delete(subscription)) return
+        if (listeners.get(listener) !== subscription) return
+        listeners.delete(listener)
         if (listeners.size > 0) return
         // Nobody left to tell. Stop listening to the client, and let any
         // refresh already in flight finish without delivering to anyone.
