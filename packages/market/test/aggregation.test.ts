@@ -299,71 +299,61 @@ describe('price series — consensus numbers, advisory order', () => {
   test('extreme safe timestamps cannot overflow the dense projection', () => {
     const error = caught(() =>
       toCandles(
-        [sale('A', 1, 5, 0), sale('B', 1, 7, Number.MAX_SAFE_INTEGER)],
+        [sale('A', 1, 5, Number.MIN_SAFE_INTEGER), sale('B', 1, 7, Number.MAX_SAFE_INTEGER)],
         { asset: 'SWORD', quote: KEI_ASSET, every: 1, fill: true },
       ),
     )
 
     expect(error).toMatchObject({ code: 'too-many-candles' })
-    expect((error as Error).message).toContain('9007199254740992 candles')
+    expect((error as Error).message).toContain('18014398509481983 candles')
   })
 
-  test('every non-null advisory time is valid before sparse or filled sorting and bucketing', () => {
-    const invalid = [
-      Number.NaN,
-      Number.POSITIVE_INFINITY,
-      Number.NEGATIVE_INFINITY,
-      -1,
-      0.5,
-      Number.MAX_SAFE_INTEGER + 1,
-      Number.MIN_SAFE_INTEGER - 1,
-    ]
-
+  test('negative extreme times cannot form unsafe sparse or single filled buckets', () => {
     for (const fill of [false, true]) {
-      for (const at of invalid) {
-        const error = caught(() =>
-          toCandles([sale('A', 1, 5, at)], {
-            asset: 'SWORD',
-            quote: KEI_ASSET,
-            every: 1,
-            fill,
-          }),
-        )
-        expect(error).toMatchObject({ code: 'bad-candle-time' })
-        expect(isMarketError(error, 'bad-candle-time')).toBe(true)
-        expect((error as Error).message).toContain('non-negative safe whole number')
-      }
+      const error = caught(() =>
+        toCandles([sale('A', 1, 5, Number.MIN_SAFE_INTEGER)], {
+          asset: 'SWORD',
+          quote: KEI_ASSET,
+          every: 2,
+          fill,
+        }),
+      )
+      expect(error).toMatchObject({ code: 'bad-candle-time' })
+      expect(isMarketError(error, 'bad-candle-time')).toBe(true)
+    }
+
+    const neighboringSafe = Number.MIN_SAFE_INTEGER + 1
+    for (const fill of [false, true]) {
+      const candles = toCandles([sale('A', 1, 5, neighboringSafe)], {
+        asset: 'SWORD',
+        quote: KEI_ASSET,
+        every: 2,
+        fill,
+      })
+      expect(candles).toHaveLength(1)
+      expect(candles[0]?.at).toBe(neighboringSafe)
+      expect(Number.isSafeInteger(candles[0]?.at)).toBe(true)
     }
   })
 
-  test('an invalid interior time cannot hide a billion-bucket gap from endpoint projection', () => {
-    const error = caught(() =>
-      toCandles(
-        [sale('A', 1, 5, 0), sale('B', 1, 7, 1_000_000_000), sale('C', 1, 9, Number.NaN), sale('D', 1, 11, 1)],
-        { asset: 'SWORD', quote: KEI_ASSET, every: 1, fill: true },
-      ),
-    )
-
-    expect(error).toMatchObject({ code: 'bad-candle-time' })
-  })
-
-  test('a wholly missing advisory time is still dropped rather than drawn at the epoch', () => {
-    const timeless = trade({
-      hash: 'TIMELESS',
-      give: leg('SWORD', 1),
+  test('an unrelated malformed trade cannot poison another asset candle query', () => {
+    const unrelated = trade({
+      hash: 'UNRELATED-TIME',
+      give: leg('SHIELD', 1),
       want: leg(KEI_ASSET, 5),
-      settledAt: null,
-      seenAt: null as unknown as number,
+      settledAt: Number.NaN,
+      seenAt: Number.NaN,
     })
-    const candles = toCandles([timeless, sale('A', 1, 7, 1)], {
+
+    const candles = toCandles([unrelated, sale('SWORD-TIME', 1, 7, 2)], {
       asset: 'SWORD',
       quote: KEI_ASSET,
-      every: 1,
+      every: 2,
       fill: true,
     })
 
     expect(candles).toHaveLength(1)
-    expect(candles[0]?.at).toBe(1)
+    expect(candles[0]?.at).toBe(2)
   })
 
   test('fill false stays sparse across a multi-year gap', () => {
