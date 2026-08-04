@@ -1,6 +1,6 @@
 # @keicoin/economy
 
-Rewards, sinks, shops and crafts, declared once as recipes and dry-run before
+Rewards, sinks, shops, crafts and loot tables, declared once and dry-run before
 anything is signed. No server ledger, no pending state, no key that signs for
 somebody else.
 
@@ -167,6 +167,95 @@ Keep multi-asset rewards and sinks to things a player can be given twice or
 charged twice without harm. When it has to be all or nothing, it has to be one
 in and one out.
 
+## Drop tables
+
+Loot is the other half, declared the same way and in the same shared file.
+
+```js
+// loot.js — imported by both halves
+import { defineDropTable } from '@keicoin/economy'
+
+export const dragonHoard = defineDropTable({
+  id: 'dragon-hoard',
+  drops: [
+    { asset: { symbol: 'GOLD' }, amount: 50, weight: 60 },
+    { asset: { symbol: 'SWORD' },            weight: 10 },
+  ],
+  nothing: 30,              // …and the rest of the time, nothing
+  issuer: GAME_ADDRESS,
+})
+
+dragonHoard.odds   // [{ drop, chance: 0.6 }, { drop, chance: 0.1 }, { drop: null, chance: 0.3 }]
+dragonHoard.digest // 64 hex characters over id, rows, amounts, weights and miss rate
+```
+
+Weights are relative, not percentages, and `nothing` is declared rather than
+implied — a miss rate is part of what the digest promises, so a game cannot
+publish "always a sword" and quietly roll empty half the time.
+
+```js
+// Server: one roll per player, one commit block per asset, however big the party
+const drop = await game.economy.drop(dragonHoard, [playerA, playerB /* …thousands */])
+
+drop.roots            // one per asset that actually dropped
+drop.awarded          // how many players rolled something
+drop.awardFor(playerA)  // a claim bundle with the binding attached, or null
+
+// Browser: check it, then claim it
+const { symbol, quantity, chance } = await kei.economy.verifyDrop(award)
+await kei.claims.add(award)
+```
+
+Nothing here mints. A **claim** mints, on the player's own chain, which is the
+only reason a boss killed by a thousand people at once is not a thousand writes
+queued behind the issuer (SPEC §5.5).
+
+### What `verifyDrop()` actually proves
+
+The table's digest is hashed into the **salt** of the Merkle root the issuer
+publishes, and the salt is a leaf of that same tree. So an award carries two
+paths, and both fold up to a root the ledger has already accepted:
+
+| Path | What it settles |
+|---|---|
+| `saltLeaf(H(digest ‖ nonce))` | the batch was published **for this table** |
+| `leafHash(you, asset, amount)` | the batch **owes you this** |
+
+Plus two reads: the root exists on this network, and the pair is one the table
+declares. Each failure is its own sentence — `table-changed`, `unbound-drop`,
+`not-in-drop`, `no-such-root`, `undeclared-drop` — thrown before anything is
+claimed.
+
+**It is not verifiable randomness, and should not be sold as it.** The roll
+happens on the game's server, out of the chain's sight, and nothing here proves
+the weights were honoured: a game that publishes a 1% sword and never rolls one
+is not caught by this. What is caught is duller and far more common — a table
+rewritten between the announcement and the drop, an award for something the
+table never listed, an amount nobody was promised, and an award drawn for one
+player and handed to another.
+
+### Closing a batch
+
+```js
+await drop.close()                  // every root in the batch
+await drop.close({ force: true })   // even over somebody's unclaimed loot
+```
+
+Roots are closed by the issuer rather than by a clock, because a block-lattice
+has no clock (SPEC §5.5), and closing is what lets a settled batch be pruned
+instead of sitting in every node forever. `close()` refuses while anybody still
+has an unclaimed entitlement, because closing over one is not housekeeping.
+
+### Two refusals worth knowing before you meet them
+
+- **One roll per address per batch.** A root commits to at most one entitlement
+  per account, so two rolls for the same player would have to merge into one leaf
+  — producing an award no table row matches. Two batches instead.
+- **A batch the supply cannot honour is refused whole.** A claim mints, and
+  minting past `maxSupply` is an invalid block, so an over-committed batch would
+  otherwise fail one player at a time with no way to tell which. `drop()` checks
+  the headroom before it publishes anything.
+
 ## What is deliberately not here
 
 - **No off-chain balances.** Nothing here stores a pending, reserved, or
@@ -179,13 +268,17 @@ in and one out.
   gate has to hold. The plan says so in `warnings`.
 - **No cooldowns or per-player limits.** The honest primitive for "once per
   player" is a commit root: the ledger keys claims on (account, root) and
-  refuses a second one (SPEC §5.5). Use `token.commit()` for that today.
+  refuses a second one (SPEC §5.5). `economy.drop()` and `token.commit()` both
+  give you one.
+- **No randomness the chain can check.** See above. A native beacon is not a
+  primitive Kei has, and inventing one is a consensus change, not an SDK one.
 
 ## Status
 
 **M6 of eleven**, and the newest package in this workspace. It composes
-`@keicoin/core` and `@keicoin/market` and adds no consensus rules of its own —
-every block it writes is one the SDK could already write by hand.
+`@keicoin/core`, `@keicoin/claims` and `@keicoin/market` and adds no consensus
+rules of its own — every block it writes is one the SDK could already write by
+hand.
 
 There is no mainnet yet and **nothing here holds value.**
 

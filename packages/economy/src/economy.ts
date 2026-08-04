@@ -22,6 +22,20 @@ import { createMarket } from '@keicoin/market'
 
 import { format, isResolved, resolveStack, spendableRaw, type ResolvedStack } from './assets.js'
 import {
+  publishDrop,
+  verifyAward,
+  type DropOptions,
+  type PublishedDrop,
+} from './batch.js'
+import {
+  defineDropTable,
+  isDropTable,
+  type DropAward,
+  type DropTable,
+  type DropTableSpec,
+  type VerifiedDrop,
+} from './drops.js'
+import {
   acceptableBy,
   assertRunnable,
   buildPlan,
@@ -98,11 +112,34 @@ export interface EconomyApi {
   stock(recipe: string | Recipe, options?: StockOptions): Promise<Offer[]>
   /** The open offers backing a recipe, with terms that match it exactly. */
   listings(recipe: string | Recipe, options?: ListingOptions): Promise<Offer[]>
+
+  /** The drop tables this economy knows, by id. */
+  readonly tables: ReadonlyMap<string, DropTable>
+  /** Register a drop table. Returns it, so it reads well inline. */
+  table(table: DropTable | DropTableSpec): DropTable
+  /**
+   * Issuer: roll a table for a set of players and publish the result as one
+   * `commit` block per asset (SPEC §5.5). The players claim from their own
+   * accounts, in parallel, whenever they like.
+   */
+  drop(table: string | DropTable, players: readonly string[], options?: DropOptions): Promise<PublishedDrop>
+  /**
+   * Player: check an award against the table it says it came from and against
+   * the chain, before claiming it. Throws a sentence naming what disagreed.
+   */
+  verifyDrop(award: DropAward, table?: string | DropTable): Promise<VerifiedDrop>
 }
 
 export interface EconomyOptions {
   /** The catalogue this economy starts with. */
   recipes?: Iterable<Recipe | RecipeSpec>
+  /**
+   * The drop tables this economy starts with. Both halves of the game register
+   * the same ones, from the same shared file — the server rolls them, and the
+   * browser is what checks that a batch was published for the table it was
+   * shown (`verifyDrop`).
+   */
+  tables?: Iterable<DropTable | DropTableSpec>
   /**
    * The market to publish and accept through. One is created if absent.
    *
@@ -140,6 +177,29 @@ export function createEconomy(client: KeiClient, options: EconomyOptions = {}): 
 
   const asRecipe = (input: string | Recipe): Recipe =>
     typeof input === 'string' ? get(input) : define(input)
+
+  const tables = new Map<string, DropTable>()
+  const table = (input: DropTable | DropTableSpec): DropTable => {
+    const defined = isDropTable(input) ? input : defineDropTable(input)
+    tables.set(defined.id, defined)
+    return defined
+  }
+  for (const declared of options.tables ?? []) table(declared)
+
+  const getTable = (id: string): DropTable => {
+    const known = tables.get(id)
+    if (known) return known
+    const names = [...tables.keys()]
+    fail(
+      'no-such-drop-table',
+      names.length === 0
+        ? `This economy has no drop table called "${id}", and no drop tables at all. Register them at start-up: Kei.start({ tables: [ ... ] }), or economy.table({ id: '${id}', drops: [ ... ] }).`
+        : `This economy has no drop table called "${id}". It knows: ${names.join(', ')}.`,
+    )
+  }
+
+  const asTable = (input: string | DropTable): DropTable =>
+    typeof input === 'string' ? getTable(input) : table(input)
 
   const plan = (input: string | Recipe, planOptions: PlanOptions = {}): Promise<Plan> =>
     buildPlan(context, asRecipe(input), planOptions)
@@ -287,7 +347,30 @@ export function createEconomy(client: KeiClient, options: EconomyOptions = {}): 
     return matchingOffers(context, { issuer, cost, grant })
   }
 
-  return { recipes, define, get, plan, run, stock, listings }
+  const drop = (
+    input: string | DropTable,
+    players: readonly string[],
+    dropOptions: DropOptions = {},
+  ): Promise<PublishedDrop> => publishDrop(client, asTable(input), players, dropOptions)
+
+  /**
+   * The table defaults to the one the award names, which is the shape a wallet
+   * wants: an award arrives from a game, carrying an id, and the copy of the
+   * table worth checking it against is the one this process registered from the
+   * shared file rather than anything that travelled with the award.
+   */
+  const verifyDrop = (award: DropAward, input?: string | DropTable): Promise<VerifiedDrop> => {
+    const named = input ?? (typeof award?.table === 'string' && award.table !== '' ? award.table : undefined)
+    if (named === undefined) {
+      fail(
+        'no-drop-table',
+        'This award does not name a drop table, so there is nothing to check it against. Pass the table you were shown: economy.verifyDrop(award, dragonHoard).',
+      )
+    }
+    return verifyAward(client, award, asTable(named))
+  }
+
+  return { recipes, define, get, plan, run, stock, listings, tables, table, drop, verifyDrop }
 }
 
 // ------------------------------------------------------------------ writing

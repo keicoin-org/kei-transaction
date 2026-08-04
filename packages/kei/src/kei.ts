@@ -47,7 +47,14 @@ import {
   type PlayerToken,
 } from '@keicoin/tokens'
 import { createMarket, type MarketApi } from '@keicoin/market'
-import { createEconomy, type EconomyApi, type Recipe, type RecipeSpec } from '@keicoin/economy'
+import {
+  createEconomy,
+  type DropTable,
+  type DropTableSpec,
+  type EconomyApi,
+  type Recipe,
+  type RecipeSpec,
+} from '@keicoin/economy'
 import {
   createPlayerEconomy,
   type PlayerEconomyApi,
@@ -98,6 +105,13 @@ export interface StartOptions {
    * `kei.economy`, and more can be added later with `economy.define()`.
    */
   recipes?: Iterable<Recipe | RecipeSpec>
+  /**
+   * The loot tables, from the same shared file (SPEC §5.5). The server rolls
+   * them and publishes one block per batch; the browser registers them so it can
+   * check that a batch really was published for the odds it was shown, before it
+   * claims anything.
+   */
+  tables?: Iterable<DropTable | DropTableSpec>
   /**
    * The player's own shop: what it prices in, what this world deals in, and
    * which chains to read when browsing (SPEC §9.1, §9.4). Reaches `kei.shop`.
@@ -163,7 +177,10 @@ export class Kei {
   readonly wallet: WalletApi
   /** Offers, atomic settlement, and price history read from the chain (SPEC §9). */
   readonly market: MarketApi
-  /** Rewards, sinks, shops and crafts, declared as recipes and dry-run first. */
+  /**
+   * Rewards, sinks, shops and crafts, declared as recipes and dry-run first —
+   * and loot tables, rolled into one issuer block a whole party claims from.
+   */
   readonly economy: EconomyApi
   /**
    * This wallet's own stall, and everybody else's: list, buy, cancel, gift.
@@ -181,6 +198,7 @@ export class Kei {
       autoClaim?: boolean
       autoCancelExpired?: boolean
       recipes?: Iterable<Recipe | RecipeSpec>
+      tables?: Iterable<DropTable | DropTableSpec>
       shop?: ShopSetup
     },
   ) {
@@ -199,6 +217,7 @@ export class Kei {
     this.economy = createEconomy(client, {
       market: this.market,
       ...(options.recipes === undefined ? {} : { recipes: options.recipes }),
+      ...(options.tables === undefined ? {} : { tables: options.tables }),
     })
     // Same market again, for the same reason: one background expiry sweep, and
     // a listing this shop writes is swept by it like any other (SPEC §9.3).
@@ -279,6 +298,7 @@ export class Kei {
       ...(options.autoClaim === undefined ? {} : { autoClaim: options.autoClaim }),
       ...(options.autoCancelExpired === undefined ? {} : { autoCancelExpired: options.autoCancelExpired }),
       ...(options.recipes === undefined ? {} : { recipes: options.recipes }),
+      ...(options.tables === undefined ? {} : { tables: options.tables }),
       ...(options.shop === undefined ? {} : { shop: options.shop }),
     })
     await client.start(options.autoReceive === false ? { autoReceive: false } : {})
