@@ -19,10 +19,11 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { keyPairFromSeed, randomSeed } from '@keicoin/core'
+import { KeiError, keyPairFromSeed, randomSeed } from '@keicoin/core'
 import {
   DEFAULT_ACCOUNT_LIMIT,
   DEFAULT_CONCURRENCY,
+  MAX_CONCURRENCY,
   coverageOf,
   createDirectory,
   emptyCoverage,
@@ -110,16 +111,23 @@ describe('walkAccounts — the answer is not a race', () => {
     expect(walk.rows).toEqual(roster)
   })
 
-  test('concurrency below one is refused by name rather than silently clamped', async () => {
+  test('concurrency outside the supported integer range is refused rather than adjusted', async () => {
     const [only] = (await addresses(1)) as [string]
-    const failure = await walkAccounts([only], rows(), { concurrency: 0 }).catch((error: unknown) => error)
-    expect(failure).toBeInstanceOf(Error)
-    expect((failure as Error).message).toMatch(/how many chains to read at once/i)
+    for (const concurrency of [0, 1.5, Number.NaN, Number.POSITIVE_INFINITY, MAX_CONCURRENCY + 1]) {
+      const failure = await walkAccounts([only], rows(), { concurrency }).catch(
+        (error: unknown) => error,
+      )
+      expect(failure).toBeInstanceOf(Error)
+      expect((failure as Error).message).toMatch(/how many chains to read at once/i)
+      expect(isMarketError(failure, 'bad-concurrency')).toBe(true)
+    }
 
     const emptyFailure = await mapConcurrent([], async () => 0, { concurrency: 0 }).catch(
       (error: unknown) => error,
     )
     expect(emptyFailure).toBeInstanceOf(Error)
+
+    expect(await mapConcurrent([], async () => 0, { concurrency: MAX_CONCURRENCY })).toEqual([])
   })
 })
 
@@ -267,6 +275,37 @@ describe('walkAccounts — a read that can be stopped', () => {
     // takes a signal, and this one does not.
     expect(settled).toBe(false)
   })
+
+  test('an abort rejects without waiting for an asynchronous directory', async () => {
+    const controller = new AbortController()
+    const directory = { accounts: () => new Promise<readonly string[]>(() => {}) }
+    const walk = walkAccounts(directory, rows(), { signal: controller.signal })
+
+    await wait(5)
+    controller.abort(new Error('the roster stopped responding'))
+
+    const failure = await walk.catch((error: unknown) => error)
+    expect(isAborted(failure)).toBe(true)
+    expect((failure as Error).message).toContain('the roster stopped responding')
+  })
+
+  test('a directory rejection after abort stays handled', async () => {
+    const controller = new AbortController()
+    let rejectDirectory: (error: Error) => void = () => {}
+    const directory = {
+      accounts: () =>
+        new Promise<readonly string[]>((_, reject) => {
+          rejectDirectory = reject
+        }),
+    }
+    const walk = walkAccounts(directory, rows(), { signal: controller.signal })
+
+    await wait(0)
+    controller.abort()
+    expect(isAborted(await walk.catch((error: unknown) => error))).toBe(true)
+    rejectDirectory(new Error('late directory failure'))
+    await wait(0)
+  })
 })
 
 describe('mapConcurrent', () => {
@@ -315,6 +354,25 @@ describe('coverage rides along without changing the rows', () => {
     // different answer from "the walk saw everything".
     expect(coverageOf([1, 2, 3])).toBeNull()
     expect(coverageOf(undefined)).toBeNull()
+  })
+
+  test('coverageOf refuses partial and malformed lookalikes', () => {
+    const cases: unknown[] = [
+      { asked: 1, complete: true },
+      { ...emptyCoverage(), asked: 1.5 },
+      { ...emptyCoverage(), failed: [{ account: 'kei_x' }] },
+      { ...emptyCoverage(), truncated: [1] },
+      { ...emptyCoverage(), skipped: ['ok', null] },
+    ]
+    for (const carried of cases) {
+      const rowsWithLookalike: unknown[] = []
+      Object.defineProperty(rowsWithLookalike, 'coverage', { value: carried })
+      expect(coverageOf(rowsWithLookalike)).toBeNull()
+    }
+  })
+
+  test('downstream KeiError codes are not claimed as market errors', () => {
+    expect(isMarketError(new KeiError('bad-address', 'not a market refusal'))).toBe(false)
   })
 
   test('a transform drops it, which is why coverageOf is read off the market value', () => {

@@ -103,11 +103,14 @@ trades.coverage  // the same asked/read/failed/truncated contract as a book
 controller.abort()
 ```
 
-The default is eight concurrent chains and can be set once with
-`createMarket(client, { concurrency })` or overridden per call. Results keep
-request order even when responses arrive out of order. Aborting rejects with
-the typed `read-aborted` market error, stops new chain reads from starting, and
-does not claim to cancel a node request already in flight.
+The default is eight concurrent chains and can be set as the per-call default
+with `createMarket(client, { concurrency })` or overridden on a call. The bound
+is per walk: overlapping reads each have their own allowance, so abort or
+serialise polls when you need one aggregate request budget. Values must be whole
+numbers from 1 through 32. Results keep request order even when responses arrive
+out of order. Aborting rejects with the typed `read-aborted` market error, stops
+new chain reads from starting, and does not claim to cancel a node request
+already in flight.
 
 `offers()`, `mine()` and `trades()` remain arrays; their non-enumerable
 `coverage` property does not change iteration or JSON output. Array transforms
