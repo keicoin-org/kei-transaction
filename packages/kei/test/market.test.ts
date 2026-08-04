@@ -296,7 +296,7 @@ describe('price history (SPEC §9.1 — a settled offer is a trade)', () => {
   test('a still-open listing is not counted as a trade', async () => {
     await alice.market.sell({ asset: sword, price: 5 })
     expect(await alice.market.medianPrice(sword)).toBeNull()
-    expect(await alice.market.trades()).toEqual([])
+    expect(await alice.market.trades()).toHaveLength(0)
   })
 })
 

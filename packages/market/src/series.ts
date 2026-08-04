@@ -38,6 +38,7 @@ import type { AssetId } from '@keicoin/core'
 import type { Duration, PriceSummary, Trade } from './types.js'
 import { assetIdOf, durationMs } from './util.js'
 import { summarise } from './history.js'
+import { coverageOf, withCoverage, withCoverageOn, type Coverage, type Covered } from './walk.js'
 
 /** One settled trade, reduced to the numbers a chart needs. */
 export interface PricePoint {
@@ -89,6 +90,16 @@ export interface Series {
   changeRatio: number | null
   /** The same numbers `market.price()` gives, over exactly these trades. */
   summary: PriceSummary | null
+  /**
+   * What the walk behind these trades could not see, or null when they did not
+   * come from one.
+   *
+   * Null is a real answer and not a missing one: `toSeries` is pure, so a caller
+   * that built the trades by hand has nothing to be told about coverage. A chart
+   * drawn from `market.series()` always has it, and `complete: false` means the
+   * line is a floor rather than the whole market's history.
+   */
+  coverage: Coverage | null
 }
 
 export interface SeriesOptions {
@@ -150,11 +161,15 @@ export function toSeries(trades: readonly Trade[], options: SeriesOptions): Seri
   const estimated = ordered.filter((point) => point.estimated).length
 
   const keptHashes = new Set(ordered.map((point) => point.hash))
-  const summary = summarise(
+  // The summary is over a locally-filtered copy, so it has no coverage of its
+  // own — but it is a statement about the same walk, and it says so.
+  const carried = coverageOf(trades)
+  const computed = summarise(
     matched.filter((trade) => keptHashes.has(trade.hash)),
     asset,
     quote ?? (ordered.length > 0 ? quoteOf(matched, asset) : asset),
   )
+  const summary = computed === null ? null : { ...computed, coverage: carried }
 
   return {
     asset,
@@ -171,6 +186,7 @@ export function toSeries(trades: readonly Trade[], options: SeriesOptions): Seri
     change: first === null || last === null ? null : last - first,
     changeRatio: first === null || last === null || first === 0 ? null : (last - first) / first,
     summary,
+    coverage: carried,
   }
 }
 
@@ -237,8 +253,11 @@ export function toCandles(trades: readonly Trade[], options: CandleOptions): Can
     bucket.trades += 1
   }
 
+  const carried = coverageOf(trades)
   const filled = [...buckets.values()].sort((a, b) => a.at - b.at)
-  if (options.fill !== true || filled.length < 2) return filled
+  if (options.fill !== true || filled.length < 2) {
+    return carried === null ? filled : withCoverage(filled, carried)
+  }
 
   const even: Candle[] = []
   for (const candle of filled) {
@@ -259,7 +278,7 @@ export function toCandles(trades: readonly Trade[], options: CandleOptions): Can
     }
     even.push(candle)
   }
-  return even
+  return carried === null ? even : withCoverage(even, carried)
 }
 
 export interface PriceIndexOptions {
@@ -270,6 +289,15 @@ export interface PriceIndexOptions {
 }
 
 /**
+ * Every traded asset's summary, and what the walk behind them could not see.
+ *
+ * A `Map` first and foremost — `get`, `has`, `size` and iteration are unchanged.
+ * `coverage` is null when the trades did not come from a walk, on the same terms
+ * as `Series.coverage`.
+ */
+export type PriceIndex = Map<AssetId, PriceSummary> & { readonly coverage: Coverage | null }
+
+/**
  * Every asset's price summary, out of one walk.
  *
  * `market.price()` answers for one asset, and a hall with fifteen archetypes on
@@ -278,10 +306,7 @@ export interface PriceIndexOptions {
  * exactly the loop `world-of-wonder` wrote by hand in its auction house, for
  * exactly this reason.
  */
-export function priceIndex(
-  trades: readonly Trade[],
-  options: PriceIndexOptions = {},
-): Map<AssetId, PriceSummary> {
+export function priceIndex(trades: readonly Trade[], options: PriceIndexOptions = {}): PriceIndex {
   const quote = options.quote === undefined ? undefined : assetIdOf(options.quote)
   const only =
     options.assets === undefined ? undefined : new Set([...options.assets].map((asset) => assetIdOf(asset)))
@@ -301,13 +326,15 @@ export function priceIndex(
     }
   }
 
+  const carried = coverageOf(trades)
   const index = new Map<AssetId, PriceSummary>()
   for (const [asset, matched] of grouped) {
     const against = quote ?? quoteOf(matched, asset)
     const summary = summarise(matched, asset, against)
-    if (summary) index.set(asset, summary)
+    // Every row is a statement about the same walk, so every row carries it.
+    if (summary) index.set(asset, { ...summary, coverage: carried })
   }
-  return index
+  return withCoverageOn(index, carried)
 }
 
 /** The other leg of the first trade that names this asset. */

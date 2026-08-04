@@ -35,13 +35,13 @@ import {
 
 import { readTrades, summarise, type LegMeta, type MarketContext } from './history.js'
 import { readBook, type Book, type BookOptions } from './book.js'
-import { resolveAccounts } from './directory.js'
 import {
   assertMatches,
   classify,
   reconcileOffers,
   type OfferLife,
   type Reconciliation,
+  type ReconcileOptions,
 } from './lifecycle.js'
 import {
   priceIndex,
@@ -49,10 +49,21 @@ import {
   toSeries,
   type Candle,
   type CandleOptions,
+  type PriceIndex,
   type Series,
   type SeriesOptions,
 } from './series.js'
 import { assetIdOf, durationMs } from './util.js'
+import type { AccountSource } from './directory.js'
+import {
+  DEFAULT_ACCOUNT_LIMIT,
+  coverageOf,
+  emptyCoverage,
+  mapConcurrent,
+  walkAccounts,
+  withCoverage,
+  type Covered,
+} from './walk.js'
 import type {
   AcceptOptions,
   AssetAmount,
@@ -92,12 +103,21 @@ export interface MarketApi {
   /** Cancel this wallet's own expired offers — what actually frees them (§9.3). */
   cancelExpired(): Promise<Cancellation[]>
   get(hash: string): Promise<Offer | null>
-  /** Read listings off the chains of the accounts you name (SPEC §9.1). */
-  offers(options: ListOptions): Promise<Offer[]>
-  mine(options?: MineOptions): Promise<Offer[]>
+  /**
+   * Read listings off the chains of the accounts you name (SPEC §9.1).
+   *
+   * An array, with `coverage` on it: the walk reads `concurrency` chains at a
+   * time, keeps going past a chain it cannot reach, and says which ones those
+   * were. Rows come back in the order the accounts were asked for.
+   */
+  offers(options: ListOptions): Promise<Covered<Offer>>
+  mine(options?: MineOptions): Promise<Covered<Offer>>
   /** Settled offers — price history, read from the chain (SPEC §9.1). */
-  trades(options?: TradeOptions): Promise<Trade[]>
-  /** `medianPrice(sword, { window: '7d' })`, the §9.1 query. Null if never sold. */
+  trades(options?: TradeOptions): Promise<Covered<Trade>>
+  /**
+   * Compatibility scalar for the median, or null if never sold. A number cannot
+   * carry walk coverage; use `price(...).median` when completeness matters.
+   */
   medianPrice(asset: AssetId | { id: AssetId }, options?: TradeOptions): Promise<number | null>
   price(asset: AssetId | { id: AssetId }, options?: TradeOptions): Promise<PriceSummary | null>
 
@@ -109,13 +129,11 @@ export interface MarketApi {
   /** Settled trades as an ordered price series, ready to draw (see `series.ts`). */
   series(options: SeriesOptions & TradeOptions): Promise<Series>
   /** The same series as OHLCV buckets. Bucketing is advisory — read `series.ts`. */
-  candles(options: CandleOptions & TradeOptions): Promise<Candle[]>
+  candles(options: CandleOptions & TradeOptions): Promise<Covered<Candle>>
   /** Every traded asset's summary out of one walk, instead of one walk each. */
-  prices(options?: TradeOptions & { assets?: Iterable<AssetId | { id: AssetId }> }): Promise<
-    Map<AssetId, PriceSummary>
-  >
+  prices(options?: TradeOptions & { assets?: Iterable<AssetId | { id: AssetId }> }): Promise<PriceIndex>
   /** Re-read a snapshot of listings and say what became of each one. */
-  reconcile(snapshot: Iterable<string | Offer>): Promise<Reconciliation>
+  reconcile(snapshot: Iterable<string | Offer>, options?: ReconcileOptions): Promise<Reconciliation>
   /** A listing's state in a view's terms: live, reserved, stale, taken, cancelled. */
   lifeOf(offer: Offer): OfferLife
 
@@ -134,7 +152,13 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
   const now = options.now ?? Date.now
   const autoCancelExpired = options.autoCancelExpired !== false
   const sweepInterval = options.sweepInterval ?? 30_000
+  const concurrency = options.concurrency
   const metaCache = new Map<AssetId, LegMeta>()
+  // In flight as well as cached, because the walks below are concurrent now: a
+  // cold cache and eight lanes converting offers in the same asset would
+  // otherwise be eight identical `asset_info` calls, and reading faster is not
+  // worth asking a rate-limited node the same question eight times.
+  const metaInFlight = new Map<AssetId, Promise<LegMeta>>()
 
   const meta = async (asset: AssetId): Promise<LegMeta> => {
     const id = String(asset ?? '').toUpperCase()
@@ -142,18 +166,24 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     if (id === KEI_ASSET) return KEI_META
     const cached = metaCache.get(id)
     if (cached) return cached
-    const info = await client.node.assetInfo(id)
-    if (!info) {
-      fail('no-such-asset', `No asset with id ${String(asset)} exists on ${client.node.network}.`)
-    }
-    const found: LegMeta = {
-      asset: info.id,
-      symbol: info.symbol,
-      name: info.name,
-      decimals: info.decimals,
-    }
-    metaCache.set(id, found)
-    return found
+    const pending = metaInFlight.get(id)
+    if (pending) return pending
+    const lookup = (async (): Promise<LegMeta> => {
+      const info = await client.node.assetInfo(id)
+      if (!info) {
+        fail('no-such-asset', `No asset with id ${String(asset)} exists on ${client.node.network}.`)
+      }
+      const found: LegMeta = {
+        asset: info.id,
+        symbol: info.symbol,
+        name: info.name,
+        decimals: info.decimals,
+      }
+      metaCache.set(id, found)
+      return found
+    })().finally(() => metaInFlight.delete(id))
+    metaInFlight.set(id, lookup)
+    return lookup
   }
 
   const toOffer = async (raw: SwapOffer): Promise<Offer> => {
@@ -423,61 +453,92 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
   // ----------------------------------------------------------------- reading
 
   const list = async (
-    accounts: readonly string[],
-    filter: { asset?: AssetId; want?: AssetId; state: MineOptions['state']; includeExpired: boolean; limit?: number },
-  ): Promise<Offer[]> => {
-    const out: Offer[] = []
-    // The same chain named twice is one chain, and an offer hash is the
-    // offer's id — a roster assembled from several sources will repeat itself,
-    // and a listing must not appear once per mention.
-    for (const account of new Set(accounts)) {
-      const raws = await client.node.accountSwaps(assertAddress(account, 'account address'), {
-        ...(filter.limit === undefined ? {} : { limit: filter.limit }),
-        ...(filter.state ? { state: filter.state } : {}),
-      })
-      for (const raw of raws) {
-        if (filter.asset !== undefined && raw.asset !== filter.asset) continue
-        if (filter.want !== undefined && raw.wantAsset !== filter.want) continue
-        const offer = await toOffer(raw)
-        if (offer.expired && !filter.includeExpired) continue
-        out.push(offer)
-      }
-    }
-    return out
+    source: AccountSource,
+    filter: {
+      asset?: AssetId
+      want?: AssetId
+      state: MineOptions['state']
+      includeExpired: boolean
+      limit?: number
+      signal?: AbortSignal
+      concurrency?: number
+      what: string
+    },
+  ): Promise<Covered<Offer>> => {
+    const limit = filter.limit ?? DEFAULT_ACCOUNT_LIMIT
+    const read = { signal: filter.signal, concurrency: filter.concurrency ?? concurrency, what: filter.what }
+
+    const walk = await walkAccounts(
+      source,
+      async (account) => {
+        const raws = await client.node.accountSwaps(account, {
+          limit,
+          ...(filter.state ? { state: filter.state } : {}),
+        })
+        return { rows: raws, truncated: raws.length >= limit }
+      },
+      read,
+    )
+
+    // Filter on the raw blocks first: the asset ids are already there, and
+    // converting one costs an asset-metadata read that a rejected row wastes.
+    const seen = new Set<string>()
+    const kept = walk.rows.filter((raw) => {
+      if (seen.has(raw.hash)) return false
+      seen.add(raw.hash)
+      return (
+        (filter.asset === undefined || raw.asset === filter.asset) &&
+        (filter.want === undefined || raw.wantAsset === filter.want)
+      )
+    })
+    const converted = await mapConcurrent(kept, (raw) => toOffer(raw), read)
+    const out = converted.filter((offer) => filter.includeExpired || !offer.expired)
+    return withCoverage(out, walk.coverage)
   }
 
-  const offers = async (options: ListOptions): Promise<Offer[]> => {
+  const offers = async (options: ListOptions): Promise<Covered<Offer>> => {
     if (!options || options.from === undefined) {
       fail(
         'no-accounts',
         'market.offers() needs the accounts to read: an offer lives on its author\'s chain, so listings are a bounded walk of the chains you name (SPEC §9.1). Pass { from: sellerAddress } or { from: [ ... ] }. Kei has no network-wide listing index (SPEC §9.4).',
       )
     }
-    const accounts = await resolveAccounts(options.from)
-    if (accounts.length === 0) {
-      fail(
-        'no-accounts',
-        'market.offers({ from }) was given no accounts to read, so there is nothing to walk. Name at least one address — or, if that was a directory, nobody has announced themselves to it yet (see createDirectory).',
-      )
-    }
-    return list(accounts, {
+    const listing = await list(options.from, {
       ...(options.asset === undefined ? {} : { asset: assetIdOf(options.asset) }),
       ...(options.want === undefined ? {} : { want: assetIdOf(options.want) }),
       state: options.state === undefined ? 'open' : options.state,
       includeExpired: options.includeExpired === true,
       ...(options.limit === undefined ? {} : { limit: options.limit }),
+      signal: options.signal,
+      concurrency: options.concurrency,
+      what: 'Reading listings',
     })
+    // Nothing walkable is a caller mistake rather than an empty market, and the
+    // two read identically from the outside if this is left to return `[]`. A
+    // roster with one typo in it is *not* this case — that is a skipped address
+    // in `coverage`, and the rest of the walk still happened.
+    if (listing.coverage.asked === 0) {
+      fail(
+        'no-accounts',
+        `market.offers({ from }) was given no accounts to read, so there is nothing to walk. Name at least one address — or, if that was a directory, nobody has announced themselves to it yet (see createDirectory).${skippedNote(listing.coverage.skipped)}`,
+      )
+    }
+    return listing
   }
 
-  const mine = async (options: MineOptions = {}): Promise<Offer[]> =>
+  const mine = async (options: MineOptions = {}): Promise<Covered<Offer>> =>
     list([client.address], {
       state: options.state === undefined ? 'open' : options.state,
       // Your own expired listings are exactly the ones you need to see.
       includeExpired: options.includeExpired !== false,
       ...(options.limit === undefined ? {} : { limit: options.limit }),
+      signal: options.signal,
+      concurrency: options.concurrency,
+      what: 'Reading your own listings',
     })
 
-  const trades = (options: TradeOptions = {}): Promise<Trade[]> => readTrades(context, options)
+  const trades = (options: TradeOptions = {}): Promise<Covered<Trade>> =>
+    readTrades(context, { concurrency, ...options })
 
   const price = async (
     asset: AssetId | { id: AssetId },
@@ -485,7 +546,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
   ): Promise<PriceSummary | null> => {
     const id = assetIdOf(asset)
     const quote = options.quote === undefined ? KEI_ASSET : assetIdOf(options.quote)
-    const matched = await readTrades(context, { ...options, asset: id, quote })
+    const matched = await readTrades(context, { concurrency, ...options, asset: id, quote })
     return summarise(matched, id, quote)
   }
 
@@ -529,32 +590,45 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     },
     price,
 
-    book: (bookOptions) => readBook(context, bookOptions),
+    book: (bookOptions) => readBook(context, { concurrency, ...bookOptions }),
 
     async series(seriesOptions) {
       // The quote defaults to Kei in both halves, and the trade walk is filtered
       // by it as well as the series is — otherwise a sword that traded for gold
       // and for Kei draws one chart out of two different currencies.
       const quote = seriesOptions.quote === undefined ? KEI_ASSET : assetIdOf(seriesOptions.quote)
-      const read = await readTrades(context, { ...seriesOptions, asset: seriesOptions.asset, quote })
+      const read = await readTrades(context, {
+        concurrency,
+        ...seriesOptions,
+        asset: seriesOptions.asset,
+        quote,
+      })
+      // `read` carries its walk's coverage, and `toSeries` passes it through, so
+      // a chart drawn off a partial read can say so on the chart.
       return toSeries(read, { ...seriesOptions, quote })
     },
 
     async candles(candleOptions) {
       const quote = candleOptions.quote === undefined ? KEI_ASSET : assetIdOf(candleOptions.quote)
-      const read = await readTrades(context, { ...candleOptions, asset: candleOptions.asset, quote })
-      return toCandles(read, { ...candleOptions, quote })
+      const read = await readTrades(context, {
+        concurrency,
+        ...candleOptions,
+        asset: candleOptions.asset,
+        quote,
+      })
+      return withCoverage(toCandles(read, { ...candleOptions, quote }), coverageOf(read) ?? emptyCoverage())
     },
 
     async prices(priceOptions = {}) {
-      const read = await readTrades(context, priceOptions)
+      const read = await readTrades(context, { concurrency, ...priceOptions })
       return priceIndex(read, {
         ...(priceOptions.quote === undefined ? {} : { quote: priceOptions.quote }),
         ...(priceOptions.assets === undefined ? {} : { assets: priceOptions.assets }),
       })
     },
 
-    reconcile: (snapshot) => reconcileOffers(context, snapshot),
+    reconcile: (snapshot, reconcileOptions) =>
+      reconcileOffers(context, snapshot, { concurrency, ...reconcileOptions }),
 
     lifeOf: (offer) => classify(offer, { viewer: client.address, now }),
 
@@ -574,6 +648,14 @@ function hashOf(target: string | Offer, verb: string): string {
     fail('bad-offer', `market.${verb}() takes an offer, or its hash. Read one from market.offers().`)
   }
   return hash.toUpperCase()
+}
+
+/** Naming what was thrown away, so "nothing to walk" is not a mystery. */
+function skippedNote(skipped: readonly string[]): string {
+  if (skipped.length === 0) return ''
+  const shown = skipped.slice(0, 3).join(', ')
+  const rest = skipped.length > 3 ? `, and ${skipped.length - 3} more` : ''
+  return ` Everything given was skipped for not being a Kei address: ${shown}${rest}.`
 }
 
 function positiveRaw(amount: number | string, leg: LegMeta, label: string): bigint {

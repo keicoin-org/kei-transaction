@@ -10,6 +10,7 @@ import type { AssetId, SwapState } from '@keicoin/core'
 
 import type { AccountSource } from './directory.js'
 import type { Expectation } from './lifecycle.js'
+import type { Coverage, ReadOptions } from './walk.js'
 
 export type OfferState = SwapState
 
@@ -133,7 +134,7 @@ export interface AcceptOptions {
   expect?: Expectation
 }
 
-export interface ListOptions {
+export interface ListOptions extends ReadOptions {
   /**
    * Whose chains to read. Required, and it is the honest shape: an offer lives
    * on its author's chain, so "every listing on the network" is an indexer, and
@@ -155,13 +156,13 @@ export interface ListOptions {
   limit?: number
 }
 
-export interface MineOptions {
+export interface MineOptions extends ReadOptions {
   state?: OfferState | null
   includeExpired?: boolean
   limit?: number
 }
 
-export interface TradeOptions {
+export interface TradeOptions extends ReadOptions {
   /** Whose chains to read, or a directory. Defaults to this wallet's own trades. */
   from?: AccountSource
   /** Only trades in this asset, on either leg. */
@@ -188,6 +189,17 @@ export interface PriceSummary {
   trades: number
   /** Units of `asset` that changed hands. */
   volume: number
+  /**
+   * What the walk behind these trades could not see, or null when they did not
+   * come from one.
+   *
+   * This is the field that keeps `price()` honest. A median over four sellers
+   * when five were asked is a real number about a partial market. The legacy
+   * scalar `medianPrice()` cannot carry this field; use the summary when
+   * completeness matters. `complete: false` means the price is built from what
+   * answered.
+   */
+  coverage: Coverage | null
 }
 
 export interface MarketOptions {
@@ -201,4 +213,9 @@ export interface MarketOptions {
   sweepInterval?: number
   /** The wallet's clock, for expiry. Replaceable so a test needs no timers. */
   now?: () => number
+  /**
+   * Chains read at once by every walk this market makes, unless a call says
+   * otherwise. Default 8 — see `DEFAULT_CONCURRENCY` for why that number.
+   */
+  concurrency?: number
 }
