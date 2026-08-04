@@ -41,6 +41,7 @@ async function run(
     cwd,
     env: { ...process.env, ...env },
     stderr: 'pipe',
+    stdin: null,
     stdout: 'pipe',
   })
   const [stdout, stderr, exitCode] = await Promise.all([
@@ -55,6 +56,17 @@ async function git(cwd: string, ...arguments_: string[]): Promise<void> {
   const result = await run(['git', ...arguments_], cwd)
   expect(result.exitCode, result.output).toBe(0)
 }
+
+describe('release fixture process lifetime', () => {
+  test('supplies EOF to a child instead of inheriting the test runner stdin', async () => {
+    const result = await run(
+      [findShell(), '-c', "cat >/dev/null; printf '%s\\n' 'stdin closed'"],
+      workspace,
+    )
+    expect(result.exitCode, result.output).toBe(0)
+    expect(result.output).toContain('stdin closed')
+  })
+})
 
 describe('publish shell safety gate', () => {
   let root: string
@@ -131,7 +143,7 @@ case "\${1:-}" in
     case "$*" in
       *--field=filename*) printf '%s' 'mock-package-9.9.9.tgz' ;;
       *--field=integrity*) printf '%s' 'sha512-release-test' ;;
-      *) cat >/dev/null ;;
+      *) : ;;
     esac
     ;;
 esac
