@@ -174,11 +174,20 @@ against the world's currency, whatever it is selling. That is the query a bazaar
 asks, and doing it per asset is one walk per asset. `asset === quote` is refused,
 because a book of a thing against itself has no two sides.
 
-Sorting is ascending on both sides, for two reasons that happen to agree: an
-ask's `price` is quote-per-unit so smallest is cheapest, and a bid gives quote
-and wants the asset so its `price` is asset-units-per-quote and the bid paying
-most is the smallest number. `bidPrice(offer)` inverts a bid for display, which
-is the arithmetic both applications did by hand.
+`Book.asks` and `Book.bids` contain `BookLevel`s, which structurally extend the
+underlying offer with `side`, `base`, `quote`, and `unitPrice`. The last field is
+always quote units per base unit, so asks sort ascending and bids descending in
+one unit system; `spread` subtracts those two fields directly. Bare offers keep
+their directional `price` (`want / give`) because `get()`, `offers()`, `mine()`,
+and `trades()` have no authority to choose a base/quote orientation.
+
+When `asset` is omitted, each whole-shelf row takes the non-quote leg as its
+base. An offer selling a sword for the shelf currency is therefore an ask in
+the sword/currency orientation, exactly as it would be in a sword-specific
+book. Offers involving the selected asset but not the selected quote remain
+bare `Offer`s in `other`; inventing a unit price for them would imply an
+orientation the requested book does not provide. `bidPrice(offer)` remains as a
+compatibility helper for callers working with a bid outside an oriented book.
 
 ### 4.3 Series, candles, and the price index (`series.ts`)
 

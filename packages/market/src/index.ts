@@ -13,7 +13,7 @@ export {
 export type { AccountDirectory, AccountSource, DirectoryOptions, MutableDirectory } from './directory.js'
 
 export { DEFAULT_BOOK_LIMIT, bidPrice, readBook } from './book.js'
-export type { Book, BookOptions } from './book.js'
+export type { Book, BookLevel, BookOptions } from './book.js'
 
 export {
   DEFAULT_ACCOUNT_LIMIT,

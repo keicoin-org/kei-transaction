@@ -349,8 +349,9 @@ export function createPlayerEconomy(
     // Browsing "everything" still needs one asset to key the walk on, and the
     // currency is the one thing every stall here has in common: a listing is
     // priced in the world's money, whatever it is selling. Keyed that way the
-    // stalls come back as the book's *bids* — offers wanting the currency —
-    // and keyed on one ware they come back as its asks. Same blocks either way.
+    // stalls come back as asks: every level gives its non-quote ware and wants
+    // the shared quote currency. Keying on one ware produces the same side and
+    // narrows the shelf. Same blocks either way.
     const book = await market.book({
       from,
       ...(browseOptions.item === undefined ? {} : { asset: catalogue.assetOf(browseOptions.item) }),
@@ -360,7 +361,7 @@ export function createPlayerEconomy(
       includeMine: browseOptions.includeMine !== false,
     })
 
-    const raw = browseOptions.item === undefined ? book.bids : book.asks
+    const raw = book.asks
     const listings: Listing[] = []
     for (const offer of raw) {
       const listing = asListing(offer, money)

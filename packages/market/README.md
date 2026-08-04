@@ -72,9 +72,10 @@ before anything is signed.
 
 ```js
 const book = await market.book({ from: directory, asset: sword })
-book.asks        // cheapest per unit first
-book.bids
-book.spread
+book.asks[0].unitPrice  // quote units per sword; cheapest ask first
+book.bids[0].unitPrice  // the same units; highest bid first
+book.asks[0].side       // 'ask'; each level also names `base` and `quote`
+book.spread             // bestAsk.unitPrice - bestBid.unitPrice
 book.coverage    // { asked, read, failed, truncated, dropped, skipped, complete }
 ```
 
@@ -82,6 +83,13 @@ One `account_swaps` per chain, not two: the asks and the bids are a local
 partition of one read. A chain whose read fails is a **gap** — the book returns
 what it has and names what it lost, because a page that blanks on one timeout
 reads as "the market closed".
+
+Book rows are `BookLevel`s: oriented offers whose `base`, `quote`, `side`, and
+`unitPrice` make the units explicit. Raw values returned by `get()`, `offers()`,
+`mine()`, and `trades()` remain bare directional offers: their compatible
+`price` is always `want.amount / give.amount`, because those reads do not choose
+a book orientation. In a whole-shelf book, each row uses the non-quote asset as
+its base, so these fields keep the same meaning across every stall.
 
 `coverage` is the part worth using. A book over a roster is a *floor*, never a
 census, and `complete: false` says which of the four reasons applies. Leave
