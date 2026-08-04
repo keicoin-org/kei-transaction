@@ -149,6 +149,8 @@ function mountPanel(target: string | Element, options: WalletPanelOptions): Wall
   seed.applyStreamerMode()
 
   let closed = false
+  /** Set once the wallet's own change stream has painted something here. */
+  let delivered = false
   const renderSummary = (summary: WalletSummary): void => {
     if (closed) return
     if (summaryEls.balance) renderBalance(doc, summaryEls.balance, summary)
@@ -157,11 +159,25 @@ function mountPanel(target: string | Element, options: WalletPanelOptions): Wall
     if (summaryEls.claims) renderClaims(doc, summaryEls.claims, summary)
   }
 
-  const unsubscribe = kei.wallet.on('change', renderSummary)
+  const unsubscribe = kei.wallet.on('change', (summary) => {
+    delivered = true
+    renderSummary(summary)
+  })
   void kei.wallet
     .summary()
-    .then(renderSummary)
-    .catch((error: unknown) => renderError(doc, panelEl, error))
+    .then((summary) => {
+      // `kei.wallet` delivers its own change events in order, but this first
+      // fetch is outside that queue: it starts at mount, so anything the wallet
+      // has already delivered was read from the chain later than this was. A
+      // slow first response must not paint an older wallet over a newer one.
+      if (!delivered) renderSummary(summary)
+    })
+    .catch((error: unknown) => {
+      // Same reasoning, and the same way round: a first fetch that failed says
+      // nothing about a panel the change stream has already filled in, and an
+      // unmounted panel is nobody's to write to.
+      if (!delivered && !closed) renderError(doc, panelEl, error)
+    })
 
   return {
     element: panelEl,
