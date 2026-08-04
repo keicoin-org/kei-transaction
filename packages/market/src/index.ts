@@ -6,6 +6,7 @@ export { assetIdOf, durationMs } from './util.js'
 
 export {
   DEFAULT_DIRECTORY_LIMIT,
+  MAX_DIRECTORY_LIMIT,
   createDirectory,
   isDirectory,
   resolveAccounts,
@@ -18,6 +19,7 @@ export type { Book, BookLevel, BookOptions } from './book.js'
 export {
   DEFAULT_ACCOUNT_LIMIT,
   DEFAULT_CONCURRENCY,
+  MAX_ACCOUNTS_PER_WALK,
   MAX_CONCURRENCY,
   coverageOf,
   emptyCoverage,

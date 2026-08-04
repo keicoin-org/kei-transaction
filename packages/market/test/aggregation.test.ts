@@ -14,6 +14,7 @@ import {
   DEFAULT_DIRECTORY_LIMIT,
   DEFAULT_MAX_CANDLES,
   MAX_CANDLES,
+  MAX_DIRECTORY_LIMIT,
   bidPrice,
   classify,
   createDirectory,
@@ -85,6 +86,52 @@ describe('the account directory (SPEC §9.1, §9.4)', () => {
 
   test('the default bound is stated rather than implied', () => {
     expect(createDirectory().limit).toBe(DEFAULT_DIRECTORY_LIMIT)
+  })
+
+  test('the bound is a finite positive safe integer with an absolute ceiling', () => {
+    expect(createDirectory({ limit: 1 }).limit).toBe(1)
+    expect(createDirectory({ limit: MAX_DIRECTORY_LIMIT }).limit).toBe(MAX_DIRECTORY_LIMIT)
+
+    for (const limit of [
+      0,
+      -1,
+      1.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.MAX_SAFE_INTEGER + 1,
+      MAX_DIRECTORY_LIMIT + 1,
+    ]) {
+      let failure: unknown
+      try {
+        createDirectory({ limit })
+      } catch (error) {
+        failure = error
+      }
+      expect(isMarketError(failure, 'bad-directory-limit')).toBe(true)
+      expect(failure).toMatchObject({
+        message: expect.stringContaining(`1 through ${MAX_DIRECTORY_LIMIT}`),
+      })
+    }
+  })
+
+  test('an invalid bound is refused before a hostile initial iterable is touched', () => {
+    let touched = 0
+    const accounts: Iterable<string> = {
+      [Symbol.iterator]() {
+        touched += 1
+        throw new Error('initial roster must not be opened')
+      },
+    }
+
+    const failure = (() => {
+      try {
+        createDirectory({ limit: Number.NaN, accounts })
+      } catch (error) {
+        return error
+      }
+    })()
+    expect(isMarketError(failure, 'bad-directory-limit')).toBe(true)
+    expect(touched).toBe(0)
   })
 
   test('a from can be an address, a list, or any directory', async () => {
