@@ -96,6 +96,17 @@ interface StoredReceivable extends Receivable {
 }
 
 /**
+ * A fully validated, synchronous ledger commit.
+ *
+ * Building one may fail; running one must not perform validation. Keeping that
+ * boundary explicit is what makes every rejected `process` call atomic without
+ * cloning the ledger's bounded indexes for every block.
+ */
+type LedgerTransition = () => void
+
+const NOOP_TRANSITION: LedgerTransition = () => undefined
+
+/**
  * A locked entry, keyed by the hash of the `swap_offer` block that created it
  * (SPEC §9.2).
  *
@@ -455,12 +466,14 @@ export class MockLedger {
     const newBalance = parseRaw(body.balance, 'balance')
     if (newBalance < 0n) fail('bad-balance', 'A balance cannot be negative.')
 
-    if (body.type === 'state') {
-      this.applyState(body, hash, previousBalance, newBalance)
-    } else {
-      this.applyAsset(body, hash, previousBalance, newBalance)
-    }
+    const transition =
+      body.type === 'state'
+        ? this.applyState(body, hash, previousBalance, newBalance)
+        : this.applyAsset(body, hash, previousBalance, newBalance)
 
+    // Everything that can reject this block has completed. The transition and
+    // block commit are synchronous map/index writes only.
+    transition()
     this.commitBlock(block, body, hash, newBalance)
     return { hash }
   }
@@ -506,7 +519,7 @@ export class MockLedger {
     hash: string,
     previousBalance: bigint,
     newBalance: bigint,
-  ): void {
+  ): LedgerTransition {
     switch (body.subtype) {
       case 'send': {
         if (this.reserveAccounts.has(body.account)) {
@@ -534,18 +547,18 @@ export class MockLedger {
         if (amount <= 0n) {
           fail('bad-send', 'A send must decrease the sender\'s balance. Check the amount.')
         }
-        this.createReceivable(hash, {
+        const receivable: StoredReceivable = {
           hash,
           from: body.account,
           to: addressFromPublicKey(body.link),
           asset: KEI_ASSET,
           amount: amount.toString(),
-        })
-        return
+        }
+        return () => this.createReceivable(hash, receivable)
       }
       case 'open':
       case 'receive': {
-        const receivable = this.takeReceivable(body.link, body.account, KEI_ASSET)
+        const receivable = this.requireReceivable(body.link, body.account, KEI_ASSET)
         const expected = previousBalance + BigInt(receivable.amount)
         if (newBalance !== expected) {
           fail(
@@ -553,15 +566,16 @@ export class MockLedger {
             `Receiving ${receivable.amount} raw should leave a balance of ${expected}, not ${newBalance}.`,
           )
         }
-        return
+        return () => this.consumeReceivable(receivable)
       }
       case 'change': {
         if (newBalance !== previousBalance) {
           fail('bad-change', 'A representative change must not move any Kei.')
         }
-        return
+        return NOOP_TRANSITION
       }
     }
+    return NOOP_TRANSITION
   }
 
   private applyAsset(
@@ -569,7 +583,7 @@ export class MockLedger {
     hash: string,
     previousBalance: bigint,
     newBalance: bigint,
-  ): void {
+  ): LedgerTransition {
     const op = body.op
 
     if (op.kind === 'issue') {
@@ -602,6 +616,7 @@ export class MockLedger {
 
     switch (op.kind) {
       case 'issue': {
+        const issuedCount = (this.issuedByAccount.get(body.account) ?? 0) + 1
         const symbol = normalizeSymbol(op.symbol)
         const publicKey = publicKeyFromAddress(body.account)
         const id = deriveAssetId(publicKey, symbol)
@@ -630,7 +645,7 @@ export class MockLedger {
         if (maxSupply !== null && maxSupply <= 0n) {
           fail('bad-max-supply', 'maxSupply must be at least one unit, or omitted for uncapped.')
         }
-        this.assets.set(id, {
+        const record: AssetRecord = {
           id,
           issuer: body.account,
           name: op.name,
@@ -643,11 +658,13 @@ export class MockLedger {
           ...(op.metadata?.image === undefined ? {} : { image: op.metadata.image }),
           ...(op.metadata?.kind === undefined ? {} : { kind: op.metadata.kind }),
           circulating: 0n,
-        })
-        // Priced the burn above; record it, so this account's next asset costs
-        // one Kei more than this one did (SPEC §5.6.5).
-        this.issuedByAccount.set(body.account, (this.issuedByAccount.get(body.account) ?? 0) + 1)
-        return
+        }
+        return () => {
+          this.assets.set(id, record)
+          // Priced the burn above; record it, so this account's next asset costs
+          // one Kei more than this one did (SPEC §5.6.5).
+          this.issuedByAccount.set(body.account, issuedCount)
+        }
       }
 
       case 'mint': {
@@ -660,23 +677,27 @@ export class MockLedger {
         }
         const amount = requirePositive(op.amount, 'mint amount')
         this.requireHeadroom(asset, amount)
-        asset.circulating += amount
-        this.createReceivable(hash, {
+        const receivable: StoredReceivable = {
           hash,
           from: body.account,
           to: assertAddress(op.to, 'recipient'),
           asset: asset.id,
           amount: amount.toString(),
-        })
-        return
+        }
+        return () => {
+          asset.circulating += amount
+          this.createReceivable(hash, receivable)
+        }
       }
 
       case 'burn': {
         const asset = this.requireAsset(op.asset)
         const amount = requirePositive(op.amount, 'burn amount')
-        this.debit(body.account, asset, amount)
-        asset.circulating -= amount
-        return
+        this.requireDebit(body.account, asset, amount)
+        return () => {
+          this.commitDebit(body.account, asset, amount)
+          asset.circulating -= amount
+        }
       }
 
       case 'transfer': {
@@ -684,25 +705,33 @@ export class MockLedger {
         const to = assertAddress(op.to, 'recipient')
         const amount = requirePositive(op.amount, 'transfer amount')
         this.enforceTransferPolicy(asset, body.account, to)
-        this.debit(body.account, asset, amount)
-        this.createReceivable(hash, {
+        this.requireDebit(body.account, asset, amount)
+        const receivable: StoredReceivable = {
           hash,
           from: body.account,
           to,
           asset: asset.id,
           amount: amount.toString(),
           ...(op.memo === undefined ? {} : { memo: op.memo }),
-        })
-        return
+        }
+        return () => {
+          this.commitDebit(body.account, asset, amount)
+          this.createReceivable(hash, receivable)
+        }
       }
 
       case 'asset_receive': {
-        const receivable = this.takeReceivableAnyAsset(op.link, body.account)
+        const receivable = this.requireReceivableAnyAsset(op.link, body.account)
         if (receivable.asset === KEI_ASSET) {
           fail('wrong-block-type', 'Incoming Kei is collected by a receive block, not an asset block.')
         }
-        this.credit(body.account, this.requireAsset(receivable.asset), BigInt(receivable.amount))
-        return
+        const asset = this.requireAsset(receivable.asset)
+        const amount = BigInt(receivable.amount)
+        this.requireCredit(body.account, asset)
+        return () => {
+          this.consumeReceivable(receivable)
+          this.commitCredit(body.account, asset, amount)
+        }
       }
 
       case 'commit': {
@@ -718,15 +747,15 @@ export class MockLedger {
         if (!Number.isInteger(op.count) || op.count < 1) {
           fail('bad-commit', 'A commit covers at least one entitlement.')
         }
-        this.commits.set(root, {
+        const record: CommitRecord = {
           root,
           issuer: body.account,
           asset: asset.id,
           count: op.count,
           total: parseRaw(op.total, 'commit total'),
           closed: false,
-        })
-        return
+        }
+        return () => this.commits.set(root, record)
       }
 
       case 'commit_close': {
@@ -735,9 +764,10 @@ export class MockLedger {
         if (record.issuer !== body.account) {
           fail('not-issuer', `Only ${record.issuer} can close root ${record.root}.`)
         }
-        if (record.closed) return
-        record.closed = true
-        return
+        if (record.closed) return NOOP_TRANSITION
+        return () => {
+          record.closed = true
+        }
       }
 
       case 'claim': {
@@ -774,10 +804,12 @@ export class MockLedger {
           )
         }
         this.requireHeadroom(asset, amount)
-        this.claimed.add(claimKey(body.account, root))
-        asset.circulating += amount
-        this.credit(body.account, asset, amount)
-        return
+        this.requireCredit(body.account, asset)
+        return () => {
+          this.claimed.add(claimKey(body.account, root))
+          asset.circulating += amount
+          this.commitCredit(body.account, asset, amount)
+        }
       }
 
       case 'swap_offer': {
@@ -819,12 +851,10 @@ export class MockLedger {
           )
         } else {
           requireDelta(previousBalance, newBalance, 0n, 'An offer of an asset other than Kei moves no Kei')
-          // The self-lock (SPEC §9.2, problem 1): after this the sword is not in
-          // the offerer's spendable balance, so it cannot be offered twice.
-          this.debit(body.account, offered, amount)
+          this.requireDebit(body.account, offered, amount)
         }
 
-        this.locks.set(hash, {
+        const lock: LockRecord = {
           offer: hash,
           owner: body.account,
           asset: offered?.id ?? KEI_ASSET,
@@ -839,11 +869,18 @@ export class MockLedger {
           height: (this.accounts.get(body.account)?.height ?? 0) + 1,
           seenAt: this.now(),
           settledAt: null,
-        })
-        const own = this.swapsByAccount.get(body.account) ?? []
-        own.push(hash)
-        this.swapsByAccount.set(body.account, own)
-        return
+        }
+        return () => {
+          if (offered !== null) {
+            // The self-lock (SPEC §9.2, problem 1): after this the sword is not
+            // in the offerer's spendable balance, so it cannot be offered twice.
+            this.commitDebit(body.account, offered, amount)
+          }
+          this.locks.set(hash, lock)
+          const own = this.swapsByAccount.get(body.account) ?? []
+          own.push(hash)
+          this.swapsByAccount.set(body.account, own)
+        }
       }
 
       case 'swap_accept': {
@@ -894,7 +931,7 @@ export class MockLedger {
           )
         } else {
           requireDelta(previousBalance, newBalance, 0n, 'Accepting an offer that asks for an asset other than Kei moves no Kei')
-          this.debit(body.account, wanted, lock.wantAmount)
+          this.requireDebit(body.account, wanted, lock.wantAmount)
         }
 
         // Both legs, in one block, or neither: past this point nothing can fail.
@@ -902,25 +939,30 @@ export class MockLedger {
         // the locked asset is receivable on the accepter's, keyed by the offer
         // block that locked it. Two receivables, two distinct keys, both of them
         // real block hashes.
-        this.createReceivable(hash, {
+        const payment: StoredReceivable = {
           hash,
           from: body.account,
           to: lock.owner,
           asset: lock.wantAsset,
           amount: lock.wantAmount.toString(),
-        })
-        this.createReceivable(lock.offer, {
+        }
+        const offeredReceivable: StoredReceivable = {
           hash: lock.offer,
           from: lock.owner,
           to: body.account,
           asset: lock.asset,
           amount: lock.amount.toString(),
-        })
-        lock.state = 'accepted'
-        lock.acceptedBy = body.account
-        lock.settledBy = hash
-        lock.settledAt = this.now()
-        return
+        }
+        const settledAt = this.now()
+        return () => {
+          if (wanted !== null) this.commitDebit(body.account, wanted, lock.wantAmount)
+          this.createReceivable(hash, payment)
+          this.createReceivable(lock.offer, offeredReceivable)
+          lock.state = 'accepted'
+          lock.acceptedBy = body.account
+          lock.settledBy = hash
+          lock.settledAt = settledAt
+        }
       }
 
       case 'swap_cancel': {
@@ -933,6 +975,7 @@ export class MockLedger {
         }
         this.requireOpenLock(lock, 'cancelled')
 
+        let cancelledAsset: AssetRecord | null = null
         if (lock.asset === KEI_ASSET) {
           requireDelta(
             previousBalance,
@@ -942,14 +985,19 @@ export class MockLedger {
           )
         } else {
           requireDelta(previousBalance, newBalance, 0n, 'Cancelling an offer of an asset other than Kei moves no Kei')
-          this.credit(body.account, this.requireAsset(lock.asset), lock.amount)
+          cancelledAsset = this.requireAsset(lock.asset)
+          this.requireCredit(body.account, cancelledAsset)
         }
-        lock.state = 'cancelled'
-        lock.settledBy = hash
-        lock.settledAt = this.now()
-        return
+        const settledAt = this.now()
+        return () => {
+          if (cancelledAsset) this.commitCredit(body.account, cancelledAsset, lock.amount)
+          lock.state = 'cancelled'
+          lock.settledBy = hash
+          lock.settledAt = settledAt
+        }
       }
     }
+    return NOOP_TRANSITION
   }
 
   /** An asset id a swap leg names: an `AssetRecord`, or null for Kei itself. */
@@ -1082,14 +1130,9 @@ export class MockLedger {
     }
   }
 
-  private credit(account: string, asset: AssetRecord, amount: bigint): void {
+  /** Commit-only counterpart to requireCredit(); it contains no rejection path. */
+  private commitCredit(account: string, asset: AssetRecord, amount: bigint): void {
     const owned = this.holdingsByAccount.get(account) ?? new Set<AssetId>()
-    if (!owned.has(asset.id) && owned.size >= MAX_ASSETS_PER_ACCOUNT) {
-      fail(
-        'too-many-assets',
-        `${account} already holds ${MAX_ASSETS_PER_ACCOUNT} different assets, which is the per-account limit (SPEC §7). Burn or transfer something before receiving more.`,
-      )
-    }
     const key = holdingKey(account, asset.id)
     this.holdings.set(key, (this.holdings.get(key) ?? 0n) + amount)
     owned.add(asset.id)
@@ -1102,15 +1145,20 @@ export class MockLedger {
     this.holdersByAsset.set(asset.id, holders)
   }
 
-  private debit(account: string, asset: AssetRecord, amount: bigint): void {
-    const key = holdingKey(account, asset.id)
-    const held = this.holdings.get(key) ?? 0n
-    if (held < amount) {
+  private requireCredit(account: string, asset: AssetRecord): void {
+    const owned = this.holdingsByAccount.get(account)
+    if (owned && !owned.has(asset.id) && owned.size >= MAX_ASSETS_PER_ACCOUNT) {
       fail(
-        'insufficient-balance',
-        `Not enough ${asset.symbol} — balance is ${held}, tried to move ${amount}.`,
+        'too-many-assets',
+        `${account} already holds ${MAX_ASSETS_PER_ACCOUNT} different assets, which is the per-account limit (SPEC §7). Burn or transfer something before receiving more.`,
       )
     }
+  }
+
+  /** Commit-only counterpart to requireDebit(); it contains no rejection path. */
+  private commitDebit(account: string, asset: AssetRecord, amount: bigint): void {
+    const key = holdingKey(account, asset.id)
+    const held = this.holdings.get(key) ?? 0n
     const remaining = held - amount
     const reverse = holderKey(asset.id, account)
 
@@ -1129,6 +1177,16 @@ export class MockLedger {
     this.holders.set(reverse, remaining)
   }
 
+  private requireDebit(account: string, asset: AssetRecord, amount: bigint): void {
+    const held = this.holdings.get(holdingKey(account, asset.id)) ?? 0n
+    if (held < amount) {
+      fail(
+        'insufficient-balance',
+        `Not enough ${asset.symbol} — balance is ${held}, tried to move ${amount}.`,
+      )
+    }
+  }
+
   private createReceivable(hash: string, receivable: StoredReceivable): void {
     this.receivables.set(hash, receivable)
     const set = this.receivablesByAccount.get(receivable.to) ?? new Set<string>()
@@ -1137,15 +1195,15 @@ export class MockLedger {
     this.notify(receivable.to, { kind: 'receivable', account: receivable.to, hash })
   }
 
-  private takeReceivable(link: string, account: string, asset: AssetId): StoredReceivable {
-    const receivable = this.takeReceivableAnyAsset(link, account)
+  private requireReceivable(link: string, account: string, asset: AssetId): StoredReceivable {
+    const receivable = this.requireReceivableAnyAsset(link, account)
     if (receivable.asset !== asset) {
       fail('wrong-asset', `Receivable ${link} is for asset ${receivable.asset}, not ${asset}.`)
     }
     return receivable
   }
 
-  private takeReceivableAnyAsset(link: string, account: string): StoredReceivable {
+  private requireReceivableAnyAsset(link: string, account: string): StoredReceivable {
     const key = String(link).toUpperCase()
     const receivable = this.receivables.get(key)
     if (!receivable) {
@@ -1157,10 +1215,14 @@ export class MockLedger {
     if (receivable.to !== account) {
       fail('not-recipient', `Receivable ${key} belongs to ${receivable.to}, not ${account}.`)
     }
-    this.receivables.delete(key)
-    this.receivablesByAccount.get(account)?.delete(key)
-    if (this.receivablesByAccount.get(account)?.size === 0) this.receivablesByAccount.delete(account)
     return receivable
+  }
+
+  private consumeReceivable(receivable: StoredReceivable): void {
+    const key = receivable.hash.toUpperCase()
+    this.receivables.delete(key)
+    this.receivablesByAccount.get(receivable.to)?.delete(key)
+    if (this.receivablesByAccount.get(receivable.to)?.size === 0) this.receivablesByAccount.delete(receivable.to)
   }
 
   private notify(account: string, event: Notification): void {
