@@ -511,6 +511,65 @@ describe('account-chain source', () => {
     expect({ catalogCalls, providerCalls }).toEqual({ catalogCalls: 1, providerCalls: 1 })
   })
 
+  test('enforces scanned block budget and returns measured scanned count', async () => {
+    const storage = createMemoryMarketStorage()
+    const catalog = createMarketCatalog({ storage })
+    await catalog.announce(announcement(ALICE, '1', 1))
+
+    const source = createAccountChainIngestor({
+      id: 'node-a',
+      provider: {
+        network: 'testnet',
+        async accountSwaps() {
+          return [
+            {
+              hash: 'A'.repeat(64),
+              from: ALICE,
+              asset: SWORD,
+              amount: '1',
+              wantAsset: KEI,
+              wantAmount: '2',
+              counterparty: null,
+              state: 'open',
+              acceptedBy: null,
+              settledBy: null,
+              height: 1,
+              seenAt: 1,
+              settledAt: null,
+            },
+            {
+              hash: 'B'.repeat(64),
+              from: ALICE,
+              asset: SWORD,
+              amount: '2',
+              wantAsset: KEI,
+              wantAmount: '3',
+              counterparty: null,
+              state: 'open',
+              acceptedBy: null,
+              settledBy: null,
+              height: 2,
+              seenAt: 2,
+              settledAt: null,
+            },
+          ]
+        },
+      },
+      catalog,
+      store: createMarketStore({ storage }),
+      now: () => 100,
+    })
+    const result = await source.ingest({ budget: { maxScannedBlocks: 2, maxResultRows: 10 } })
+    expect(result).toMatchObject({
+      stopReason: 'scan_limit',
+      consumed: { resultRows: 2 },
+      sourceBackfill: { scannedBlocks: 2 },
+    })
+    expect(result.consumed.accounts).toBe(1)
+    expect(result.consumed.requests).toBe(1)
+    expect(result.consumed.pages).toBe(1)
+  })
+
   test('bad budgets and pre-abort stop before catalog or provider work', async () => {
     let catalogReads = 0
     let providerReads = 0

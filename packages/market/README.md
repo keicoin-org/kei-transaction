@@ -229,11 +229,13 @@ provenance; a second source cannot rewrite immutable terms for the same
 The current `account_swaps` RPC only returns a bounded newest window. The
 account-chain ingestor can re-poll that window and resume catalog paging,
 but it always reports `sourceBackfill.complete: false`, reason
-`unsupported_pagination`, and `scannedBlocks: 'unsupported'`. Stored results are
-**materialized observations**, not network-global history. Complete historical
-backfill requires the cursor, explicit exhaustion, and independent scan budget
-tracked in kei-node issue #27; no local timestamp, offset, or hash fabricates
-that proof.
+`unsupported_pagination`. Stored results are **materialized observations**, not
+network-global history. Set `maxScannedBlocks` on ingestion budgets to cap how
+many provider rows are consumed in one run and report that exact row count back
+in `sourceBackfill.scannedBlocks`; without that budget it remains
+`'unsupported'`. Complete historical backfill requires the cursor, explicit
+exhaustion, and independent scan-budget proof tracked in kei-node issue #27; no
+local timestamp, offset, or hash fabricates that proof.
 
 Every public operation validates finite row, byte, page, request, account, and
 deadline budgets before touching its adapter. The catalog and store remain

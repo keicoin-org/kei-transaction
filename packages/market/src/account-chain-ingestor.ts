@@ -72,7 +72,7 @@ export interface AccountChainIngestResult {
     readonly supported: false
     readonly complete: false
     readonly reason: 'unsupported_pagination'
-    readonly scannedBlocks: 'unsupported'
+    readonly scannedBlocks: 'unsupported' | number
   }
 }
 
@@ -138,6 +138,7 @@ export function createAccountChainIngestor(options: AccountChainIngestorOptions)
       let conflicts = 0
       let quarantined = 0
       const failedAccounts: { account: string; reason: string }[] = []
+      let scannedBlocks = 0
       let traversalComplete = false
       let budgetStop: MarketIngestStopReason | null = null
 
@@ -192,6 +193,12 @@ export function createAccountChainIngestor(options: AccountChainIngestorOptions)
             continue
           }
           const perRequestLimit = Math.min(budget.maxResultsPerRequest, budget.maxResultRows - resultRows)
+          const scannedRoom = budget.maxScannedBlocks === undefined ? null : budget.maxScannedBlocks - scannedBlocks
+          const requestLimit = scannedRoom === null ? perRequestLimit : Math.min(perRequestLimit, scannedRoom)
+          if (requestLimit < 1) {
+            budgetStop = 'scan_limit'
+            break
+          }
           if (perRequestLimit < 1) {
             budgetStop = 'result_limit'
             break
@@ -215,7 +222,7 @@ export function createAccountChainIngestor(options: AccountChainIngestorOptions)
               throw badSource('checkpoint generation is exhausted for this source scope')
             }
             raw = await within(
-              Promise.resolve().then(() => options.provider.accountSwaps(account, { limit: perRequestLimit })),
+              Promise.resolve().then(() => options.provider.accountSwaps(account, { limit: requestLimit })),
               signal,
               now,
               deadlineAt,
@@ -234,7 +241,7 @@ export function createAccountChainIngestor(options: AccountChainIngestorOptions)
           const observedAt = clock(now, 'Account-chain ingestion observation')
           let converted: ReturnType<typeof providerRows>
           try {
-            converted = providerRows(raw, perRequestLimit, {
+            converted = providerRows(raw, requestLimit, {
               network,
               source: id,
               account,
@@ -250,6 +257,16 @@ export function createAccountChainIngestor(options: AccountChainIngestorOptions)
           if (resultRows + converted.totalRows > budget.maxResultRows) {
             budgetStop = 'result_limit'
             break
+          }
+          if (budget.maxScannedBlocks !== undefined) {
+            if (scannedBlocks + converted.totalRows > budget.maxScannedBlocks) {
+              budgetStop = 'scan_limit'
+              break
+            }
+            scannedBlocks += converted.totalRows
+            if (scannedBlocks >= budget.maxScannedBlocks) {
+              budgetStop = 'scan_limit'
+            }
           }
           if (resultBytes + converted.bytes > budget.maxResultBytes) {
             budgetStop = 'byte_limit'
@@ -320,7 +337,7 @@ export function createAccountChainIngestor(options: AccountChainIngestorOptions)
           supported: false,
           complete: false,
           reason: 'unsupported_pagination',
-          scannedBlocks: 'unsupported',
+          scannedBlocks: budget.maxScannedBlocks === undefined ? 'unsupported' : scannedBlocks,
         },
       }
     },
