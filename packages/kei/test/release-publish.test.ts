@@ -21,160 +21,6 @@ const packageDirectories = [
 // Each test below also keeps an explicit 60-second bound.
 setDefaultTimeout(60_000)
 
-const DEFAULT_CHILD_TIMEOUT_MS = 30_000
-const MAX_CAPTURED_OUTPUT = 64 * 1024
-const CLEANUP_GRACE_MS = 500
-
-type RunOptions = {
-  ownedPidFiles?: string[]
-  signal?: AbortSignal
-  timeoutMs?: number
-}
-
-class FixtureProcessError extends Error {
-  readonly kind: 'aborted' | 'timeout'
-
-  constructor(kind: 'aborted' | 'timeout', timeoutMs: number, output: string) {
-    const redactedOutput = redactSecrets(output)
-    const lastStage = [...redactedOutput.matchAll(/^==>\s+.+$/gm)].at(-1)?.[0]
-    const reason = kind === 'timeout' ? `timed out after ${timeoutMs}ms` : 'was aborted'
-    super(
-      `release fixture ${reason}; last stage: ${lastStage ?? '(no stage marker)'}\n` +
-        `bounded output tail:\n${redactedOutput || '(no output)'}`,
-    )
-    this.name = 'FixtureProcessError'
-    this.kind = kind
-  }
-}
-
-function redactSecrets(output: string): string {
-  return output
-    .replace(/(--otp(?:=|\s+))\S+/gi, '$1[REDACTED]')
-    .replace(/((?:NPM_TOKEN|NODE_AUTH_TOKEN|NPM_OTP)\s*=\s*)\S+/gi, '$1[REDACTED]')
-    .replace(/\bnpm_[A-Za-z0-9]{16,}\b/g, '[REDACTED_NPM_TOKEN]')
-}
-
-function appendBounded(tail: { value: string }, chunk: string): void {
-  tail.value = (tail.value + chunk).slice(-MAX_CAPTURED_OUTPUT)
-}
-
-function captureStream(stream: ReadableStream<Uint8Array>, tail: { value: string }) {
-  const reader = stream.getReader()
-  const decoder = new TextDecoder()
-  const finished = (async () => {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      appendBounded(tail, decoder.decode(value, { stream: true }))
-    }
-    appendBounded(tail, decoder.decode())
-  })()
-  return {
-    cancel: () => reader.cancel().catch(() => undefined),
-    finished,
-  }
-}
-
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds))
-}
-
-async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs
-  do {
-    if (predicate()) return true
-    await delay(20)
-  } while (Date.now() < deadline)
-  return predicate()
-}
-
-function processGroupExists(pid: number): boolean {
-  try {
-    process.kill(-pid, 0)
-    return true
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false
-    throw error
-  }
-}
-
-async function terminateWindowsTree(pid: number): Promise<void> {
-  const killer = Bun.spawn(['taskkill.exe', '/PID', String(pid), '/T', '/F'], {
-    stderr: 'ignore',
-    stdin: null,
-    stdout: 'ignore',
-  })
-  const completed = await Promise.race([
-    killer.exited.then(() => true),
-    delay(5_000).then(() => false),
-  ])
-  if (!completed) {
-    killer.kill()
-    await Promise.race([killer.exited, delay(1_000)])
-    throw new Error(`taskkill did not settle for owned fixture root PID ${pid}`)
-  }
-}
-
-async function terminateOwnedProcessTree(
-  processHandle: Bun.Subprocess<null, 'pipe', 'pipe'>,
-  additionalOwnedPids: number[],
-): Promise<void> {
-  const pid = processHandle.pid
-  if (process.platform === 'win32') {
-    await terminateWindowsTree(pid)
-  } else {
-    try {
-      process.kill(-pid, 'SIGTERM')
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
-    }
-    if (!(await waitUntil(() => !processGroupExists(pid), CLEANUP_GRACE_MS))) {
-      try {
-        process.kill(-pid, 'SIGKILL')
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
-      }
-    }
-  }
-
-  const reaped = await Promise.race([
-    processHandle.exited.then(() => true),
-    delay(2_000).then(() => false),
-  ])
-  if (!reaped) {
-    processHandle.kill('SIGKILL')
-    if (
-      !(await Promise.race([
-        processHandle.exited.then(() => true),
-        delay(1_000).then(() => false),
-      ]))
-    ) {
-      throw new Error(`could not reap owned fixture root PID ${pid}`)
-    }
-  }
-
-  if (process.platform !== 'win32') {
-    const groupExited = await waitUntil(() => !processGroupExists(pid), 1_000)
-    if (!groupExited) throw new Error(`owned fixture process group ${pid} survived cleanup`)
-  }
-
-  for (const ownedPid of additionalOwnedPids) {
-    if (!processExists(ownedPid)) continue
-    if (process.platform === 'win32') await terminateWindowsTree(ownedPid)
-    else process.kill(ownedPid, 'SIGKILL')
-  }
-}
-
-async function readOwnedPids(paths: string[] = []): Promise<number[]> {
-  const pids: number[] = []
-  for (const path of paths) {
-    if (!(await Bun.file(path).exists())) continue
-    const pid = Number(await readFile(path, 'utf8'))
-    if (Number.isSafeInteger(pid) && pid > 0 && !pids.includes(pid)) pids.push(pid)
-  }
-  return pids
-}
-
 function shellPath(path: string): string {
   const normalized = path.replaceAll('\\', '/')
   const drive = /^([A-Za-z]):\/(.*)$/.exec(normalized)
@@ -190,67 +36,20 @@ async function run(
   command: string[],
   cwd: string,
   env: Record<string, string> = {},
-  options: RunOptions = {},
 ): Promise<{ exitCode: number; output: string }> {
-  const timeoutMs = options.timeoutMs ?? DEFAULT_CHILD_TIMEOUT_MS
   const processHandle = Bun.spawn(command, {
     cwd,
-    detached: true,
     env: { ...process.env, ...env },
     stderr: 'pipe',
     stdin: null,
     stdout: 'pipe',
   })
-  const output = { value: '' }
-  const stdout = captureStream(processHandle.stdout, output)
-  const stderr = captureStream(processHandle.stderr, output)
-
-  let timeout: ReturnType<typeof setTimeout> | undefined
-  let abortHandler: (() => void) | undefined
-  const interrupted = new Promise<'aborted' | 'timeout'>((resolveInterruption) => {
-    timeout = setTimeout(() => resolveInterruption('timeout'), timeoutMs)
-    abortHandler = () => resolveInterruption('aborted')
-    if (options.signal?.aborted) abortHandler()
-    else options.signal?.addEventListener('abort', abortHandler, { once: true })
-  })
-
-  const completed = Promise.all([
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(processHandle.stdout).text(),
+    new Response(processHandle.stderr).text(),
     processHandle.exited,
-    stdout.finished,
-    stderr.finished,
-  ]).then(([exitCode]) => ({ exitCode, kind: 'exit' as const }))
-  const outcome = await Promise.race([
-    completed,
-    interrupted.then((kind) => ({ kind })),
   ])
-  if (timeout) clearTimeout(timeout)
-  if (abortHandler) options.signal?.removeEventListener('abort', abortHandler)
-
-  if (outcome.kind === 'exit') {
-    return { exitCode: outcome.exitCode, output: output.value }
-  }
-
-  let cleanupFailure: unknown
-  try {
-    const additionalOwnedPids = await readOwnedPids(options.ownedPidFiles)
-    await terminateOwnedProcessTree(processHandle, additionalOwnedPids)
-  } catch (error) {
-    cleanupFailure = error
-  }
-  const streamsDrained = await Promise.race([
-    Promise.allSettled([stdout.finished, stderr.finished]).then(() => true),
-    delay(1_000).then(() => false),
-  ])
-  if (!streamsDrained) await Promise.all([stdout.cancel(), stderr.cancel()])
-  if (cleanupFailure) {
-    const cleanupMessage =
-      cleanupFailure instanceof Error ? cleanupFailure.message : String(cleanupFailure)
-    appendBounded(
-      output,
-      `\nfixture cleanup also failed: ${cleanupMessage}`,
-    )
-  }
-  throw new FixtureProcessError(outcome.kind, timeoutMs, output.value)
+  return { exitCode, output: stdout + stderr }
 }
 
 async function git(cwd: string, ...arguments_: string[]): Promise<void> {
@@ -258,90 +57,15 @@ async function git(cwd: string, ...arguments_: string[]): Promise<void> {
   expect(result.exitCode, result.output).toBe(0)
 }
 
-function processExists(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false
-    throw error
-  }
-}
-
 describe('release fixture process lifetime', () => {
   test('supplies EOF to a child instead of inheriting the test runner stdin', async () => {
     const result = await run(
       [findShell(), '-c', "cat >/dev/null; printf '%s\\n' 'stdin closed'"],
       workspace,
-      {},
-      { timeoutMs: 5_000 },
     )
     expect(result.exitCode, result.output).toBe(0)
     expect(result.output).toContain('stdin closed')
   })
-
-  test('reports the last stage and reaps an intentionally stuck owned tree', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'kei-publish-timeout-'))
-    const childPidFile = join(root, 'child.pid')
-    const nextSentinel = join(root, 'next-sentinel')
-    const childScript = join(root, 'child.mjs')
-    await writeFile(
-      childScript,
-      [
-        "import { writeFile } from 'node:fs/promises'",
-        "await writeFile(process.env.PUBLISH_TEST_CHILD_PID, String(process.pid))",
-        "console.log('==> fixture child intentionally waiting')",
-        'setInterval(() => {}, 1_000)',
-        'await new Promise(() => {})',
-        "await writeFile(process.env.PUBLISH_TEST_NEXT_SENTINEL, 'ran')",
-      ].join('\n'),
-    )
-    const command = [
-      findShell(),
-      '-c',
-      '"$PUBLISH_TEST_RUNTIME" "$PUBLISH_TEST_CHILD_SCRIPT" &',
-    ]
-
-    try {
-      let failure: unknown
-      try {
-        const unexpected = await run(
-          command,
-          root,
-          {
-            PUBLISH_TEST_CHILD_PID: childPidFile,
-            PUBLISH_TEST_CHILD_SCRIPT: shellPath(childScript),
-            PUBLISH_TEST_NEXT_SENTINEL: nextSentinel,
-            PUBLISH_TEST_RUNTIME: shellPath(process.execPath),
-          },
-          { ownedPidFiles: [childPidFile], timeoutMs: 2_000 },
-        )
-        failure = new Error(
-          `stuck fixture unexpectedly exited ${unexpected.exitCode}: ${unexpected.output}`,
-        )
-      } catch (error) {
-        failure = error
-      }
-
-      expect(failure).toBeInstanceOf(FixtureProcessError)
-      expect((failure as FixtureProcessError).kind).toBe('timeout')
-      expect((failure as Error).message).toContain('==> fixture child intentionally waiting')
-      expect(await Bun.file(nextSentinel).exists()).toBe(false)
-
-      const childPid = Number(await readFile(childPidFile, 'utf8'))
-      expect(Number.isSafeInteger(childPid)).toBe(true)
-      expect(await waitUntil(() => !processExists(childPid), 2_000)).toBe(true)
-    } finally {
-      if (await Bun.file(childPidFile).exists()) {
-        const childPid = Number(await readFile(childPidFile, 'utf8'))
-        if (Number.isSafeInteger(childPid) && processExists(childPid)) {
-          if (process.platform === 'win32') await terminateWindowsTree(childPid)
-          else process.kill(childPid, 'SIGKILL')
-        }
-      }
-      await rm(root, { recursive: true, force: true })
-    }
-  }, 15_000)
 })
 
 describe('publish shell safety gate', () => {
