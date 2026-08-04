@@ -179,7 +179,17 @@ export function withCoverageOn<T extends object, C extends Coverage | null>(
 }
 
 /**
- * Two walks' coverage as one.
+ * Two walks over the same logical account scope as one coverage.
+ *
+ * Every part must describe the same deduplicated account set. `Coverage` keeps
+ * counts rather than account identities, so this function can enforce equal
+ * cardinality but the caller is responsible for passing parts produced from
+ * the same logical scope. Unequal `asked` counts throw `coverage-mismatch`
+ * instead of manufacturing a plausible-looking answer.
+ *
+ * `read` counts accounts that answered every part. The failed account names
+ * make that intersection exact even when different calls missed different
+ * accounts; taking only the smallest individual `read` would overstate it.
  *
  * Used where a single read has to touch two RPCs — "my trades" reads this
  * wallet's offers *and* scans its history for the accepts it wrote — because a
@@ -188,11 +198,19 @@ export function withCoverageOn<T extends object, C extends Coverage | null>(
 export function mergeCoverage(...parts: readonly (Coverage | null | undefined)[]): Coverage {
   const present = parts.filter((part): part is Coverage => part !== null && part !== undefined)
   if (present.length === 0) return emptyCoverage()
+  const asked = present[0]!.asked
+  const mismatched = present.find((part) => part.asked !== asked)
+  if (mismatched !== undefined) {
+    throw new KeiError(
+      'coverage-mismatch',
+      `Coverage can only be merged for the same logical account scope. Expected ${asked} accounts, but another part describes ${mismatched.asked}. Keep coverage from different market scopes separate.`,
+    )
+  }
   const failed = present.flatMap((part) => [...part.failed])
   const truncated = [...new Set(present.flatMap((part) => [...part.truncated]))]
   const skipped = [...new Set(present.flatMap((part) => [...part.skipped]))]
-  const asked = Math.max(...present.map((part) => part.asked))
-  const read = Math.min(...present.map((part) => part.read))
+  const failedAccounts = new Set(failed.map((failure) => failure.account))
+  const read = Math.max(0, asked - failedAccounts.size)
   return {
     asked,
     read,

@@ -42,6 +42,8 @@ export type MarketErrorCode =
   | 'bad-sweep-interval'
   /** A per-account read limit that is not a positive safe integer. */
   | 'bad-limit'
+  /** Coverage from walks over different account cardinalities was combined. */
+  | 'coverage-mismatch'
   /** `offer()` without both legs, or an offer argument with no hash in it. */
   | 'bad-offer'
   /** This wallet cannot put the units behind the block. The message names the gap. */
@@ -80,6 +82,7 @@ const CODES = new Set<string>([
   'bad-concurrency',
   'bad-sweep-interval',
   'bad-limit',
+  'coverage-mismatch',
   'bad-offer',
   'insufficient-balance',
   'no-accounts',

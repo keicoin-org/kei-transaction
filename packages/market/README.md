@@ -126,6 +126,12 @@ or use `coverageOf(rows)`. Series, candles, price summaries and price indexes
 carry the same provenance so a chart cannot silently present a partial walk as
 a complete market.
 
+`mergeCoverage()` is only for multiple reads over the same logical,
+deduplicated account scope. It rejects unequal `asked` counts with the typed
+`coverage-mismatch` error. Coverage intentionally stores counts instead of the
+account roster, so equal-sized parts from different rosters must still be kept
+separate by the caller.
+
 `medianPrice()` remains as a scalar compatibility shortcut. Because a number
 cannot carry provenance, use `price()` whenever the difference between a
 complete and partial roster affects the decision being made.
