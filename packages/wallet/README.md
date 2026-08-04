@@ -86,6 +86,38 @@ kei.wallet.on('change', s => {})
 
 `WalletPanel` is built on this; use it directly if you are drawing your own UI.
 
+Games that construct the headless wallet directly can tune immutable asset
+metadata reads without changing mutable summary behavior:
+
+```js
+import {
+  createWallet,
+  DEFAULT_ASSET_CACHE_LIMIT,
+  DEFAULT_ASSET_CONCURRENCY,
+  MAX_ASSET_CACHE_LIMIT,
+  MAX_ASSET_CONCURRENCY,
+} from '@keicoin/wallet'
+
+const wallet = createWallet(client, {
+  claims,
+  assetConcurrency: 8,  // default 8; whole number from 1 through 32
+  assetCacheLimit: 2048 // default 2,048; whole number from 1 through 8,192
+})
+```
+
+Those four constants, `createWallet`, and the `WalletOptions` TypeScript type are
+also re-exported by the recommended `kei-transaction` umbrella package.
+
+The concurrency limit is wallet-wide, including overlapping summaries. The LRU
+cache lasts for the wallet object's lifetime and contains issuance metadata
+only; balance, holdings, pending claims, and circulating supply are always read
+fresh. A custom cache limit below the current holding count is supported, but it
+will evict and refetch some metadata between summaries. Invalid limits fail
+synchronously with `KeiError('bad-wallet-option')`. If a node answers an asset
+lookup with metadata carrying a different asset id, the summary rejects with
+`KeiError('asset-info-mismatch')`, caches nothing from that response, and retries
+the lookup on the next summary.
+
 ## Status
 
 **M6 of eleven.** The panel and its seed-reveal friction are real and tested end to

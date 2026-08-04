@@ -266,11 +266,19 @@ export type {
 } from '@keicoin/player-economy'
 
 export { LocalWorkProvider, WorkServerProvider, createWorkProvider } from '@keicoin/work'
-export { WalletPanel, createWallet } from '@keicoin/wallet'
+export {
+  DEFAULT_ASSET_CACHE_LIMIT,
+  DEFAULT_ASSET_CONCURRENCY,
+  MAX_ASSET_CACHE_LIMIT,
+  MAX_ASSET_CONCURRENCY,
+  WalletPanel,
+  createWallet,
+} from '@keicoin/wallet'
 export type {
   ItemHolding,
   TokenBalance,
   WalletApi,
+  WalletOptions,
   WalletPanelCustody,
   WalletPanelHandle,
   WalletPanelKei,

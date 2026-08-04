@@ -26,6 +26,7 @@
  */
 
 import type { AssetId, AssetInfo, KeiNode } from '@keicoin/core'
+import { fail } from '@keicoin/core'
 import { decodeDescription, looksLikeItem } from '@keicoin/tokens'
 import type { ItemStats } from '@keicoin/tokens'
 
@@ -72,14 +73,24 @@ export const MAX_ASSET_CONCURRENCY = 32
  * How many assets' metadata one wallet remembers.
  *
  * SPEC §7 sets "a hard cap of 1,024 distinct assets per account", so twice that
- * is always more than everything a wallet can hold at one instant; the cap only
- * ever bites on a session that has churned through more assets than it holds.
- * Eviction is least-recently-used, so nothing a player is currently looking at
- * falls out, and an evicted asset costs exactly one request to learn again. The
- * cap exists because a session that runs for days should not grow a map for
- * ever, not because anything here is expected to reach it.
+ * is always more than everything a wallet can hold at one instant. At that
+ * default, a player's current inventory fits even while older entries are
+ * evicted least-recently-used. A caller may choose a smaller limit; if it is
+ * smaller than the current inventory, some metadata from that same summary is
+ * necessarily evicted and costs one request to learn again next time. The cap
+ * exists because a session that runs for days should not grow a map forever.
  */
 export const DEFAULT_ASSET_CACHE_LIMIT = 2_048
+
+/**
+ * Highest supported immutable-metadata cache size for one wallet.
+ *
+ * This is eight complete SPEC §7 account inventories: enough headroom for a
+ * long session that replaces every holding several times, while still putting
+ * a finite ceiling on the session-wide map. Callers that need less memory can
+ * lower `assetCacheLimit`; callers cannot turn the cache into an unbounded one.
+ */
+export const MAX_ASSET_CACHE_LIMIT = 8_192
 
 /**
  * Everything the summary needs from an asset, and nothing that can change.
@@ -231,6 +242,12 @@ export class AssetFactsCache {
       .run(() => this.node.assetInfo(asset))
       .then((info) => {
         if (!info) return null
+        if (info.id !== asset) {
+          fail(
+            'asset-info-mismatch',
+            `The node answered metadata requested for asset ${asset} with asset ${info.id}. Retry against a synced node; this response was not cached.`,
+          )
+        }
         const facts = assetFactsFrom(info)
         this.remember(asset, facts)
         return facts
