@@ -1,17 +1,56 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 
+import type { AssetId, AssetInfo, SwapOffer, SwapState } from '@keicoin/core'
 import { KEI_ASSET, KeiError } from '@keicoin/core'
 import {
   createAccountChainSource,
+  emptyCoverage,
   toUnixCandles,
   toUnixLine,
+  withCoverage,
   type InstrumentUpdate,
+  type MarketDataSource,
+  type Trade,
 } from '@keicoin/market'
 
-import { GateNode, TwoFacedNode } from './harness/net.js'
+import { createInstrumentFactory } from '../src/instrument.js'
+
+import { DelegateNode, GateNode, TwoFacedNode } from './harness/net.js'
 import { World, until } from './harness/world.js'
 
 const worlds: World[] = []
+
+class ComplementaryFailureNode extends DelegateNode {
+  constructor(
+    inner: ConstructorParameters<typeof DelegateNode>[0],
+    private readonly bookFailure: string,
+    private readonly historyFailure: string,
+  ) {
+    super(inner)
+  }
+
+  override accountSwaps(
+    address: string,
+    options?: { limit?: number; state?: SwapState },
+  ): Promise<SwapOffer[]> {
+    if (options?.state === 'open' && address === this.bookFailure) throw new Error('book missed A')
+    if (options?.state === 'accepted' && address === this.historyFailure) throw new Error('history missed B')
+    return super.accountSwaps(address, options)
+  }
+}
+
+class MutableDecimalsNode extends DelegateNode {
+  poison: number | null = null
+
+  constructor(inner: ConstructorParameters<typeof DelegateNode>[0], private readonly target: AssetId) {
+    super(inner)
+  }
+
+  override async assetInfo(asset: AssetId): Promise<AssetInfo | null> {
+    const info = await super.assetInfo(asset)
+    return info && asset === this.target && this.poison !== null ? { ...info, decimals: this.poison } : info
+  }
+}
 
 afterEach(() => {
   for (const world of worlds.splice(0)) world.close()
@@ -283,4 +322,276 @@ describe('instrument market product surface', () => {
     expect(stale.lastGood).toEqual(lastGood)
     expect(stale.error).toMatchObject({ message: 'catalog offline' })
   })
+
+  test('snapshot coverage is the exact same-roster intersection, not the minimum read count', async () => {
+    const { world, seller, buyer, sword } = await marketWorld()
+    const split = new ComplementaryFailureNode(world.node, seller.address, buyer.address)
+    const observer = await world.actor('coverage-observer', { node: split })
+    const snapshot = await observer.market
+      .instrument({ base: sword, quote: KEI_ASSET, source: [seller.address, buyer.address] })
+      .snapshot()
+
+    expect(snapshot.coverage.book).toMatchObject({ asked: 2, read: 1, complete: false })
+    expect(snapshot.coverage.history).toMatchObject({ asked: 2, read: 1, complete: false })
+    expect(snapshot.coverage.combined).toMatchObject({ asked: 2, read: 0, complete: false })
+    expect(snapshot.coverage.combined.failed.map(({ account }) => account).sort()).toEqual(
+      [seller.address, buyer.address].sort(),
+    )
+    expect(snapshot.provenance).toMatchObject({ accountsAsked: 2, accountsRead: 0 })
+  }, 30_000)
+
+  test('pre-aborted reads and subscriptions do not touch hostile directory getters', async () => {
+    const { buyer, sword } = await marketWorld()
+    let touched = 0
+    const source = {
+      get size(): number {
+        touched += 1
+        throw new Error('size touched')
+      },
+      get dropped(): number {
+        touched += 1
+        throw new Error('dropped touched')
+      },
+      accounts(): readonly string[] {
+        touched += 1
+        throw new Error('accounts touched')
+      },
+    }
+    const instrument = buyer.market.instrument({ base: sword, quote: KEI_ASSET, source })
+    const controller = new AbortController()
+    controller.abort('already gone')
+
+    await expect(instrument.history({ signal: controller.signal })).rejects.toMatchObject({ code: 'read-aborted' })
+    await expect(instrument.snapshot({ signal: controller.signal })).rejects.toMatchObject({ code: 'read-aborted' })
+    const updates: InstrumentUpdate[] = []
+    instrument.subscribe({ every: 1, readTimeout: 5, signal: controller.signal }, (update) => updates.push(update))
+    expect(() => instrument.subscribe({ every: 1, readTimeout: Infinity }, () => undefined)).toThrow()
+    expect(updates).toEqual([])
+    expect(touched).toBe(0)
+  }, 30_000)
+
+  test('structural data sources validate their discriminant, identity, and account source eagerly', async () => {
+    const { buyer, sword } = await marketWorld()
+    const malformed: unknown[] = [
+      { kind: 'account-chain', id: '', accounts: null },
+      { kind: 'account-chain', id: 'named', accounts: null },
+      { kind: 'future-provider', id: 'named', accounts: [buyer.address] },
+      123,
+      {},
+      () => [buyer.address],
+    ]
+    for (const source of malformed) {
+      const failure = (() => {
+        try {
+          buyer.market.instrument({ base: sword, quote: KEI_ASSET, source: source as MarketDataSource })
+          return null
+        } catch (error) {
+          return error
+        }
+      })()
+      expect(failure).toMatchObject({ code: 'bad-account-source' })
+    }
+  }, 30_000)
+
+  test('a clock failure after a successful snapshot is terminal, handled, and does not promote the failed refresh', async () => {
+    const { world, buyer, sword } = await marketWorld()
+    let clockCalls = 0
+    const now = (): number => {
+      clockCalls += 1
+      if (clockCalls === 5) throw new Error('clock broke after the second read')
+      return world.clock.at
+    }
+    const observer = await world.actor('clock-observer', { market: { now } })
+    const updates: InstrumentUpdate[] = []
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      observer.market.instrument({ base: sword, quote: KEI_ASSET, source: [buyer.address] })
+        .subscribe({ every: 1, readTimeout: 50 }, (update) => updates.push(update))
+      await until(() => updates.some((update) => update.error?.code === 'bad-market-time'))
+      await new Promise((resolve) => setTimeout(resolve, 15))
+      const live = updates.filter((update) => update.status === 'live')
+      const failed = updates.find((update) => update.error?.code === 'bad-market-time')!
+      expect(live).toHaveLength(1)
+      expect(failed.lastGood).toEqual(live[0]!.snapshot)
+      expect(failed.snapshot).toEqual(live[0]!.snapshot)
+      expect(clockCalls).toBe(5)
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  }, 30_000)
+
+  test('snapshot asOf and feed age use successful refresh completion, while requested range stays at request time', async () => {
+    const { world, seller, sword } = await marketWorld()
+    const gated = new GateNode(world.node)
+    gated.hold('accountSwaps', (account) => account === seller.address)
+    const observer = await world.actor('age-observer', { node: gated })
+    let broken = false
+    const source = {
+      accounts() {
+        if (broken) throw new Error('source failed immediately after live')
+        return [seller.address]
+      },
+    }
+    const updates: InstrumentUpdate[] = []
+    const instrument = observer.market.instrument({ base: sword, quote: KEI_ASSET, source })
+    const requestedAt = world.clock.at
+    const stop = instrument.subscribe({ every: 1, readTimeout: 1_000 }, (update) => {
+      updates.push(update)
+      if (update.status === 'live') broken = true
+    })
+    const bookRead = await gated.captured()
+    const historyRead = await gated.captured()
+    world.clock.tick(1_000)
+    bookRead.release()
+    historyRead.release()
+    await until(() => updates.some((update) => update.status === 'live'))
+    await until(() => updates.some((update) => update.status === 'error'))
+    stop()
+
+    const live = updates.find((update) => update.status === 'live')!
+    const failed = updates.find((update) => update.status === 'error')!
+    expect(live.at).toBe(world.clock.at)
+    expect(live.snapshot?.asOf).toBe(world.clock.at)
+    expect(live.snapshot?.history.requested.to).toBe(requestedAt)
+    expect(failed.age).toBe(0)
+    expect(failed.lastGood).toEqual(live.snapshot)
+  }, 30_000)
+
+  test('a per-refresh deadline leaves opening, retains last-good, and handles a late directory rejection', async () => {
+    const { buyer, sword } = await marketWorld()
+    let hang = false
+    let calls = 0
+    let pending = 0
+    let maxPending = 0
+    let rejectLate: ((reason?: unknown) => void) | undefined
+    const source = {
+      accounts(): readonly string[] | Promise<readonly string[]> {
+        calls += 1
+        if (!hang) return [buyer.address]
+        pending += 1
+        maxPending = Math.max(maxPending, pending)
+        return new Promise<readonly string[]>((_resolve, reject) => {
+          rejectLate = (reason) => {
+            pending -= 1
+            reject(reason)
+          }
+        })
+      },
+    }
+    const instrument = buyer.market.instrument({ base: sword, quote: KEI_ASSET, source })
+    const updates: InstrumentUpdate[] = []
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason) }
+    process.on('unhandledRejection', onUnhandled)
+    let stop = (): void => undefined
+    try {
+      stop = instrument.subscribe({ every: 1, readTimeout: 5 }, (update) => {
+        updates.push(update)
+        if (update.status === 'live') hang = true
+        if (update.error?.code === 'read-timeout') stop()
+      })
+      await until(() => updates.some((update) => update.error?.code === 'read-timeout'))
+      const live = updates.find((update) => update.status === 'live')!
+      const timedOut = updates.find((update) => update.error?.code === 'read-timeout')!
+      expect(timedOut.lastGood).toEqual(live.snapshot)
+      expect(timedOut.snapshot).toEqual(live.snapshot)
+      expect(maxPending).toBe(1)
+      expect(calls).toBe(2)
+      rejectLate?.(new Error('late catalog rejection'))
+      await new Promise((resolve) => setTimeout(resolve, 15))
+      expect(unhandled).toEqual([])
+    } finally {
+      stop()
+      process.off('unhandledRejection', onUnhandled)
+    }
+  }, 30_000)
+
+  test('hostile decimal inputs, raw quantities, and asset decimals fail with typed bounded errors', async () => {
+    const { world, seller, buyer, sword } = await marketWorld()
+    const instrument = seller.market.instrument({ base: sword, quote: KEI_ASSET, source: [seller.address] })
+    await expect(instrument.sell({ units: '9'.repeat(100_000), unitPrice: 1 })).rejects.toMatchObject({ code: 'bad-amount' })
+    await expect(instrument.sell({ units: 1, unitPrice: '0.0000000000000000001' })).rejects.toMatchObject({ code: 'bad-amount' })
+    await expect(instrument.sell({ units: '340282366920938463463374607431768211455', unitPrice: 2 }))
+      .rejects.toMatchObject({ code: 'bad-amount' })
+
+    const listed = await instrument.sell({ units: 1, unitPrice: 1 })
+    const rawPoison = new TwoFacedNode(world.node)
+    rawPoison.lieAboutSwaps((_address, offers) => offers.map((offer) => offer.hash === listed.hash
+      ? { ...offer, amount: '9'.repeat(4_000) }
+      : offer))
+    const rawObserver = await world.actor('raw-observer', { node: rawPoison })
+    await expect(rawObserver.market.instrument({ base: sword, quote: KEI_ASSET, source: [seller.address] }).snapshot())
+      .rejects.toMatchObject({ code: 'bad-offer' })
+
+    const decimalsPoison = new MutableDecimalsNode(world.node, sword)
+    decimalsPoison.poison = Number.POSITIVE_INFINITY
+    const metaObserver = await world.actor('meta-observer', { node: decimalsPoison })
+    await expect(metaObserver.market.instrument({ base: sword, quote: KEI_ASSET, source: [seller.address] }).snapshot())
+      .rejects.toMatchObject({ code: 'bad-asset-metadata' })
+  }, 30_000)
+
+  test('overflowing aggregate volume is refused before a history or candle can serialize null', async () => {
+    const { seller, sword } = await marketWorld()
+    const coverage = emptyCoverage()
+    const trade = (hash: string): Trade => ({
+      hash,
+      from: seller.address,
+      seller: seller.address,
+      buyer: seller.address,
+      give: { asset: sword, symbol: 'SWORD', name: 'Sword', decimals: 0, amount: Number.MAX_VALUE, raw: '1' },
+      want: { asset: KEI_ASSET, symbol: 'KEI', name: 'Kei', decimals: 18, amount: Number.MAX_VALUE, raw: '1' },
+      price: 1,
+      to: null,
+      expiresAt: null,
+      expired: false,
+      state: 'accepted',
+      mine: false,
+      acceptedBy: seller.address,
+      settledBy: hash,
+      seenAt: 1,
+      settledAt: 1,
+    })
+    const factory = createInstrumentFactory({
+      network: 'mock',
+      now: () => 1,
+      async readBook() {
+        return {
+          asset: sword,
+          quote: KEI_ASSET,
+          asks: [],
+          bids: [],
+          bestAsk: null,
+          bestBid: null,
+          spread: null,
+          other: [],
+          coverage,
+        }
+      },
+      async readTrades() {
+        return withCoverage([trade('A'.repeat(64)), trade('B'.repeat(64))], coverage)
+      },
+      async offer() { throw new Error('not used') },
+      async accept() { throw new Error('not used') },
+    })
+    const instrument = factory.instrument({ base: sword, quote: KEI_ASSET, source: [seller.address] })
+    await expect(instrument.history({ interval: 1 })).rejects.toMatchObject({ code: 'bad-offer' })
+    factory.close()
+  }, 30_000)
+
+  test('instrument acceptance freshly revalidates displayed decimals that bind the exact price ratio', async () => {
+    const { world, seller, buyer, sword } = await marketWorld()
+    const listed = await seller.market.instrument({ base: sword, quote: KEI_ASSET, source: [seller.address] })
+      .sell({ units: 1, unitPrice: 2 })
+    const changing = new MutableDecimalsNode(world.node, sword)
+    const observer = await world.actor('decimal-observer', { node: changing })
+    const instrument = observer.market.instrument({ base: sword, quote: KEI_ASSET, source: [seller.address] })
+    const shown = (await instrument.snapshot()).book.bestAsk!
+    changing.poison = 1
+
+    await expect(instrument.accept(shown)).rejects.toMatchObject({ code: 'offer-changed' })
+    expect((await buyer.market.get(listed.hash))?.state).toBe('open')
+  }, 30_000)
 })

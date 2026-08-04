@@ -26,7 +26,6 @@
  */
 
 import type { AssetId, KeiClient, SwapOffer } from '@keicoin/core'
-import { fromRaw } from '@keicoin/core'
 
 import type { Offer, PriceSummary, Trade, TradeOptions } from './types.js'
 import { assetIdOf, durationMs } from './util.js'
@@ -109,26 +108,13 @@ export async function readTrades(context: MarketContext, options: TradeOptions =
   const trades = await mapConcurrent(
     trimmed,
     async (raw): Promise<Trade> => {
-      const [give, want] = await Promise.all([context.meta(raw.asset), context.meta(raw.wantAsset)])
-      const giveAmount = fromRaw(BigInt(raw.amount), give.decimals)
-      const wantAmount = fromRaw(BigInt(raw.wantAmount), want.decimals)
+      const offer = await context.toOffer(raw)
       return {
-        hash: raw.hash,
-        from: raw.from,
+        ...offer,
         seller: raw.from,
         buyer: String(raw.acceptedBy),
-        give: { ...give, amount: giveAmount, raw: raw.amount },
-        want: { ...want, amount: wantAmount, raw: raw.wantAmount },
-        price: giveAmount === 0 ? 0 : wantAmount / giveAmount,
-        to: raw.counterparty,
-        expiresAt: raw.expiresAt,
-        expired: raw.expiresAt !== null && raw.expiresAt <= context.now(),
         state: 'accepted',
-        mine: raw.from === client.address || raw.acceptedBy === client.address,
-        acceptedBy: raw.acceptedBy,
-        settledBy: raw.settledBy,
-        seenAt: raw.seenAt,
-        settledAt: raw.settledAt,
+        mine: offer.mine || raw.acceptedBy === client.address,
       }
     },
     read,

@@ -52,7 +52,10 @@ records assets, and does not run a matching engine.
 
 Bind the base, quote, and source once. `snapshot()` reads one open-offer page and
 one accepted-trade page per account; ticker, line points, and OHLCV all derive
-from those pages rather than causing another RPC per transform.
+from those pages rather than causing another RPC per transform. The two pages
+share one resolved roster but are independent node reads, not an atomic exchange
+view. `snapshot.asOf` is when both finished; `history.requested.to` is when the
+request began.
 
 ```js
 import { KEI_ASSET } from '@keicoin/core'
@@ -84,6 +87,12 @@ and `complete|partial` axes. The account-chain adapter says
 or exhaustion proof. It labels time and durability as node-local. Those are
 product facts, not documentation a response can lose.
 
+`snapshot.coverage.book` and `.history` keep each page's evidence.
+`snapshot.coverage.combined` is their validated same-roster intersection: an
+account counts as read only if both pages answered. Complementary failures are
+therefore never disguised by taking the smaller of two read counts. Snapshot
+provenance uses that combined coverage.
+
 Name reusable sources with `createAccountChainSource`. Passing a directory or
 array directly is still explicit, but its provenance is marked anonymous and
 its cross-session venue key is `null` rather than inventing an identity from an
@@ -97,7 +106,7 @@ Polling owns its lifecycle too:
 
 ```js
 const stop = swordMarket.subscribe(
-  { every: '2s', staleAfter: '10s', signal },
+  { every: '2s', staleAfter: '10s', readTimeout: '30s', signal },
   update => renderMarket(update),
 )
 
@@ -105,9 +114,13 @@ const stop = swordMarket.subscribe(
 // error/stale retain update.lastGood and report age
 ```
 
-Polls never overlap. Abort and `stop()` suppress later emissions, transient
-failures retain the last good snapshot, and successful instrument `sell`, `bid`,
-or `accept` calls wake the subscription without starting a concurrent read.
+Polls never overlap. Every refresh has a finite deadline (`readTimeout`, 30
+seconds by default) and aborts only that read; timeout and transient failures
+retain the last good snapshot. Age starts at successful refresh completion, not
+request start. Abort and `stop()` suppress later emissions, successful
+instrument `sell`, `bid`, or `accept` calls wake the subscription without
+starting a concurrent read, and an invalid injected clock produces one terminal
+error instead of an unhandled rejection or hot retry loop.
 
 Instrument writes use unambiguous unit prices:
 
@@ -121,8 +134,12 @@ The total is multiplied as exact decimal text once, then the existing ledger
 primitive validates asset precision. `accept()` only takes an instrument book
 level with exact raw terms; it re-reads the offer and checks hash, seller, both
 asset ids, both display quantities, both raw quantities, reservation, state, and
-pair orientation immediately before signing. A catalog is a place to look,
-never permission to spend.
+asset decimal counts (which, with the raw quantities, bind the exact displayed
+ratio), reservation, state, and pair orientation immediately before signing.
+The final check bypasses cached asset metadata. A catalog is a place to look,
+never permission to spend. Decimal inputs, raw quantities, and asset decimal
+counts are bounded before `BigInt`, exponentiation, or padding, and non-finite
+prices are refused rather than becoming JSON `null`.
 
 The low-level `book`, `trades`, `series`, `candles`, `sell`, `bid`, and
 `accept({ expect })` calls remain compatible for callers that need primitives.

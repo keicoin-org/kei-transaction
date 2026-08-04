@@ -336,17 +336,21 @@ renderTicker(snapshot.ticker)
 renderBook(snapshot.book)
 chart.setData(toUnixCandles(snapshot.history))
 
-const stop = swords.subscribe({ every: '2s', signal }, update => render(update))
+const stop = swords.subscribe({ every: '2s', readTimeout: '30s', signal }, update => render(update))
 await swords.sell({ units: 10, unitPrice: 2 })
 await swords.accept(snapshot.book.bestAsk)
 ```
 
 Snapshots are normal serializable objects with exact raw terms, pair identity,
 ticker/book/history, status, completeness, source/time provenance, and an honest
-unsupported-pagination answer for the legacy account-chain adapter. Polls do
-not overlap, retain last-good data through transient failures, and wake after
-instrument writes. Acceptance re-reads chain state and compares every displayed
-term, including raw quantities, before signing.
+unsupported-pagination answer for the legacy account-chain adapter. The book
+and history pages share one roster but are not atomic; `coverage.combined`
+reports the exact accounts that answered both, while `asOf` marks completion.
+Polls do not overlap, have a finite per-refresh deadline, retain last-good data
+through transient failures, measure age from successful completion, and wake
+after instrument writes. Acceptance freshly re-reads chain and asset metadata
+and compares every displayed term, including raw quantities and decimals,
+before signing.
 
 > **Everything below this line ships in `@keicoin/market@0.4.0`**, published 4
 > August 2026. The original directory, `book()`, `series()`, `candles()` and

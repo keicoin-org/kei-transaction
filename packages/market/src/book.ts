@@ -31,7 +31,7 @@ import { KEI_ASSET, fail } from '@keicoin/core'
 import type { MarketContext } from './history.js'
 import type { AccountSource } from './directory.js'
 import type { Offer } from './types.js'
-import { assetIdOf } from './util.js'
+import { assetIdOf, finiteMarketNumber, rawAmountOf } from './util.js'
 import {
   DEFAULT_ACCOUNT_LIMIT,
   accountLimitOf,
@@ -200,7 +200,9 @@ export async function readBook(context: MarketContext, options: BookOptions): Pr
     // A spread compares two sides of one asset. A whole-shelf book has as many
     // assets as it has stalls, so there is nothing to subtract and saying so is
     // better than subtracting two unrelated numbers.
-    spread: asset !== null && bestAsk && bestBid ? bestAsk.unitPrice - bestBid.unitPrice : null,
+    spread: asset !== null && bestAsk && bestBid
+      ? finiteMarketNumber(bestAsk.unitPrice - bestBid.unitPrice, 'Book spread')
+      : null,
     other,
     coverage: walk.coverage,
   }
@@ -255,14 +257,14 @@ function compareScaledBookPrices(a: ScaledBookPrice, b: ScaledBookPrice): number
 function exactBookPrice(raw: SwapOffer, side: BookLevel['side'], offer: Offer): ScaledBookPrice {
   return scaleBookPrice(side === 'ask'
     ? {
-        quoteRaw: BigInt(raw.wantAmount),
-        baseRaw: BigInt(raw.amount),
+        quoteRaw: rawAmountOf(raw.wantAmount, `Offer ${raw.hash} quote quantity`),
+        baseRaw: rawAmountOf(raw.amount, `Offer ${raw.hash} base quantity`),
         quoteDecimals: offer.want.decimals,
         baseDecimals: offer.give.decimals,
       }
     : {
-        quoteRaw: BigInt(raw.amount),
-        baseRaw: BigInt(raw.wantAmount),
+        quoteRaw: rawAmountOf(raw.amount, `Offer ${raw.hash} quote quantity`),
+        baseRaw: rawAmountOf(raw.wantAmount, `Offer ${raw.hash} base quantity`),
         quoteDecimals: offer.give.decimals,
         baseDecimals: offer.want.decimals,
       })
@@ -284,7 +286,7 @@ function toBookLevel(
     side,
     base,
     quote,
-    unitPrice: side === 'ask' ? offer.price : bidPrice(offer),
+    unitPrice: finiteMarketNumber(side === 'ask' ? offer.price : bidPrice(offer), `Offer ${offer.hash} unit price`),
   }
 }
 

@@ -8,7 +8,7 @@
  */
 
 import type { AssetId } from '@keicoin/core'
-import { fail } from '@keicoin/core'
+import { KeiError, fail } from '@keicoin/core'
 
 import type { Book, BookLevel, BookOptions } from './book.js'
 import { isDirectory, type AccountDirectory, type AccountSource } from './directory.js'
@@ -24,11 +24,21 @@ import type {
   Trade,
   TradeOptions,
 } from './types.js'
-import { assetIdOf, durationMs } from './util.js'
-import { accountLimitOf, type Coverage, type Covered, type ReadOptions } from './walk.js'
+import {
+  MAX_ASSET_DECIMALS,
+  MAX_RAW_AMOUNT,
+  MAX_RAW_DIGITS,
+  assetDecimalsOf,
+  assetIdOf,
+  durationMs,
+  finiteMarketNumber,
+  rawAmountOf,
+} from './util.js'
+import { accountLimitOf, mergeCoverage, type Coverage, type Covered, type ReadOptions } from './walk.js'
 
 const DEFAULT_HISTORY_INTERVAL: Duration = '1h'
 const DEFAULT_POLL_INTERVAL: Duration = '2s'
+export const DEFAULT_SUBSCRIPTION_READ_TIMEOUT = 30_000
 const MAX_TIMER_DELAY = 2_147_483_647
 
 /** A named account-chain source. Durable/indexed providers can join this union later. */
@@ -50,8 +60,8 @@ export function createAccountChainSource(options: AccountChainSourceOptions): Ma
   if (id === '') {
     fail('bad-account-source', 'An account-chain market source needs a stable non-empty id and an explicit accounts source.')
   }
-  if (options?.accounts === undefined || options.accounts === null) {
-    fail('no-accounts', `Market data source ${id} needs the accounts whose chains it will read.`)
+  if (!isAccountSource(options?.accounts)) {
+    fail('bad-account-source', `Market data source ${id} needs an address, bounded address array, or AccountDirectory.`)
   }
   return Object.freeze({ kind: 'account-chain' as const, id, accounts: options.accounts })
 }
@@ -197,6 +207,8 @@ export interface InstrumentTicker {
 export interface SnapshotCoverage {
   book: Coverage
   history: Coverage
+  /** Exact same-roster intersection: accounts that answered both independent pages. */
+  combined: Coverage
   complete: boolean
 }
 
@@ -297,6 +309,8 @@ export interface InstrumentUpdate {
 
 export interface InstrumentSubscribeOptions {
   every?: Duration
+  /** Deadline for each refresh. Default 30 seconds; always one finite JS timer. */
+  readTimeout?: Duration
   /** Age at which a failed refresh changes from `error` to `stale`. Default 2x `every`. */
   staleAfter?: Duration
   signal?: AbortSignal
@@ -374,7 +388,8 @@ function createInstrument(
   let closed = false
 
   const history = async (historyOptions: InstrumentHistoryOptions = {}): Promise<InstrumentHistory> => {
-    const asOf = marketTime(context.now)
+    // Validate the clock and abort before a custom source or the network can run.
+    const requestedAt = marketTime(context.now)
     const intervalInput = historyOptions.interval ?? DEFAULT_HISTORY_INTERVAL
     const interval = durationMs(intervalInput, 'history interval')
     const last = historyLastOf(historyOptions.last)
@@ -383,11 +398,8 @@ function createInstrument(
       : accountLimitOf(historyOptions.limit, 'instrument history limit')
     validateCandleBudget(historyOptions.maxCandles)
     const window = historyOptions.range?.window
-    const requested: RequestedRange = {
-      window: window ?? null,
-      from: window === undefined ? null : safeSubtract(asOf, durationMs(window, 'history range window')),
-      to: asOf,
-    }
+    const windowMilliseconds = window === undefined ? undefined : durationMs(window, 'history range window')
+    throwIfPreAborted(historyOptions.signal, 'Reading instrument history')
     const trades = await context.readTrades({
       from: bound.accounts,
       asset: base,
@@ -398,7 +410,12 @@ function createInstrument(
       signal: historyOptions.signal,
       concurrency: historyOptions.concurrency,
     })
-    return historyFromTrades(context, identity, bound, asOf, trades, {
+    const requested: RequestedRange = {
+      window: window ?? null,
+      from: windowMilliseconds === undefined ? null : safeSubtract(requestedAt, windowMilliseconds),
+      to: requestedAt,
+    }
+    return historyFromTrades(context, identity, bound, requestedAt, trades, {
       intervalInput,
       interval,
       requested,
@@ -409,7 +426,8 @@ function createInstrument(
   }
 
   const snapshot = async (snapshotOptions: InstrumentSnapshotOptions = {}): Promise<InstrumentSnapshot> => {
-    const asOf = marketTime(context.now)
+    // Preflight time and every local bound before touching an untrusted source.
+    const requestedAt = marketTime(context.now)
     const depth = depthOf(snapshotOptions.depth)
     const historyOptions = snapshotOptions.history ?? {}
     const intervalInput = historyOptions.interval ?? DEFAULT_HISTORY_INTERVAL
@@ -423,14 +441,11 @@ function createInstrument(
       : accountLimitOf(snapshotOptions.bookLimit, 'instrument book limit')
     validateCandleBudget(historyOptions.maxCandles)
     const window = historyOptions.range?.window
-    const requested: RequestedRange = {
-      window: window ?? null,
-      from: window === undefined ? null : safeSubtract(asOf, durationMs(window, 'history range window')),
-      to: asOf,
-    }
+    const windowMilliseconds = window === undefined ? undefined : durationMs(window, 'history range window')
     const signal = snapshotOptions.signal ?? historyOptions.signal
     const concurrency = snapshotOptions.concurrency ?? historyOptions.concurrency
-    const readSource = coherentSource(bound.accounts)
+    throwIfPreAborted(signal, 'Reading an instrument snapshot')
+    const readSource = sharedSnapshotSource(bound.accounts)
 
     // Open listings and accepted trades are distinct node pages, but line,
     // candles, ticker, and summary all reuse this one accepted-trade page.
@@ -455,6 +470,15 @@ function createInstrument(
       }),
     ])
 
+    // A snapshot is observed when both independent node pages finish, not when
+    // the first request starts. The pages share one roster but are not atomic.
+    const asOf = marketTime(context.now)
+    const requested: RequestedRange = {
+      window: window ?? null,
+      from: windowMilliseconds === undefined ? null : safeSubtract(requestedAt, windowMilliseconds),
+      to: requestedAt,
+    }
+
     const book = bookFrom(rawBook, identity, depth)
     const historical = historyFromTrades(context, identity, bound, asOf, trades, {
       intervalInput,
@@ -464,12 +488,14 @@ function createInstrument(
       fill: historyOptions.fill,
       maxCandles: historyOptions.maxCandles,
     })
+    const combined = mergeCoverage(book.coverage, historical.coverage)
     const coverage = {
       book: book.coverage,
       history: historical.coverage,
-      complete: book.coverage.complete && historical.coverage.complete,
+      combined,
+      complete: combined.complete,
     }
-    const provenance = provenanceOf(context, bound.id, bound.identified, mergeCounts(book.coverage, historical.coverage))
+    const provenance = provenanceOf(context, bound.id, bound.identified, combined)
     const state: DataState = book.state === 'available' || historical.state === 'available' ? 'available' : 'empty'
     const completeness: DataCompleteness = book.completeness === 'complete' && historical.completeness === 'complete'
       ? 'complete'
@@ -504,15 +530,21 @@ function createInstrument(
       const every = pollDuration(subscribeOptions?.every ?? DEFAULT_POLL_INTERVAL, 'subscription every')
       const defaultStale = every > Math.floor(Number.MAX_SAFE_INTEGER / 2) ? Number.MAX_SAFE_INTEGER : every * 2
       const staleAfter = durationMs(subscribeOptions?.staleAfter ?? defaultStale, 'subscription staleAfter')
+      const readTimeout = pollDuration(
+        subscribeOptions?.readTimeout ?? DEFAULT_SUBSCRIPTION_READ_TIMEOUT,
+        'subscription readTimeout',
+      )
       const external = subscribeOptions?.signal
       if (closed || external?.aborted) return () => undefined
 
       const controller = new AbortController()
+      let activeRead: AbortController | undefined
       let stopped = false
       let running = false
       let pending = false
       let timer: ReturnType<typeof setTimeout> | undefined
       let lastGood: InstrumentSnapshot | null = null
+      let lastGoodAt: number | null = null
 
       const emit = (update: InstrumentUpdate): void => {
         if (stopped) return
@@ -528,7 +560,9 @@ function createInstrument(
         if (timer !== undefined) clearTimeout(timer)
         timer = setTimeout(() => {
           timer = undefined
-          void run()
+          // Timer entry points own the promise they create. An unexpected bug
+          // stops this subscription instead of becoming an unhandled rejection.
+          void run().catch(() => stop())
         }, delay)
         ;(timer as unknown as { unref?: () => void }).unref?.()
       }
@@ -539,13 +573,23 @@ function createInstrument(
           return
         }
         running = true
+        const readController = new AbortController()
+        activeRead = readController
+        let timedOut = false
+        const deadline = setTimeout(() => {
+          timedOut = true
+          readController.abort(new KeiError('read-timeout', `Instrument refresh exceeded its ${readTimeout}ms deadline.`))
+        }, readTimeout)
+        ;(deadline as unknown as { unref?: () => void }).unref?.()
         try {
-          const current = await snapshot({ ...(subscribeOptions.snapshot ?? {}), signal: controller.signal })
+          const current = await snapshot({ ...(subscribeOptions.snapshot ?? {}), signal: readController.signal })
           if (stopped) return
+          // snapshot.asOf is the completion boundary of both source pages.
           lastGood = current
+          lastGoodAt = current.asOf
           emit({
             status: 'live',
-            at: marketTime(context.now),
+            at: current.asOf,
             age: 0,
             stale: false,
             snapshot: current,
@@ -554,8 +598,20 @@ function createInstrument(
           })
         } catch (error) {
           if (stopped || controller.signal.aborted) return
-          const at = marketTime(context.now)
-          const age = lastGood === null ? null : Math.max(0, at - lastGood.asOf)
+          const reported = timedOut
+            ? new KeiError('read-timeout', `Instrument refresh exceeded its ${readTimeout}ms deadline; the last-good snapshot was retained.`)
+            : error
+          if (isMarketClockError(reported)) {
+            emitTerminalClockError(reported)
+            return
+          }
+          const clock = tryMarketTime(context.now)
+          if (!clock.ok) {
+            emitTerminalClockError(clock.error)
+            return
+          }
+          const at = clock.value
+          const age = lastGoodAt === null ? null : Math.max(0, at - lastGoodAt)
           const stale = age !== null && age >= staleAfter
           emit({
             status: stale ? 'stale' : 'error',
@@ -564,9 +620,11 @@ function createInstrument(
             stale,
             snapshot: lastGood,
             lastGood,
-            error: readError(error),
+            error: readError(reported),
           })
         } finally {
+          clearTimeout(deadline)
+          if (activeRead === readController) activeRead = undefined
           running = false
           if (!stopped) {
             if (pending) {
@@ -585,11 +643,26 @@ function createInstrument(
         if (stopped) return
         stopped = true
         controller.abort()
+        activeRead?.abort()
         if (timer !== undefined) clearTimeout(timer)
         timer = undefined
         refreshers.delete(refresh)
         stops.delete(stop)
         external?.removeEventListener?.('abort', stop)
+      }
+
+      const emitTerminalClockError = (error: unknown): void => {
+        const at = lastGoodAt ?? lastGood?.asOf ?? 0
+        emit({
+          status: 'error',
+          at,
+          age: lastGoodAt === null ? null : 0,
+          stale: false,
+          snapshot: lastGood,
+          lastGood,
+          error: readError(error),
+        })
+        stop()
       }
 
       stops.add(stop)
@@ -646,7 +719,22 @@ interface BoundSource {
 }
 
 function bindSource(source: AccountSource | MarketDataSource, directId?: string): BoundSource {
-  if (isMarketDataSource(source)) return { id: source.id, identified: true, accounts: source.accounts }
+  if (typeof source === 'object' && source !== null && 'kind' in source) {
+    if ((source as { kind?: unknown }).kind !== 'account-chain') {
+      fail('bad-account-source', `Unknown market data source kind ${String((source as { kind?: unknown }).kind)}. Use createAccountChainSource() or pass an account source directly.`)
+    }
+    if (!isMarketDataSource(source)) {
+      const candidate = source as { id?: unknown; accounts?: unknown }
+      if (typeof candidate.id !== 'string' || candidate.id.trim() === '') {
+        fail('bad-account-source', 'An account-chain market source needs a stable non-empty string id.')
+      }
+      fail('bad-account-source', `Market data source ${candidate.id.trim()} needs an address, bounded address array, or AccountDirectory.`)
+    }
+    return { id: source.id.trim(), identified: true, accounts: source.accounts }
+  }
+  if (!isAccountSource(source)) {
+    fail('bad-account-source', 'An instrument source must be an address, bounded address array, AccountDirectory, or recognized MarketDataSource.')
+  }
   const named = directId === undefined ? inferredSourceId(source) : String(directId).trim()
   if (named === '') fail('bad-account-source', 'An instrument source id cannot be empty.')
   return { id: named, identified: directId !== undefined, accounts: source }
@@ -654,7 +742,12 @@ function bindSource(source: AccountSource | MarketDataSource, directId?: string)
 
 function isMarketDataSource(source: AccountSource | MarketDataSource): source is MarketDataSource {
   return typeof source === 'object' && source !== null && (source as MarketDataSource).kind === 'account-chain'
-    && typeof (source as MarketDataSource).id === 'string' && 'accounts' in source
+    && typeof (source as MarketDataSource).id === 'string' && (source as MarketDataSource).id.trim() !== ''
+    && isAccountSource((source as MarketDataSource).accounts)
+}
+
+function isAccountSource(source: unknown): source is AccountSource {
+  return typeof source === 'string' || Array.isArray(source) || isDirectory(source)
 }
 
 function inferredSourceId(source: AccountSource): string {
@@ -662,8 +755,11 @@ function inferredSourceId(source: AccountSource): string {
   return 'anonymous:account-chain'
 }
 
-/** Resolve a custom directory once so one snapshot cannot span two rosters. */
-function coherentSource(source: AccountSource): AccountSource {
+/**
+ * Resolve a custom directory once so both pages name one roster. The book and
+ * history remain independent node reads and are explicitly not an atomic view.
+ */
+function sharedSnapshotSource(source: AccountSource): AccountSource {
   if (!isDirectory(source)) return source
   const size = source.size
   const dropped = source.dropped
@@ -702,7 +798,12 @@ function historyFromTrades(
     const trade = byHash.get(point.hash)
     if (!trade) fail('bad-offer', `Trade ${point.hash} disappeared while one instrument history was being assembled.`)
     const exact = exactPrice(trade, instrument)
-    return { ...point, side: trade.give.asset === instrument.base ? 'ask' : 'bid', exact }
+    return {
+      ...point,
+      price: finiteMarketNumber(point.price, `Trade ${point.hash} chart price`),
+      side: trade.give.asset === instrument.base ? 'ask' : 'bid',
+      exact,
+    }
   })
   const candles = toCandles(trades, {
     asset: instrument.base,
@@ -711,7 +812,14 @@ function historyFromTrades(
     last: options.last,
     fill: options.fill,
     maxCandles: options.maxCandles,
-  })
+  }).map((candle) => ({
+    ...candle,
+    open: finiteMarketNumber(candle.open, `Candle ${candle.at} open price`),
+    high: finiteMarketNumber(candle.high, `Candle ${candle.at} high price`),
+    low: finiteMarketNumber(candle.low, `Candle ${candle.at} low price`),
+    close: finiteMarketNumber(candle.close, `Candle ${candle.at} close price`),
+    volume: finiteMarketNumber(candle.volume, `Candle ${candle.at} volume`),
+  }))
   const observedTimes = points.flatMap((point) => point.at === null ? [] : [point.at])
   const timed = points.filter((point) => !point.estimated && point.at !== null).length
   const untimed = points.filter((point) => point.at === null).length
@@ -735,14 +843,14 @@ function historyFromTrades(
     points,
     candles: [...candles],
     summary: {
-      first: series.first,
-      last: series.last,
-      change: series.change,
-      changeRatio: series.changeRatio,
-      median: summary?.median ?? null,
-      low: summary?.low ?? null,
-      high: summary?.high ?? null,
-      volume: summary?.volume ?? 0,
+      first: finitePriceOrNull(series.first, 'History first price'),
+      last: finitePriceOrNull(series.last, 'History last price'),
+      change: finitePriceOrNull(series.change, 'History price change'),
+      changeRatio: finitePriceOrNull(series.changeRatio, 'History price change ratio'),
+      median: finitePriceOrNull(summary?.median ?? null, 'History median price'),
+      low: finitePriceOrNull(summary?.low ?? null, 'History low price'),
+      high: finitePriceOrNull(summary?.high ?? null, 'History high price'),
+      volume: finiteMarketNumber(summary?.volume ?? 0, 'History volume'),
       trades: summary?.trades ?? 0,
     },
     ordering: series.ordering,
@@ -760,8 +868,16 @@ function historyFromTrades(
 }
 
 function bookFrom(book: Book, instrument: InstrumentIdentity, depth: number): InstrumentBook {
-  const asks = book.asks.slice(0, depth).map((level) => ({ ...level, exact: exactPrice(level, instrument) }))
-  const bids = book.bids.slice(0, depth).map((level) => ({ ...level, exact: exactPrice(level, instrument) }))
+  const asks = book.asks.slice(0, depth).map((level) => ({
+    ...level,
+    unitPrice: finiteMarketNumber(level.unitPrice, `Offer ${level.hash} ask price`),
+    exact: exactPrice(level, instrument),
+  }))
+  const bids = book.bids.slice(0, depth).map((level) => ({
+    ...level,
+    unitPrice: finiteMarketNumber(level.unitPrice, `Offer ${level.hash} bid price`),
+    exact: exactPrice(level, instrument),
+  }))
   const bestAsk = asks[0] ?? null
   const bestBid = bids[0] ?? null
   return {
@@ -772,7 +888,9 @@ function bookFrom(book: Book, instrument: InstrumentIdentity, depth: number): In
     bids,
     bestAsk,
     bestBid,
-    spread: bestAsk && bestBid ? bestAsk.unitPrice - bestBid.unitPrice : null,
+    spread: bestAsk && bestBid
+      ? finiteMarketNumber(bestAsk.unitPrice - bestBid.unitPrice, 'Instrument spread')
+      : null,
     coverage: book.coverage,
   }
 }
@@ -807,23 +925,18 @@ function exactPrice(offer: Offer, instrument: InstrumentIdentity): ExactPriceRat
   }
   const baseLeg = ask ? offer.give : offer.want
   const quoteLeg = ask ? offer.want : offer.give
-  const baseRaw = rawQuantity(baseLeg.raw, offer.hash, 'base')
-  const quoteRaw = rawQuantity(quoteLeg.raw, offer.hash, 'quote')
+  const baseRaw = rawAmountOf(baseLeg.raw, `Offer ${offer.hash} base quantity`)
+  const quoteRaw = rawAmountOf(quoteLeg.raw, `Offer ${offer.hash} quote quantity`)
+  const baseDecimals = assetDecimalsOf(baseLeg.decimals, `Offer ${offer.hash} base decimals`)
+  const quoteDecimals = assetDecimalsOf(quoteLeg.decimals, `Offer ${offer.hash} quote decimals`)
   return {
-    baseRaw,
-    quoteRaw,
-    baseDecimals: baseLeg.decimals,
-    quoteDecimals: quoteLeg.decimals,
-    numerator: (BigInt(quoteRaw) * 10n ** BigInt(baseLeg.decimals)).toString(),
-    denominator: (BigInt(baseRaw) * 10n ** BigInt(quoteLeg.decimals)).toString(),
+    baseRaw: baseRaw.toString(),
+    quoteRaw: quoteRaw.toString(),
+    baseDecimals,
+    quoteDecimals,
+    numerator: (quoteRaw * 10n ** BigInt(baseDecimals)).toString(),
+    denominator: (baseRaw * 10n ** BigInt(quoteDecimals)).toString(),
   }
-}
-
-function rawQuantity(raw: string | undefined, hash: string, leg: string): string {
-  if (typeof raw !== 'string' || !/^\d+$/.test(raw) || BigInt(raw) <= 0n) {
-    fail('bad-offer', `Offer ${hash} has no valid exact raw ${leg} quantity, so it cannot enter an instrument snapshot or be accepted safely.`)
-  }
-  return raw
 }
 
 function assertInstrumentLevel(instrument: InstrumentIdentity, level: InstrumentBookLevel): void {
@@ -873,10 +986,6 @@ function paginationLimitation(): PaginationLimitation {
   }
 }
 
-function mergeCounts(a: Coverage, b: Coverage): Pick<Coverage, 'asked' | 'read'> {
-  return { asked: Math.max(a.asked, b.asked), read: Math.min(a.read, b.read) }
-}
-
 function depthOf(requested: number | undefined): number {
   const depth = requested ?? 20
   if (!Number.isSafeInteger(depth) || depth < 1) {
@@ -901,11 +1010,38 @@ function validateCandleBudget(requested: number | undefined): void {
 }
 
 function marketTime(now: () => number): number {
-  const at = now()
+  let at: number
+  try {
+    at = now()
+  } catch (error) {
+    fail('bad-market-time', `The market clock threw instead of returning a safe whole-number millisecond time: ${error instanceof Error ? error.message : String(error)}.`)
+  }
   if (!Number.isSafeInteger(at)) {
     fail('bad-market-time', `The market clock must return a safe whole-number millisecond time; got ${String(at)}.`)
   }
   return at
+}
+
+function tryMarketTime(now: () => number): { ok: true; value: number } | { ok: false; error: unknown } {
+  try {
+    return { ok: true, value: marketTime(now) }
+  } catch (error) {
+    return { ok: false, error }
+  }
+}
+
+function isMarketClockError(error: unknown): boolean {
+  return error instanceof KeiError && error.code === 'bad-market-time'
+}
+
+function throwIfPreAborted(signal: AbortSignal | undefined, label: string): void {
+  if (signal?.aborted === true) {
+    fail('read-aborted', `${label} was stopped before its account source or the network was touched.`)
+  }
+}
+
+function finitePriceOrNull(value: number | null, label: string): number | null {
+  return value === null ? null : finiteMarketNumber(value, label)
 }
 
 function safeSubtract(at: number, duration: number): number {
@@ -944,6 +1080,9 @@ function decimalProduct(units: number | string, unitPrice: number | string): str
   const right = decimalParts(unitPrice, 'unitPrice')
   const digits = left.digits * right.digits
   if (digits <= 0n) fail('bad-amount', 'Instrument units and unitPrice must both be positive.')
+  if (digits > MAX_RAW_AMOUNT) {
+    fail('bad-amount', `Instrument units multiplied by unitPrice exceed the ledger's unsigned 128-bit amount bound.`)
+  }
   const scale = left.scale + right.scale
   const padded = digits.toString().padStart(scale + 1, '0')
   if (scale === 0) return padded
@@ -954,13 +1093,24 @@ function decimalProduct(units: number | string, unitPrice: number | string): str
 
 function decimalParts(value: number | string, label: string): DecimalParts {
   const text = typeof value === 'number' ? expandNumber(value, label) : String(value).trim()
+  if (text.length > MAX_RAW_DIGITS + MAX_ASSET_DECIMALS + 2) {
+    fail('bad-amount', `${label} is too long. Use at most ${MAX_RAW_DIGITS} significant digits and ${MAX_ASSET_DECIMALS} decimal places.`)
+  }
   const match = /^\+?(\d*)(?:\.(\d*))?$/.exec(text)
   if (!match || (match[1] === '' && (match[2] ?? '') === '')) {
     fail('bad-amount', `${label} must be a positive decimal number like 1.5; got "${text}".`)
   }
   const whole = match[1] === '' ? '0' : match[1] as string
   const fraction = match[2] ?? ''
-  const digits = BigInt((whole + fraction) || '0')
+  if (fraction.length > MAX_ASSET_DECIMALS) {
+    fail('bad-amount', `${label} has ${fraction.length} decimal places; Kei assets support at most ${MAX_ASSET_DECIMALS}.`)
+  }
+  const digitText = (whole + fraction) || '0'
+  const significant = digitText.replace(/^0+/, '') || '0'
+  if (significant.length > MAX_RAW_DIGITS) {
+    fail('bad-amount', `${label} has more than ${MAX_RAW_DIGITS} significant digits and cannot fit a ledger amount.`)
+  }
+  const digits = BigInt(digitText)
   if (digits <= 0n) fail('bad-amount', `${label} must be greater than zero; got ${text}.`)
   return { digits, scale: fraction.length }
 }

@@ -32,6 +32,8 @@ export type MarketErrorCode =
   | 'no-such-asset'
   /** A node returned metadata for a different public asset id. Nothing was cached or signed. */
   | 'asset-info-mismatch'
+  /** Asset metadata carried an unsafe or unsupported decimal count. */
+  | 'bad-asset-metadata'
   /** An amount or a price that is not a positive number. */
   | 'bad-amount'
   /** `expiresIn` and `expiresAt` together, or an `expiresAt` that is not a time. */
@@ -92,11 +94,14 @@ export type MarketErrorCode =
   | 'offer-failed'
   /** The read was stopped through its `signal`. Nothing was signed. */
   | 'read-aborted'
+  /** One bounded instrument refresh exceeded its configured deadline. */
+  | 'read-timeout'
 
 const CODES = new Set<string>([
   'bad-asset',
   'no-such-asset',
   'asset-info-mismatch',
+  'bad-asset-metadata',
   'bad-amount',
   'bad-expiry',
   'bad-duration',
@@ -127,6 +132,7 @@ const CODES = new Set<string>([
   'offer-changed',
   'offer-failed',
   'read-aborted',
+  'read-timeout',
 ])
 
 /**

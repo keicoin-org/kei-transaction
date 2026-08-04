@@ -5,6 +5,7 @@ export type { LegMeta, MarketContext } from './history.js'
 export { assetIdOf, durationMs } from './util.js'
 
 export {
+  DEFAULT_SUBSCRIPTION_READ_TIMEOUT,
   createAccountChainSource,
   toUnixCandles,
   toUnixLine,

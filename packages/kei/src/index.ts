@@ -141,6 +141,7 @@ export {
   classify,
   coverageOf,
   createDirectory,
+  DEFAULT_SUBSCRIPTION_READ_TIMEOUT,
   createAccountChainSource,
   createMarket,
   durationMs,
