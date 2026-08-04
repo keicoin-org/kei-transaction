@@ -355,6 +355,21 @@ describe('price series — consensus numbers, advisory order', () => {
     expect((error as Error).message).toContain('18014398509481983 candles')
   })
 
+  test('negative advisory times use mathematical-floor candle buckets', () => {
+    for (const fill of [false, true]) {
+      const candles = toCandles([sale('NEGATIVE', 1, 5, -1)], {
+        asset: 'SWORD',
+        quote: KEI_ASSET,
+        every: 2,
+        fill,
+      })
+
+      expect(candles).toHaveLength(1)
+      expect(candles[0]?.at).toBe(-2)
+      expect(Number.isSafeInteger(candles[0]?.at)).toBe(true)
+    }
+  })
+
   test('negative extreme times cannot form unsafe sparse or single filled buckets', () => {
     for (const fill of [false, true]) {
       const error = caught(() =>
@@ -393,6 +408,41 @@ describe('price series — consensus numbers, advisory order', () => {
     })
 
     const candles = toCandles([unrelated, sale('SWORD-TIME', 1, 7, 2)], {
+      asset: 'SWORD',
+      quote: KEI_ASSET,
+      every: 2,
+      fill: true,
+    })
+
+    expect(candles).toHaveLength(1)
+    expect(candles[0]?.at).toBe(2)
+  })
+
+  test('matched malformed times are refused before ordering or last can hide them', () => {
+    for (const malformed of [Number.NaN, Number.MIN_SAFE_INTEGER]) {
+      const error = caught(() =>
+        toCandles([sale('BAD-TIME', 1, 5, malformed), sale('VALID-TIME', 1, 7, 0)], {
+          asset: 'SWORD',
+          quote: KEI_ASSET,
+          every: 2,
+          fill: false,
+          last: 1,
+        }),
+      )
+      expect(error).toMatchObject({ code: 'bad-candle-time' })
+    }
+  })
+
+  test('a malformed trade in another quote cannot poison the requested pair', () => {
+    const unrelated = trade({
+      hash: 'UNRELATED-QUOTE-TIME',
+      give: leg('SWORD', 1),
+      want: leg('GOLD', 5),
+      settledAt: Number.NaN,
+      seenAt: Number.NaN,
+    })
+
+    const candles = toCandles([unrelated, sale('KEI-TIME', 1, 7, 2)], {
       asset: 'SWORD',
       quote: KEI_ASSET,
       every: 2,

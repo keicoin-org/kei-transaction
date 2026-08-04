@@ -122,6 +122,15 @@ const ORDERING_NOTE =
  * a chart and a table off one walk instead of two.
  */
 export function toSeries(trades: readonly Trade[], options: SeriesOptions): Series {
+  return seriesOf(trades, options)
+}
+
+/** Build a series, optionally checking matched points before ordering or slicing. */
+function seriesOf(
+  trades: readonly Trade[],
+  options: SeriesOptions,
+  validateAt?: (at: number | null) => void,
+): Series {
   const asset = assetIdOf(options.asset)
   const quote = options.quote === undefined ? undefined : assetIdOf(options.quote)
 
@@ -136,6 +145,8 @@ export function toSeries(trades: readonly Trade[], options: SeriesOptions): Seri
     const paid = sells ? trade.want.amount : trade.give.amount
     if (units <= 0) continue
 
+    const at = trade.settledAt ?? trade.seenAt
+    validateAt?.(at)
     matched.push(trade)
     points.push({
       price: paid / units,
@@ -144,7 +155,7 @@ export function toSeries(trades: readonly Trade[], options: SeriesOptions): Seri
       hash: trade.hash,
       seller: trade.seller,
       buyer: trade.buyer,
-      at: trade.settledAt ?? trade.seenAt,
+      at,
       estimated: trade.settledAt === null,
     })
   }
@@ -339,7 +350,12 @@ export function toCandles(trades: readonly Trade[], options: CandleOptions): Can
   // budget is a refusal about the call rather than about the data behind it.
   const every = candleWidthOf(options.every)
   const budget = candleBudgetOf(options.maxCandles)
-  const series = toSeries(trades, options)
+  // Validate only trades that contribute to this asset/quote, but do it before
+  // advisory ordering and `last` can let malformed data influence the result
+  // and then disappear from the kept slice.
+  const series = seriesOf(trades, options, (at) => {
+    if (at !== null) candleStartOf(at, every)
+  })
   const carried = coverageOf(trades)
   if (series.points.length === 0) {
     const empty: Candle[] = []
