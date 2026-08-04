@@ -1,25 +1,27 @@
 {
-  "name": "@keicoin/market",
-  "version": "0.2.0",
-  "description": "The market for Kei: offers that are blocks, atomic settlement, bounded multi-account books, and price history read from the chain.",
+  "name": "@keicoin/player-economy",
+  "version": "0.1.0",
+  "description": "Noncustodial player shops for Kei: list, buy, cancel, and gift through the player's own wallet, with honest pending state and chart-ready history.",
   "license": "MIT",
   "author": "Sano",
-  "homepage": "https://keicoin.org#market",
+  "homepage": "https://keicoin.org#player-economy",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/keicoin-org/kei-transaction.git",
-    "directory": "packages/market"
+    "directory": "packages/player-economy"
   },
   "bugs": {
     "url": "https://github.com/keicoin-org/kei-transaction/issues"
   },
   "keywords": [
     "kei",
-    "market",
+    "player-economy",
+    "player-shop",
     "auction-house",
-    "atomic-swap",
     "trading",
-    "price-history"
+    "gifting",
+    "atomic-swap",
+    "noncustodial"
   ],
   "type": "module",
   "exports": {
@@ -41,6 +43,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@keicoin/core": "^0.4.0"
+    "@keicoin/core": "^0.4.0",
+    "@keicoin/market": "^0.2.0"
   }
 }

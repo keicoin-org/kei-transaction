@@ -8,6 +8,9 @@
 
 import type { AssetId, SwapState } from '@keicoin/core'
 
+import type { AccountSource } from './directory.js'
+import type { Expectation } from './lifecycle.js'
+
 export type OfferState = SwapState
 
 /** One side of a trade, named the way a developer would name it. */
@@ -120,13 +123,26 @@ export interface OfferOptions extends ExpiryOptions {
   to?: string
 }
 
+export interface AcceptOptions {
+  /**
+   * The terms your view rendered, checked against the chain immediately before
+   * the accept block is signed. Every field given is checked; fields left out
+   * are not. See `lifecycle.ts` for why matching price and quantity alone is
+   * not enough.
+   */
+  expect?: Expectation
+}
+
 export interface ListOptions {
   /**
    * Whose chains to read. Required, and it is the honest shape: an offer lives
    * on its author's chain, so "every listing on the network" is an indexer, and
    * §9.4 says Kei does not provide one.
+   *
+   * One address, a list, or an `AccountDirectory` — which is the bounded roster
+   * every application using this package had to write for itself.
    */
-  from: string | readonly string[]
+  from: AccountSource
   /** Only offers giving this asset. */
   asset?: AssetId | { id: AssetId }
   /** Only offers wanting this asset. */
@@ -146,8 +162,8 @@ export interface MineOptions {
 }
 
 export interface TradeOptions {
-  /** Whose chains to read. Defaults to this wallet's own trades. */
-  from?: string | readonly string[]
+  /** Whose chains to read, or a directory. Defaults to this wallet's own trades. */
+  from?: AccountSource
   /** Only trades in this asset, on either leg. */
   asset?: AssetId | { id: AssetId }
   /** Only trades against this asset. Default Kei. */

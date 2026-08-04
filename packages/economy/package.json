@@ -45,6 +45,6 @@
   "dependencies": {
     "@keicoin/claims": "^0.4.0",
     "@keicoin/core": "^0.4.0",
-    "@keicoin/market": "^0.1.1"
+    "@keicoin/market": "^0.2.0"
   }
 }

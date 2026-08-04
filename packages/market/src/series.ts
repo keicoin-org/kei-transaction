@@ -1,0 +1,320 @@
+/**
+ * Prices against time, for something that draws them.
+ *
+ * A chart wants an ordered list. A block-lattice cannot give it one, and the
+ * gap between those two sentences is the whole content of this file — so read
+ * the honesty section before shipping anything built on it.
+ *
+ * ## What is consensus and what is not
+ *
+ * **Consensus, identical on every node, forever:** that a trade happened, who
+ * the two parties were, which assets moved, how many units, and therefore the
+ * price. Every statistic derived from those numbers alone — median, low, high,
+ * volume, count, and the open/high/low/close *of a given set of trades* — is a
+ * fact anybody can recompute and get the same answer.
+ *
+ * **Not consensus:** *when*. The block-lattice has no clock (SPEC §5.5), and
+ * that is deliberate — every deadline in the design was replaced by a signed act
+ * by the party whose asset was at stake, precisely so that no block type has to
+ * carry a time anybody has to agree on. `settledAt` and `seenAt` are the node's
+ * own first-seen times, which is what Nano's `local_timestamp` is: two nodes
+ * will disagree, and a restarted node forgets. They are good enough to hide last
+ * month's listings and never good enough to settle a dispute.
+ *
+ * **Ordering is the consequence.** A settled trade is an offer block on one
+ * chain and an accept block on another; `height` orders blocks *within* one
+ * chain and says nothing across two. So there is no total order over trades, and
+ * a series has to pick one. This picks advisory time, says so in the returned
+ * value rather than in a comment, and counts the points that had to fall back —
+ * because a chart drawn from a node that forgot half its timestamps should be
+ * able to admit it.
+ *
+ * A candle is the same bargain with a bucket around it. The OHLC of a bucket is
+ * exact for the trades in that bucket; *which* trades are in it is advisory.
+ */
+
+import type { AssetId } from '@keicoin/core'
+
+import type { Duration, PriceSummary, Trade } from './types.js'
+import { assetIdOf, durationMs } from './util.js'
+import { summarise } from './history.js'
+
+/** One settled trade, reduced to the numbers a chart needs. */
+export interface PricePoint {
+  /** Position in this series, oldest first. Stable for a given set of trades. */
+  index: number
+  /** Quote units per one unit of the asset. Consensus-derived. */
+  price: number
+  /** Units of the asset that changed hands. Consensus-derived. */
+  units: number
+  /** What was paid, in quote units. Consensus-derived. */
+  paid: number
+  /** The offer block's hash, which is the trade's id. */
+  hash: string
+  seller: string
+  buyer: string
+  /**
+   * Node-local advisory time in ms, or null when the node has no time for it.
+   * **Not consensus** — see the header. Never compare across nodes.
+   */
+  at: number | null
+  /** True when `at` came from `seenAt` because `settledAt` was missing. */
+  estimated: boolean
+}
+
+/** How a series was put in order, and what that order is worth. */
+export interface Ordering {
+  /** The only ordering available across two chains, and it is advisory. */
+  by: 'advisory-time'
+  /** True when every point carried a settlement time of its own. */
+  exact: boolean
+  /** Points whose time came from `seenAt`, or from nothing at all. */
+  estimated: number
+  note: string
+}
+
+export interface Series {
+  asset: AssetId
+  quote: AssetId
+  /** Oldest first, which is left-to-right on a chart. */
+  points: PricePoint[]
+  ordering: Ordering
+  /** The oldest price in the series, or null when it is empty. */
+  first: number | null
+  /** The newest. */
+  last: number | null
+  /** `last - first`. Null on an empty series; zero on a series of one. */
+  change: number | null
+  /** `change / first`. Null when `first` is zero or the series is empty. */
+  changeRatio: number | null
+  /** The same numbers `market.price()` gives, over exactly these trades. */
+  summary: PriceSummary | null
+}
+
+export interface SeriesOptions {
+  /** The asset the series is about. */
+  asset: AssetId | { id: AssetId }
+  /** What it is priced in. Default Kei. */
+  quote?: AssetId | { id: AssetId }
+  /** Keep only the most recent n points, after ordering. */
+  last?: number
+}
+
+const ORDERING_NOTE =
+  'Ordered by the node\'s own first-seen time, which is not consensus — the block-lattice has no clock (SPEC §5.5). Prices, units, and every statistic over them are consensus-derived and identical everywhere; the order and the buckets are this node\'s opinion.'
+
+/**
+ * Turn settled trades into an ordered price series.
+ *
+ * Pure: it takes the trades `market.trades()` already read and does arithmetic.
+ * Nothing here touches the network, so a view that already has the trades draws
+ * a chart and a table off one walk instead of two.
+ */
+export function toSeries(trades: readonly Trade[], options: SeriesOptions): Series {
+  const asset = assetIdOf(options.asset)
+  const quote = options.quote === undefined ? undefined : assetIdOf(options.quote)
+
+  const matched: Trade[] = []
+  const points: Omit<PricePoint, 'index'>[] = []
+
+  for (const trade of trades) {
+    const sells = trade.give.asset === asset && (quote === undefined || trade.want.asset === quote)
+    const buys = trade.want.asset === asset && (quote === undefined || trade.give.asset === quote)
+    if (!sells && !buys) continue
+    const units = sells ? trade.give.amount : trade.want.amount
+    const paid = sells ? trade.want.amount : trade.give.amount
+    if (units <= 0) continue
+
+    matched.push(trade)
+    points.push({
+      price: paid / units,
+      units,
+      paid,
+      hash: trade.hash,
+      seller: trade.seller,
+      buyer: trade.buyer,
+      at: trade.settledAt ?? trade.seenAt,
+      estimated: trade.settledAt === null,
+    })
+  }
+
+  // Oldest first — a chart reads left to right, and `market.trades()` answers
+  // newest first because a list reads top down. The hash breaks ties so two
+  // trades the node saw in the same millisecond at least draw in a stable order.
+  points.sort((a, b) => (a.at ?? 0) - (b.at ?? 0) || a.hash.localeCompare(b.hash))
+  const kept = options.last === undefined ? points : points.slice(Math.max(0, points.length - options.last))
+
+  const ordered: PricePoint[] = kept.map((point, index) => ({ ...point, index }))
+  const first = ordered[0]?.price ?? null
+  const last = ordered[ordered.length - 1]?.price ?? null
+  const estimated = ordered.filter((point) => point.estimated).length
+
+  const keptHashes = new Set(ordered.map((point) => point.hash))
+  const summary = summarise(
+    matched.filter((trade) => keptHashes.has(trade.hash)),
+    asset,
+    quote ?? (ordered.length > 0 ? quoteOf(matched, asset) : asset),
+  )
+
+  return {
+    asset,
+    quote: quote ?? summary?.quote ?? asset,
+    points: ordered,
+    ordering: {
+      by: 'advisory-time',
+      exact: estimated === 0,
+      estimated,
+      note: ORDERING_NOTE,
+    },
+    first,
+    last,
+    change: first === null || last === null ? null : last - first,
+    changeRatio: first === null || last === null || first === 0 ? null : (last - first) / first,
+    summary,
+  }
+}
+
+export interface Candle {
+  /** Bucket start, in node-local advisory ms. Not consensus — see the header. */
+  at: number
+  /** Bucket width in ms, so a renderer needs no second argument. */
+  every: number
+  open: number
+  high: number
+  low: number
+  close: number
+  /** Units of the asset that changed hands in this bucket. */
+  volume: number
+  trades: number
+}
+
+export interface CandleOptions extends SeriesOptions {
+  /** Bucket width: `'1h'`, `'15m'`, `'7d'`, or a number of milliseconds. */
+  every: Duration
+  /** Emit empty buckets between trades, so the x-axis is even. Default false. */
+  fill?: boolean
+}
+
+/**
+ * OHLCV buckets.
+ *
+ * The values inside a bucket are exact. Which trades land in which bucket is
+ * advisory, for the reason in the header, so a candle chart here is an honest
+ * summary of what the node saw rather than a market data feed. `fill` exists
+ * because an uneven x-axis reads as missing data; empty buckets carry the
+ * previous close on all four prices and zero volume, which is what "nothing
+ * traded" actually looks like.
+ */
+export function toCandles(trades: readonly Trade[], options: CandleOptions): Candle[] {
+  const every = durationMs(options.every, 'every')
+  const series = toSeries(trades, options)
+  if (series.points.length === 0) return []
+
+  const buckets = new Map<number, Candle>()
+  for (const point of series.points) {
+    // A point with no time at all cannot be bucketed, and putting it at the
+    // epoch would draw a candle in 1970. Dropping it is the honest loss.
+    if (point.at === null) continue
+    const at = Math.floor(point.at / every) * every
+    const bucket = buckets.get(at)
+    if (!bucket) {
+      buckets.set(at, {
+        at,
+        every,
+        open: point.price,
+        high: point.price,
+        low: point.price,
+        close: point.price,
+        volume: point.units,
+        trades: 1,
+      })
+      continue
+    }
+    bucket.high = Math.max(bucket.high, point.price)
+    bucket.low = Math.min(bucket.low, point.price)
+    bucket.close = point.price
+    bucket.volume += point.units
+    bucket.trades += 1
+  }
+
+  const filled = [...buckets.values()].sort((a, b) => a.at - b.at)
+  if (options.fill !== true || filled.length < 2) return filled
+
+  const even: Candle[] = []
+  for (const candle of filled) {
+    const previous = even[even.length - 1]
+    if (previous) {
+      for (let at = previous.at + every; at < candle.at; at += every) {
+        even.push({
+          at,
+          every,
+          open: previous.close,
+          high: previous.close,
+          low: previous.close,
+          close: previous.close,
+          volume: 0,
+          trades: 0,
+        })
+      }
+    }
+    even.push(candle)
+  }
+  return even
+}
+
+export interface PriceIndexOptions {
+  /** What everything is priced in. Default: whatever each trade's other leg was. */
+  quote?: AssetId | { id: AssetId }
+  /** Only these assets. Default: every asset that appears in the trades. */
+  assets?: Iterable<AssetId | { id: AssetId }>
+}
+
+/**
+ * Every asset's price summary, out of one walk.
+ *
+ * `market.price()` answers for one asset, and a hall with fifteen archetypes on
+ * the board asking it fifteen times re-reads the same chains fifteen times. The
+ * trades are the same set either way, so this groups them once — which is
+ * exactly the loop `world-of-wonder` wrote by hand in its auction house, for
+ * exactly this reason.
+ */
+export function priceIndex(
+  trades: readonly Trade[],
+  options: PriceIndexOptions = {},
+): Map<AssetId, PriceSummary> {
+  const quote = options.quote === undefined ? undefined : assetIdOf(options.quote)
+  const only =
+    options.assets === undefined ? undefined : new Set([...options.assets].map((asset) => assetIdOf(asset)))
+
+  const grouped = new Map<AssetId, Trade[]>()
+  for (const trade of trades) {
+    for (const [asset, against] of [
+      [trade.give.asset, trade.want.asset],
+      [trade.want.asset, trade.give.asset],
+    ] as const) {
+      if (asset === against) continue
+      if (quote !== undefined && against !== quote) continue
+      if (only !== undefined && !only.has(asset)) continue
+      const list = grouped.get(asset)
+      if (list) list.push(trade)
+      else grouped.set(asset, [trade])
+    }
+  }
+
+  const index = new Map<AssetId, PriceSummary>()
+  for (const [asset, matched] of grouped) {
+    const against = quote ?? quoteOf(matched, asset)
+    const summary = summarise(matched, asset, against)
+    if (summary) index.set(asset, summary)
+  }
+  return index
+}
+
+/** The other leg of the first trade that names this asset. */
+function quoteOf(trades: readonly Trade[], asset: AssetId): AssetId {
+  for (const trade of trades) {
+    if (trade.give.asset === asset) return trade.want.asset
+    if (trade.want.asset === asset) return trade.give.asset
+  }
+  return asset
+}
