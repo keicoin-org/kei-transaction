@@ -29,7 +29,7 @@ import {
   normalizeSeed,
   randomSeed,
 } from '@keicoin/core'
-import { createClaims, type ClaimsApi } from '@keicoin/claims'
+import { createClaims, type ClaimStore, type DurableClaimsApi } from '@keicoin/claims'
 import {
   createIssuerItems,
   createPlayerItems,
@@ -98,6 +98,12 @@ export interface StartOptions {
   autoReceive?: boolean
   /** Claim entitlements in the background as proofs arrive. Default true. */
   autoClaim?: boolean
+  /**
+   * Where this wallet retains off-chain claim proofs. The default is memory,
+   * preserving existing behaviour; inject a durable adapter for reload recovery.
+   * The store receives public bundle metadata, never this wallet's seed or key.
+   */
+  claimStore?: ClaimStore
   /**
    * Cancel this wallet's own expired offers in the background (SPEC §9.3).
    * Default true — an expiry is advisory, so a cancel is the only thing that
@@ -194,7 +200,7 @@ export class Kei {
   readonly role: Role
   readonly token: TokenNamespace
   readonly items: ItemsNamespace
-  readonly claims: ClaimsApi
+  readonly claims: DurableClaimsApi
   readonly wallet: WalletApi
   /** Offers, atomic settlement, and price history read from the chain (SPEC §9). */
   readonly market: MarketApi
@@ -227,6 +233,7 @@ export class Kei {
     options: {
       uploader?: IpfsUploader
       autoClaim?: boolean
+      claimStore?: ClaimStore
       autoCancelExpired?: boolean
       recipes?: Iterable<Recipe | RecipeSpec>
       tables?: Iterable<DropTable | DropTableSpec>
@@ -238,7 +245,10 @@ export class Kei {
     this.role = client.role
     this.custody = custody
 
-    this.claims = createClaims(client, options.autoClaim === false ? { autoClaim: false } : {})
+    this.claims = createClaims(client, {
+      ...(options.autoClaim === false ? { autoClaim: false } : {}),
+      ...(options.claimStore === undefined ? {} : { store: options.claimStore }),
+    })
     this.wallet = createWallet(client, { claims: this.claims })
     this.market = createMarket(
       client,
@@ -337,12 +347,16 @@ export class Kei {
     const kei = new Kei(client, custody, {
       ...(options.uploader === undefined ? {} : { uploader: options.uploader }),
       ...(options.autoClaim === undefined ? {} : { autoClaim: options.autoClaim }),
+      ...(options.claimStore === undefined ? {} : { claimStore: options.claimStore }),
       ...(options.autoCancelExpired === undefined ? {} : { autoCancelExpired: options.autoCancelExpired }),
       ...(options.recipes === undefined ? {} : { recipes: options.recipes }),
       ...(options.tables === undefined ? {} : { tables: options.tables }),
       ...(options.shop === undefined ? {} : { shop: options.shop }),
     })
     await client.start(options.autoReceive === false ? { autoReceive: false } : {})
+    // Proofs are hydrated only after the client is ready to reconcile the
+    // ledger. A transient retry failure is retained and reported by claims.
+    await kei.claims.ready()
     return kei
   }
 
