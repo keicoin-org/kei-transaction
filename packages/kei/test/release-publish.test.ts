@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -15,6 +15,11 @@ const packageDirectories = [
   'player-economy',
   'kei',
 ]
+
+// Bun 1.3.0 applies this file default to hooks; its runtime does not yet accept
+// the per-hook timeout argument described by the newer installed type package.
+// Each test below retains its tighter explicit 30-second budget.
+setDefaultTimeout(60_000)
 
 function shellPath(path: string): string {
   const normalized = path.replaceAll('\\', '/')
@@ -59,6 +64,9 @@ describe('publish shell safety gate', () => {
   let log: string
   let shell: string
 
+  // This fixture creates, clones, and pushes local Git repositories. Windows
+  // runners can exceed Bun's independent five-second hook default under load,
+  // so budget the hooks themselves rather than masking it with test timeouts.
   beforeAll(async () => {
     root = await mkdtemp(join(tmpdir(), 'kei-publish-'))
     seed = join(root, 'seed')
@@ -177,7 +185,7 @@ exit 0
     expect(result.exitCode).not.toBe(0)
     expect(result.output).toContain('must exactly match the freshly fetched origin/master')
     expect(await npmCalls()).toBe('')
-  }, 60_000)
+  }, 30_000)
 
   test('authenticates before publishing from the exact fetched default-branch commit', async () => {
     await git(repository, 'merge', '--ff-only', 'origin/master')
@@ -195,7 +203,7 @@ exit 0
     const firstPublish = calls.findIndex((call) => call.startsWith('publish'))
     expect(whoami).toBeGreaterThanOrEqual(0)
     expect(firstPublish).toBeGreaterThan(whoami)
-  }, 60_000)
+  }, 30_000)
 
   test('skips only a registry artifact with the same reviewed integrity', async () => {
     let result = await publish({ PUBLISH_TEST_REGISTRY_INTEGRITY: 'sha512-different' })
@@ -207,5 +215,5 @@ exit 0
     expect(result.exitCode, result.output).toBe(0)
     expect(result.output).toContain('artifact matches; skipping')
     expect(await npmCalls()).not.toContain('publish')
-  }, 60_000)
+  }, 30_000)
 })
