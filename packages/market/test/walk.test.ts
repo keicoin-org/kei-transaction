@@ -291,6 +291,11 @@ describe('walkAccounts — coverage is the honest half', () => {
       complete: false,
     })
   })
+
+  test('two incomplete reads with unnamed deficits refuse an unknowable intersection', () => {
+    const partial = { ...emptyCoverage(), asked: 2, read: 1, complete: false }
+    expect(() => mergeCoverage(partial, partial)).toThrow(/unnamed unread accounts/)
+  })
 })
 
 describe('walkAccounts — a read that can be stopped', () => {

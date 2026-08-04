@@ -189,9 +189,10 @@ export function withCoverageOn<T extends object, C extends Coverage | null>(
  *
  * `read` counts accounts that answered every part. Named failures make that
  * intersection exact even when different calls missed different accounts.
- * A valid hand-built coverage may omit names for some unread accounts; those
- * anonymous deficits are treated pessimistically as distinct misses rather
- * than silently upgrading the coverage.
+ * A valid hand-built coverage may omit names for some unread accounts. One
+ * such incomplete part can still be merged with complete parts, but two
+ * incomplete parts are ambiguous without identities and are rejected rather
+ * than silently upgrading or undercounting the intersection.
  *
  * Used where a single read has to touch two RPCs — "my trades" reads this
  * wallet's offers *and* scans its history for the accepts it wrote — because a
@@ -216,6 +217,13 @@ export function mergeCoverage(...parts: readonly (Coverage | null | undefined)[]
     const namedInPart = new Set(part.failed.map((failure) => failure.account)).size
     return total + Math.max(0, part.asked - part.read - namedInPart)
   }, 0)
+  const incompleteParts = present.filter((part) => part.read < asked)
+  if (unnamedFailures > 0 && incompleteParts.length > 1) {
+    throw new KeiError(
+      'coverage-mismatch',
+      'Coverage with unnamed unread accounts cannot be merged across multiple incomplete reads. Preserve account failure identities or keep these coverage values separate.',
+    )
+  }
   const read = Math.max(0, asked - failedAccounts.size - unnamedFailures)
   return {
     asked,
