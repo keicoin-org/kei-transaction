@@ -1,0 +1,141 @@
+{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "kei-transaction-workspace",
+      "devDependencies": {
+        "@types/bun": "^1.3.14",
+        "@types/node": "^22.10.0",
+        "happy-dom": "^20.0.0",
+        "kei-transaction": "workspace:*",
+        "typescript": "^5.9.0",
+      },
+    },
+    "packages/claims": {
+      "name": "@keicoin/claims",
+      "version": "0.5.0",
+      "dependencies": {
+        "@keicoin/core": "^0.4.0",
+      },
+    },
+    "packages/core": {
+      "name": "@keicoin/core",
+      "version": "0.4.0",
+      "dependencies": {
+        "@bananocoin/bananojs": "^2.10.10",
+      },
+    },
+    "packages/economy": {
+      "name": "@keicoin/economy",
+      "version": "0.2.0",
+      "dependencies": {
+        "@keicoin/claims": "^0.5.0",
+        "@keicoin/core": "^0.4.0",
+        "@keicoin/market": "^0.2.0",
+      },
+    },
+    "packages/kei": {
+      "name": "kei-transaction",
+      "version": "0.6.0",
+      "dependencies": {
+        "@keicoin/claims": "^0.5.0",
+        "@keicoin/core": "^0.4.0",
+        "@keicoin/economy": "^0.2.0",
+        "@keicoin/market": "^0.2.0",
+        "@keicoin/player-economy": "^0.1.0",
+        "@keicoin/tokens": "^0.5.1",
+        "@keicoin/wallet": "^0.4.2",
+        "@keicoin/work": "^0.4.0",
+      },
+    },
+    "packages/market": {
+      "name": "@keicoin/market",
+      "version": "0.2.0",
+      "dependencies": {
+        "@keicoin/core": "^0.4.0",
+      },
+    },
+    "packages/player-economy": {
+      "name": "@keicoin/player-economy",
+      "version": "0.1.0",
+      "dependencies": {
+        "@keicoin/core": "^0.4.0",
+        "@keicoin/market": "^0.2.0",
+      },
+    },
+    "packages/tokens": {
+      "name": "@keicoin/tokens",
+      "version": "0.5.1",
+      "dependencies": {
+        "@keicoin/claims": "^0.5.0",
+        "@keicoin/core": "^0.4.0",
+      },
+    },
+    "packages/wallet": {
+      "name": "@keicoin/wallet",
+      "version": "0.4.2",
+      "dependencies": {
+        "@keicoin/claims": "^0.5.0",
+        "@keicoin/core": "^0.4.0",
+        "@keicoin/tokens": "^0.5.1",
+      },
+    },
+    "packages/work": {
+      "name": "@keicoin/work",
+      "version": "0.4.0",
+      "bin": {
+        "kei-work-server": "./dist/cli.js",
+      },
+      "dependencies": {
+        "@keicoin/core": "^0.4.0",
+      },
+    },
+  },
+  "packages": {
+    "@bananocoin/bananojs": ["@bananocoin/bananojs@2.10.10", "", { "dependencies": { "package": "^1.0.1" } }, "sha512-ST6BvZAP2S5Ppwb2o0VfOsIvSKWN/MM9oUgVhHd+7ONoFxvkO2TY+7nHWxuGDksrV/vbbuq055InIK2adNRV9w=="],
+
+    "@keicoin/claims": ["@keicoin/claims@workspace:packages/claims"],
+
+    "@keicoin/core": ["@keicoin/core@workspace:packages/core"],
+
+    "@keicoin/economy": ["@keicoin/economy@workspace:packages/economy"],
+
+    "@keicoin/market": ["@keicoin/market@workspace:packages/market"],
+
+    "@keicoin/player-economy": ["@keicoin/player-economy@workspace:packages/player-economy"],
+
+    "@keicoin/tokens": ["@keicoin/tokens@workspace:packages/tokens"],
+
+    "@keicoin/wallet": ["@keicoin/wallet@workspace:packages/wallet"],
+
+    "@keicoin/work": ["@keicoin/work@workspace:packages/work"],
+
+    "@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
+
+    "@types/node": ["@types/node@22.20.1", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q=="],
+
+    "@types/whatwg-mimetype": ["@types/whatwg-mimetype@3.0.2", "", {}, "sha512-c2AKvDT8ToxLIOUlN51gTiHXflsfIFisS4pO7pDPoKouJCESkhZnEy623gwP9laCy5lnLDAw1vAzu2vM2YLOrA=="],
+
+    "@types/ws": ["@types/ws@8.18.1", "", { "dependencies": { "@types/node": "*" } }, "sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg=="],
+
+    "buffer-image-size": ["buffer-image-size@0.6.4", "", { "dependencies": { "@types/node": "*" } }, "sha512-nEh+kZOPY1w+gcCMobZ6ETUp9WfibndnosbpwB1iJk/8Gt5ZF2bhS6+B6bPYz424KtwsR6Rflc3tCz1/ghX2dQ=="],
+
+    "bun-types": ["bun-types@1.3.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-4N0ig0fEomHt5R0KCFWjovxow98rIoRwKolrYdCcknNwMekCXRnWEUvgu5soYV8QXtVsrUD8B95MBOZGPvr6KQ=="],
+
+    "entities": ["entities@7.0.1", "", {}, "sha512-TWrgLOFUQTH994YUyl1yT4uyavY5nNB5muff+RtWaqNVCAK408b5ZnnbNAUEWLTCpum9w6arT70i1XdQ4UeOPA=="],
+
+    "happy-dom": ["happy-dom@20.11.1", "", { "dependencies": { "@types/node": ">=20.0.0", "@types/whatwg-mimetype": "^3.0.2", "@types/ws": "^8.18.1", "buffer-image-size": "^0.6.4", "entities": "^7.0.1", "whatwg-mimetype": "^3.0.0", "ws": "^8.21.0" } }, "sha512-XSt8tMzbW9ymE7687xztkO1ckR7qJNQ3LywY9vlYGhGi3zXrGBHuUo2Cl1ztZaICW+1eAGdkLbj6iwVqDT33kg=="],
+
+    "kei-transaction": ["kei-transaction@workspace:packages/kei"],
+
+    "package": ["package@1.0.1", "", {}, "sha512-g6xZR6CO7okjie83sIRJodgGvaXqymfE5GLhN8N2TmZGShmHc/V23hO/vWbdnuy3D81As3pfovw72gGi42l9qA=="],
+
+    "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+
+    "undici-types": ["undici-types@6.21.0", "", {}, "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ=="],
+
+    "whatwg-mimetype": ["whatwg-mimetype@3.0.0", "", {}, "sha512-nt+N2dzIutVRxARx1nghPKGv1xHikU7HKdfafKkLNLindmPU/ch3U31NOCGGA/dmPcmb1VlofO0vnKAcsm0o/Q=="],
+
+    "ws": ["ws@8.21.2", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-54dMVAo4WIe6SKy3vBgN+9bJZqqQ8IMRevAkOLQALhi49qkkQDQfWdAZ8KQlXiEabw88ARXXdUrlvtbKQX+aKw=="],
+  }
+}
