@@ -152,6 +152,9 @@ const DEFAULT_SWEEP_INTERVAL = 30_000
 // Node, Bun, browsers, and Workers clamp larger delays instead of waiting for
 // them. Accepting one here would turn a failed sweep into an immediate retry.
 const MAX_SWEEP_INTERVAL = 2_147_483_647
+// The same ceiling applies to the expiry timer itself. A listing may live much
+// longer than this; it reaches that deadline through read-free checkpoints.
+const MAX_TIMER_DELAY = 2_147_483_647
 
 export function createMarket(client: KeiClient, options: MarketOptions = {}): MarketApi {
   const now = options.now ?? Date.now
@@ -264,18 +267,46 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
 
   const arm = (expiresAt: number | undefined): void => {
     if (!autoCancelExpired || backgroundClosed || expiresAt === undefined) return
+    if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) {
+      fail(
+        'bad-expiry',
+        `An offer expiry must be a positive safe whole-number millisecond timestamp; got ${String(expiresAt)}.`,
+      )
+    }
     if (timer !== undefined && armedFor !== undefined && armedFor <= expiresAt) return
     if (timer !== undefined) clearTimeout(timer)
     armedFor = expiresAt
-    timer = setTimeout(() => void sweep(), Math.max(0, expiresAt - now()) + 1)
+    const remaining = expiresAt - clockTime(now)
+    // Add one millisecond for ordinary deadlines so the callback observes the
+    // advisory expiry as passed. Clamp after the addition: larger waits are
+    // checkpoints, never permission to hand an overflowing delay to a runtime.
+    const delay = Math.min(MAX_TIMER_DELAY, Math.max(0, remaining) + 1)
+    timer = setTimeout(() => {
+      timer = undefined
+      armedFor = undefined
+      if (backgroundClosed) return
+      let current: number
+      try {
+        current = clockTime(now)
+      } catch {
+        // A clock that becomes invalid after publication cannot produce either
+        // a safe checkpoint or an honest expiry decision. Stop background work.
+        return
+      }
+      if (expiresAt > current) {
+        // A long-dated timer reached a bounded checkpoint. Re-arm without a
+        // ledger read; nothing can be expired at this deadline yet.
+        arm(expiresAt)
+        return
+      }
+      void sweep()
+    }, delay)
     // A game that has quit should not be held open by a listing, and a test
     // should not hang on one either.
     ;(timer as unknown as { unref?: () => void }).unref?.()
   }
 
   const sweep = async (): Promise<void> => {
-    timer = undefined
-    armedFor = undefined
     const epoch = sweepEpoch
     try {
       await cancelExpired(() => !backgroundClosed && sweepEpoch === epoch)
@@ -290,7 +321,14 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     } catch {
       // A transient read failure must not orphan an expired lock until another
       // offer happens to be written. Retry on the caller's housekeeping cadence.
-      if (!backgroundClosed && sweepEpoch === epoch) arm(now() + sweepInterval)
+      if (!backgroundClosed && sweepEpoch === epoch) {
+        try {
+          arm(safeTimeSum(clockTime(now), sweepInterval, 'the expiry-sweep retry'))
+        } catch {
+          // A broken injected clock cannot produce a safe timer. Stop this
+          // background round rather than turn it into an invalid hot loop.
+        }
+      }
     }
   }
 
@@ -302,6 +340,9 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     to: string | undefined,
     expiry: ExpiryOptions,
   ): Promise<Offer> => {
+    // Time controls are entirely local and must be valid before metadata,
+    // balance, work, or signing can begin.
+    const expiresAt = resolveExpiry(expiry, now)
     const giveMeta = await meta(assetIdOf(give.asset))
     const wantMeta = await meta(assetIdOf(want.asset))
     const giveRaw = positiveRaw(give.amount, giveMeta, `The amount of ${giveMeta.symbol} offered`)
@@ -313,7 +354,6 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
         'An offer reserved for your own address could only be accepted by you, and accepting your own offer moves nothing. Leave `to` out to let anyone accept.',
       )
     }
-    const expiresAt = resolveExpiry(expiry, now)
     await requireSpendable(giveMeta, giveRaw, 'this offer locks')
 
     const { hash } = await client.submitAsset(
@@ -698,11 +738,38 @@ function resolveExpiry(options: ExpiryOptions, now: () => number): number | unde
   if (options.expiresAt !== undefined && options.expiresIn !== undefined) {
     fail('bad-expiry', 'Pass expiresIn or expiresAt, not both.')
   }
-  if (options.expiresIn !== undefined) return now() + durationMs(options.expiresIn, 'expiresIn')
+  if (options.expiresIn !== undefined) {
+    return safeTimeSum(clockTime(now), durationMs(options.expiresIn, 'expiresIn'), 'expiresIn')
+  }
   if (options.expiresAt === undefined) return undefined
   const at = options.expiresAt instanceof Date ? options.expiresAt.getTime() : options.expiresAt
   if (!Number.isSafeInteger(at) || at <= 0) {
     fail('bad-expiry', `expiresAt is a Date or a millisecond timestamp — got ${String(options.expiresAt)}.`)
   }
+  // Validate the injected clock before the offer is signed. `arm()` reads it to
+  // compute the delay, and a bad clock must never turn a successful write into
+  // a post-signing scheduling failure.
+  clockTime(now)
   return at
+}
+
+function clockTime(now: () => number): number {
+  const at = now()
+  if (!Number.isSafeInteger(at) || at < 0) {
+    fail(
+      'bad-expiry',
+      `The market clock must return a non-negative safe whole-number millisecond timestamp; got ${String(at)}. Fix MarketOptions.now before creating an expiring offer.`,
+    )
+  }
+  return at
+}
+
+function safeTimeSum(at: number, duration: number, label: string): number {
+  if (duration > Number.MAX_SAFE_INTEGER - at) {
+    fail(
+      'bad-expiry',
+      `${label} would exceed JavaScript's safe millisecond timestamp range. Use a nearer expiry at or below ${Number.MAX_SAFE_INTEGER}.`,
+    )
+  }
+  return at + duration
 }

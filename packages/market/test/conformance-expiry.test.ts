@@ -27,6 +27,54 @@ let world: World
 let sword: AssetId
 let buyerSide: Actor
 
+const MAX_TIMER_DELAY = 2_147_483_647
+
+interface HeldTimer {
+  callback: () => void
+  delay: number
+  cancelled: boolean
+  fired: boolean
+}
+
+/** A deterministic timer queue: production still calls the real global API. */
+function holdTimers(): {
+  timers: HeldTimer[]
+  next(): HeldTimer
+  fire(timer: HeldTimer): void
+  restore(): void
+} {
+  const timers: HeldTimer[] = []
+  const timeout = spyOn(globalThis, 'setTimeout').mockImplementation(
+    ((callback: () => void, delay?: number) => {
+      const timer: HeldTimer = { callback, delay: Number(delay), cancelled: false, fired: false }
+      timers.push(timer)
+      return timer as unknown as ReturnType<typeof setTimeout>
+    }) as typeof setTimeout,
+  )
+  const clearing = spyOn(globalThis, 'clearTimeout').mockImplementation(
+    ((timer: ReturnType<typeof setTimeout>) => {
+      ;(timer as unknown as HeldTimer).cancelled = true
+    }) as typeof clearTimeout,
+  )
+
+  return {
+    timers,
+    next() {
+      const timer = timers.find((entry) => !entry.cancelled && !entry.fired)
+      if (!timer) throw new Error('No pending fake timer')
+      return timer
+    },
+    fire(timer) {
+      timer.fired = true
+      timer.callback()
+    },
+    restore() {
+      timeout.mockRestore()
+      clearing.mockRestore()
+    },
+  }
+}
+
 beforeEach(async () => {
   world = await World.create()
   sword = await world.issue({ symbol: 'SWORD' })
@@ -118,6 +166,164 @@ describe('sweepInterval is validated at the public boundary', () => {
       swapOffer: 0,
       accountSwaps: 0,
     })
+  })
+})
+
+describe('long-dated expiry uses bounded read-free timer checkpoints', () => {
+  test('a 30-day listing never schedules above the timer ceiling or reads at its early checkpoint', async () => {
+    const counting = new CountingNode(world.node)
+    const seller = await world.actor('long-dated', {
+      node: counting,
+      market: { autoCancelExpired: true },
+    })
+    await world.mint(sword, seller, 1)
+    counting.reset()
+
+    const held = holdTimers()
+    let offer!: Awaited<ReturnType<typeof seller.market.sell>>
+    try {
+      offer = await seller.market.sell({ asset: sword, price: 5, expiresIn: '30d' })
+      const first = held.next()
+      expect(first.delay).toBe(MAX_TIMER_DELAY)
+      const readsBefore = counting.calls.accountSwaps
+
+      world.clock.tick(first.delay)
+      held.fire(first)
+
+      // The first wake is still more than five days before expiry. It only
+      // installs the remainder and must not poll the ledger.
+      expect(counting.calls.accountSwaps, evidence('calls', counting.report())).toBe(readsBefore)
+      const remainder = held.next()
+      expect(remainder.delay).toBe(30 * 86_400_000 - MAX_TIMER_DELAY + 1)
+      expect(remainder.delay).toBeLessThanOrEqual(MAX_TIMER_DELAY)
+
+      world.clock.tick(remainder.delay)
+      held.fire(remainder)
+    } finally {
+      // The due callback has started the async sweep; restore real timers so
+      // `until` can wait for its public result without advancing fake time.
+      held.restore()
+    }
+
+    await until(async () => (await world.node.swapOffer(offer.hash))?.state === 'cancelled', {
+      label: 'the long-dated offer to cancel after its final checkpoint',
+    })
+    expect(counting.calls.accountSwaps).toBeGreaterThan(0)
+  })
+
+  test('the exact ceiling and one millisecond beyond both pass only bounded delays', async () => {
+    const seller = await world.actor('timer-boundaries', { market: { autoCancelExpired: true } })
+    await world.mint(sword, seller, 1)
+    const held = holdTimers()
+    try {
+      await seller.market.sell({ asset: sword, price: 5, expiresAt: world.clock.at + MAX_TIMER_DELAY })
+      expect(held.next().delay).toBe(MAX_TIMER_DELAY)
+      seller.market.close()
+
+      const other = await world.actor('timer-over-boundary', { market: { autoCancelExpired: true } })
+      await world.mint(sword, other, 1)
+      await other.market.sell({ asset: sword, price: 7, expiresAt: world.clock.at + MAX_TIMER_DELAY + 1 })
+      expect(held.next().delay).toBe(MAX_TIMER_DELAY)
+      other.market.close()
+
+      const years = await world.actor('timer-multi-year', { market: { autoCancelExpired: true } })
+      await world.mint(sword, years, 1)
+      await years.market.sell({ asset: sword, price: 8, expiresIn: '200w' })
+      expect(held.next().delay).toBe(MAX_TIMER_DELAY)
+      years.market.close()
+    } finally {
+      held.restore()
+    }
+    expect(held.timers.every((timer) => timer.delay >= 1 && timer.delay <= MAX_TIMER_DELAY)).toBe(true)
+  })
+
+  test('close makes even an already-queued long checkpoint inert', async () => {
+    const counting = new CountingNode(world.node)
+    const seller = await world.actor('closed-checkpoint', {
+      node: counting,
+      market: { autoCancelExpired: true },
+    })
+    await world.mint(sword, seller, 1)
+    const held = holdTimers()
+    try {
+      await seller.market.sell({ asset: sword, price: 5, expiresIn: '30d' })
+      const checkpoint = held.next()
+      const readsBefore = counting.calls.accountSwaps
+      seller.market.close()
+      // Simulate a callback already queued by the host when clearTimeout raced.
+      world.clock.tick(checkpoint.delay)
+      held.fire(checkpoint)
+      expect(counting.calls.accountSwaps, evidence('calls', counting.report())).toBe(readsBefore)
+      expect(held.timers.filter((timer) => !timer.cancelled && !timer.fired)).toHaveLength(0)
+    } finally {
+      held.restore()
+    }
+  })
+})
+
+describe('expiry duration normalization is safe before network or signing', () => {
+  test.each([
+    ['a fractional numeric millisecond', 0.5],
+    ['a fractional string millisecond', '0.1ms'],
+    ['an overflowing duration string', `${'9'.repeat(400)}w`],
+  ] as const)('rejects %s after normalization', async (_label, expiresIn) => {
+    const counting = new CountingNode(world.node)
+    const seller = await world.actor(`invalid-duration-${String(expiresIn).slice(0, 8)}`, {
+      node: counting,
+      market: { autoCancelExpired: true },
+    })
+    await world.mint(sword, seller, 1)
+    counting.reset()
+    const timer = spyOn(globalThis, 'setTimeout')
+
+    const failure = await seller.market.sell({ asset: sword, price: 5, expiresIn }).catch((error) => error)
+
+    expect(isMarketError(failure, 'bad-duration')).toBe(true)
+    expect(counting.report(), evidence('calls', counting.report())).toEqual({
+      accountInfo: 0,
+      accountHistory: 0,
+      receivables: 0,
+      process: 0,
+      assetInfo: 0,
+      holderBalance: 0,
+      swapOffer: 0,
+      accountSwaps: 0,
+    })
+    expect(timer).toHaveBeenCalledTimes(0)
+    timer.mockRestore()
+  })
+
+  test('rejects an unsafe absolute sum and an invalid injected clock before signing', async () => {
+    const cases = [
+      {
+        name: 'unsafe-sum',
+        now: () => Number.MAX_SAFE_INTEGER - 5,
+        expiry: { expiresIn: 6 },
+      },
+      {
+        name: 'invalid-clock',
+        now: () => Number.NaN,
+        expiry: { expiresAt: world.clock.at + 1_000 },
+      },
+    ] as const
+
+    for (const scenario of cases) {
+      const counting = new CountingNode(world.node)
+      const seller = await world.actor(scenario.name, {
+        node: counting,
+        market: { autoCancelExpired: true, now: scenario.now },
+      })
+      await world.mint(sword, seller, 1)
+      counting.reset()
+
+      const failure = await seller.market
+        .sell({ asset: sword, price: 5, ...scenario.expiry })
+        .catch((error) => error)
+
+      expect(isMarketError(failure, 'bad-expiry')).toBe(true)
+      expect(counting.calls.process, evidence('calls', counting.report())).toBe(0)
+      expect(counting.calls.assetInfo, evidence('calls', counting.report())).toBe(0)
+    }
   })
 })
 
