@@ -26,6 +26,9 @@ OTP="${1:-${NPM_OTP:-}}"
 
 cd "$(dirname "$0")/.."
 
+echo "==> Checking release manifests"
+npm run release:check
+
 # Dependency order: nothing is published before the thing it imports, so the
 # registry never holds a version whose dependencies it cannot serve.
 PACKAGES="core work claims tokens market economy player-economy wallet kei"
