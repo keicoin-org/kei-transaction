@@ -224,7 +224,11 @@ export interface CandleOptions extends SeriesOptions {
 export function toCandles(trades: readonly Trade[], options: CandleOptions): Candle[] {
   const every = durationMs(options.every, 'every')
   const series = toSeries(trades, options)
-  if (series.points.length === 0) return []
+  const carried = coverageOf(trades)
+  if (series.points.length === 0) {
+    const empty: Candle[] = []
+    return carried === null ? empty : withCoverage(empty, carried)
+  }
 
   const buckets = new Map<number, Candle>()
   for (const point of series.points) {
@@ -253,7 +257,6 @@ export function toCandles(trades: readonly Trade[], options: CandleOptions): Can
     bucket.trades += 1
   }
 
-  const carried = coverageOf(trades)
   const filled = [...buckets.values()].sort((a, b) => a.at - b.at)
   if (options.fill !== true || filled.length < 2) {
     return carried === null ? filled : withCoverage(filled, carried)

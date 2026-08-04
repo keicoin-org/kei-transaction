@@ -34,6 +34,7 @@ import type { Offer } from './types.js'
 import { assetIdOf } from './util.js'
 import {
   DEFAULT_ACCOUNT_LIMIT,
+  accountLimitOf,
   mapConcurrent,
   walkAccounts,
   type Coverage,
@@ -93,7 +94,7 @@ export async function readBook(context: MarketContext, options: BookOptions): Pr
       `A book of ${quote} priced in ${quote} has no two sides to it. Name a different asset, or leave \`asset\` out for every offer against ${quote}.`,
     )
   }
-  const limit = options.limit ?? DEFAULT_BOOK_LIMIT
+  const limit = accountLimitOf(options.limit, 'book limit')
   const includeExpired = options.includeExpired === true
   const includeMine = options.includeMine !== false
 

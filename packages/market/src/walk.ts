@@ -191,14 +191,16 @@ export function mergeCoverage(...parts: readonly (Coverage | null | undefined)[]
   const failed = present.flatMap((part) => [...part.failed])
   const truncated = [...new Set(present.flatMap((part) => [...part.truncated]))]
   const skipped = [...new Set(present.flatMap((part) => [...part.skipped]))]
+  const asked = Math.max(...present.map((part) => part.asked))
+  const read = Math.min(...present.map((part) => part.read))
   return {
-    asked: Math.max(...present.map((part) => part.asked)),
-    read: Math.min(...present.map((part) => part.read)),
+    asked,
+    read,
     failed,
     truncated,
     dropped: Math.max(...present.map((part) => part.dropped)),
     skipped,
-    complete: present.every((part) => part.complete),
+    complete: present.every((part) => part.complete) && read === asked,
   }
 }
 
@@ -330,6 +332,7 @@ function isCoverage(value: unknown): value is Coverage {
   return (
     isCount(candidate.asked) &&
     isCount(candidate.read) &&
+    candidate.read <= candidate.asked &&
     Array.isArray(candidate.failed) &&
     candidate.failed.every(
       (failure) =>
@@ -343,12 +346,18 @@ function isCoverage(value: unknown): value is Coverage {
     isCount(candidate.dropped) &&
     Array.isArray(candidate.skipped) &&
     candidate.skipped.every((account) => typeof account === 'string') &&
-    typeof candidate.complete === 'boolean'
+    typeof candidate.complete === 'boolean' &&
+    (!candidate.complete ||
+      (candidate.read === candidate.asked &&
+        candidate.failed.length === 0 &&
+        candidate.truncated.length === 0 &&
+        candidate.dropped === 0 &&
+        candidate.skipped.length === 0))
   )
 }
 
 function isCount(value: unknown): value is number {
-  return Number.isInteger(value) && (value as number) >= 0
+  return Number.isSafeInteger(value) && (value as number) >= 0
 }
 
 function concurrencyOf(requested: number | undefined): number {
@@ -357,6 +366,18 @@ function concurrencyOf(requested: number | undefined): number {
     throw new KeiError(
       'bad-concurrency',
       `concurrency is how many chains to read at once — a whole number from 1 through ${MAX_CONCURRENCY}, and ${DEFAULT_CONCURRENCY} by default. Got ${String(requested)}.`,
+    )
+  }
+  return requested
+}
+
+/** Resolve a public per-account read limit without letting it become unbounded or ambiguous. */
+export function accountLimitOf(requested: number | undefined, label = 'limit'): number {
+  if (requested === undefined) return DEFAULT_ACCOUNT_LIMIT
+  if (!Number.isSafeInteger(requested) || requested < 1) {
+    throw new KeiError(
+      'bad-limit',
+      `${label} is how many rows to read from each account — a positive safe whole number, and ${DEFAULT_ACCOUNT_LIMIT} by default. Got ${String(requested)}.`,
     )
   }
   return requested

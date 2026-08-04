@@ -15,6 +15,8 @@ import {
   bidPrice,
   classify,
   createDirectory,
+  coverageOf,
+  emptyCoverage,
   expectationFrom,
   priceIndex,
   resolveAccounts,
@@ -22,6 +24,7 @@ import {
   toCandles,
   toSeries,
   verify,
+  withCoverage,
   type Offer,
   type Trade,
 } from '@keicoin/market'
@@ -173,6 +176,17 @@ describe('price series — consensus numbers, advisory order', () => {
     expect(candles).toHaveLength(2)
     expect(candles[0]).toMatchObject({ at: hour, every: hour, open: 5, high: 10, low: 5, close: 10, volume: 3, trades: 2 })
     expect(candles[1]).toMatchObject({ at: hour * 3, open: 3, close: 3, volume: 1, trades: 1 })
+  })
+
+  test('an empty candle transform keeps the coverage of the walk that found nothing', () => {
+    const coverage = { ...emptyCoverage(), asked: 2, read: 1, complete: false }
+    const candles = toCandles(withCoverage<Trade>([], coverage), {
+      asset: 'SWORD',
+      quote: KEI_ASSET,
+      every: '1h',
+    })
+    expect(candles).toEqual([])
+    expect(coverageOf(candles)).toEqual(coverage)
   })
 
   test('fill evens the axis with the previous close and no volume', () => {

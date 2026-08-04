@@ -37,6 +37,8 @@ export type MarketErrorCode =
   | 'bad-duration'
   /** `concurrency` outside the supported integer range. */
   | 'bad-concurrency'
+  /** A per-account read limit that is not a positive safe integer. */
+  | 'bad-limit'
   /** `offer()` without both legs, or an offer argument with no hash in it. */
   | 'bad-offer'
   /** This wallet cannot put the units behind the block. The message names the gap. */
@@ -73,6 +75,7 @@ const CODES = new Set<string>([
   'bad-expiry',
   'bad-duration',
   'bad-concurrency',
+  'bad-limit',
   'bad-offer',
   'insufficient-balance',
   'no-accounts',
