@@ -69,6 +69,7 @@ class InspectableClaimStore implements ClaimStore {
   readonly durability = 'persistent' as const
   readonly records = new Map<string, Map<string, string>>()
   writeCount = 0
+  removeCount = 0
   dropWrites = false
   throwWrites = false
   listedRoots: readonly string[] | undefined
@@ -97,6 +98,7 @@ class InspectableClaimStore implements ClaimStore {
   }
 
   remove(scope: ClaimStoreScope, root: string): void {
+    this.removeCount += 1
     this.records.get(this.key(scope))?.delete(root)
   }
 
@@ -217,6 +219,87 @@ describe('durable claim bundles', () => {
     expect(await gems.balanceOf(reloaded.address)).toBe(17)
     expect(await reloaded.claims.pending()).toHaveLength(0)
     expect((await store.list({ network: 'mock', address: reloaded.address }, 2))).toHaveLength(0)
+  })
+
+  test('a direct claim is retained before signing and survives a transient submission failure', async () => {
+    const store = new InspectableClaimStore()
+    const player = remember(await Kei.start({ node, seed: PLAYER_SEED, claimStore: store }))
+    const drop = await gems.commit([{ to: player.address, amount: 19 }])
+    const bundle = drop.proofFor(player.address)
+    const scope = { network: 'mock', address: player.address }
+    const originalProcess = node.process.bind(node)
+    let claimSubmissions = 0
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') {
+        claimSubmissions += 1
+        if (claimSubmissions === 1) {
+          throw new KeiError('node-unreachable', 'The deterministic test node refused this direct claim once.')
+        }
+      }
+      return originalProcess(block)
+    }
+
+    await expect(player.claims.claim(bundle)).rejects.toThrow(/refused this direct claim once/)
+    expect(store.writeCount).toBe(1)
+    expect(store.removeCount).toBe(0)
+    expect(await store.list(scope, 2)).toEqual([bundle.root])
+    expect(await gems.balanceOf(player.address)).toBe(0)
+    player.close()
+
+    const reloaded = remember(await Kei.start({ node, seed: PLAYER_SEED, claimStore: store }))
+    expect(claimSubmissions).toBe(2)
+    expect(store.writeCount).toBe(1)
+    expect(store.removeCount).toBe(1)
+    expect(await store.list(scope, 2)).toEqual([])
+    expect(await gems.balanceOf(reloaded.address)).toBe(19)
+  })
+
+  test('a direct claim reuses an exact retained record without another write', async () => {
+    const store = new InspectableClaimStore()
+    const player = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: store,
+    }))
+    const drop = await gems.commit([{ to: player.address, amount: 11 }])
+    const bundle = drop.proofFor(player.address)
+    let claimSubmissions = 0
+    const originalProcess = node.process.bind(node)
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
+      return originalProcess(block)
+    }
+
+    await player.claims.add(bundle)
+    expect(store.writeCount).toBe(1)
+    await player.claims.claim(bundle)
+
+    expect(claimSubmissions).toBe(1)
+    expect(store.writeCount).toBe(1)
+    expect(store.removeCount).toBe(1)
+    expect(await gems.balanceOf(player.address)).toBe(11)
+  })
+
+  test('a refusing store blocks direct claims before submission or balance change', async () => {
+    const store = new InspectableClaimStore()
+    store.throwWrites = true
+    const player = remember(await Kei.start({ node, seed: PLAYER_SEED, claimStore: store }))
+    const drop = await gems.commit([{ to: player.address, amount: 23 }])
+    let claimSubmissions = 0
+    const originalProcess = node.process.bind(node)
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
+      return originalProcess(block)
+    }
+
+    const error = await refused(player.claims.claim(drop.proofFor(player.address)))
+    expect(error.code).toBe('claim-store-write-refused')
+    expect(error.message).not.toContain('quota details')
+    expect(store.writeCount).toBe(1)
+    expect(store.removeCount).toBe(0)
+    expect(claimSubmissions).toBe(0)
+    expect(await gems.balanceOf(player.address)).toBe(0)
   })
 
   test('already-claimed and closed roots reconcile away without signing', async () => {

@@ -288,24 +288,7 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
     fail(diagnostic.code, diagnostic.message)
   }
 
-  const persist = async (bundle: ClaimBundle): Promise<void> => {
-    const value = envelopeFor(bundle)
-    try {
-      await store.write(namespace, bundle.root, value)
-    } catch (error) {
-      if (isClaimStoreCapacityError(error)) {
-        persistenceFailure({
-          code: 'claim-store-overflow',
-          root: bundle.root,
-          message: `The claim store reached its ${MAX_PENDING_CLAIMS}-record limit while retaining ${bundle.root}; no claim was attempted. Another wallet tab may have filled the last slot. Claim or reconcile an existing entry, then add the bundle again.`,
-        })
-      }
-      persistenceFailure({
-        code: 'claim-store-write-refused',
-        root: bundle.root,
-        message: `The claim store refused ${bundle.root}; no claim was attempted because reload recovery was not established. Free storage, retry after another wallet tab finishes, or replace the adapter, then add the bundle again.`,
-      })
-    }
+  const verifyPersisted = async (bundle: ClaimBundle, value: string): Promise<void> => {
     let readBack: string | null = null
     try {
       readBack = await store.read(namespace, bundle.root)
@@ -323,6 +306,50 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
         message: `The claim store did not return the exact bundle written for ${bundle.root}; no claim was attempted. Fix or replace the adapter, then add the bundle again.`,
       })
     }
+  }
+
+  const persist = async (bundle: ClaimBundle, value = envelopeFor(bundle)): Promise<void> => {
+    try {
+      await store.write(namespace, bundle.root, value)
+    } catch (error) {
+      if (isClaimStoreCapacityError(error)) {
+        persistenceFailure({
+          code: 'claim-store-overflow',
+          root: bundle.root,
+          message: `The claim store reached its ${MAX_PENDING_CLAIMS}-record limit while retaining ${bundle.root}; no claim was attempted. Another wallet tab may have filled the last slot. Claim or reconcile an existing entry, then add the bundle again.`,
+        })
+      }
+      persistenceFailure({
+        code: 'claim-store-write-refused',
+        root: bundle.root,
+        message: `The claim store refused ${bundle.root}; no claim was attempted because reload recovery was not established. Free storage, retry after another wallet tab finishes, or replace the adapter, then add the bundle again.`,
+      })
+    }
+    await verifyPersisted(bundle, value)
+  }
+
+  const retain = async (bundle: ClaimBundle): Promise<ClaimBundle> => {
+    const value = envelopeFor(bundle)
+    const existing = held.get(bundle.root)
+    if (existing) {
+      if (envelopeFor(existing) !== value) {
+        fail(
+          'claim-root-conflict',
+          `Claim root ${bundle.root} is already retained with different terms. Keep the original bundle or reconcile it before replacing anything.`,
+        )
+      }
+      await verifyPersisted(existing, value)
+      return existing
+    }
+    if (held.size >= MAX_PENDING_CLAIMS) {
+      fail(
+        'claim-store-overflow',
+        `Keeping this bundle would exceed the ${MAX_PENDING_CLAIMS}-claim wallet limit. Claim or reconcile an existing entry before adding it.`,
+      )
+    }
+    await persist(bundle, value)
+    held.set(bundle.root, bundle)
+    return bundle
   }
 
   const removePersisted = async (root: string): Promise<void> => {
@@ -352,7 +379,7 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
 
   const claim = async (input: ClaimBundle): Promise<ClaimResult> => {
     await hydrate()
-    const bundle = validate(input)
+    const bundle = await retain(validate(input))
     const description = await describe(bundle)
     const { hash } = await client.submitAsset({
       kind: 'claim',
@@ -425,8 +452,7 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
       )
     }
     for (const checked of additions) {
-      await persist(checked)
-      held.set(checked.root, checked)
+      await retain(checked)
     }
     return autoClaim ? claimAll() : []
   }
