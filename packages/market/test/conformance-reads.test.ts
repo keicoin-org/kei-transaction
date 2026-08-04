@@ -159,7 +159,103 @@ describe('advisory trade windows preserve time-quality evidence', () => {
     expect(untimed[0]?.seenAt).toBeNull()
     expect(untimed.coverage.complete).toBe(true)
   }, 30_000)
-})
+
+  test('range.from/range.to provide explicit trade-time bounds', async () => {
+    const listing = await alice.market.sell({ asset: sword, amount: 1, price: 3 })
+    await bob.market.accept(listing)
+    const trade = (await bob.market.trades({ from: [alice.address], asset: sword }))[0]
+    if (!trade) throw new Error('expected one trade')
+    const upper = trade.settledAt ?? trade.seenAt
+    if (!Number.isSafeInteger(upper)) {
+      throw new Error('mock data produced no safe trade time for this test')
+    }
+
+    const within = await bob.market.trades({
+      from: [alice.address],
+      asset: sword,
+      range: { from: upper - 1, to: upper },
+    })
+    expect(within.map(({ hash }) => hash)).toEqual([trade.hash])
+
+    const before = await bob.market.trades({
+      from: [alice.address],
+      asset: sword,
+      range: { from: upper + 1, to: upper + 2 },
+    })
+    expect(before).toHaveLength(0)
+  })
+
+  test('range.from and range.to accept Date inputs', async () => {
+    const listing = await alice.market.sell({ asset: sword, amount: 1, price: 3 })
+    await bob.market.accept(listing)
+    const trade = (await bob.market.trades({ from: [alice.address], asset: sword }))[0]
+    if (!trade) throw new Error('expected one trade')
+    const upper = trade.settledAt ?? trade.seenAt
+    if (!Number.isSafeInteger(upper)) {
+      throw new Error('mock data produced no safe trade time for this test')
+    }
+
+    const within = await bob.market.trades({
+      from: [alice.address],
+      asset: sword,
+      range: {
+        from: new Date(upper - 1),
+        to: new Date(upper),
+      },
+    })
+    expect(within.map(({ hash }) => hash)).toEqual([trade.hash])
+  })
+
+  test('asOf accepts Date inputs and uses inclusive upper-bound semantics', async () => {
+    const listing = await alice.market.sell({ asset: sword, amount: 1, price: 3 })
+    await bob.market.accept(listing)
+    const [trade] = await bob.market.trades({ from: [alice.address], asset: sword })
+    if (!trade) throw new Error('expected one trade')
+    const upper = trade.settledAt ?? trade.seenAt
+    if (!Number.isSafeInteger(upper)) {
+      throw new Error('mock data produced no safe trade time for this test')
+    }
+
+    const before = await bob.market.trades({
+      from: [alice.address],
+      asset: sword,
+      asOf: new Date(upper - 1),
+    })
+    expect(before).toHaveLength(0)
+
+    const equal = await bob.market.trades({
+      from: [alice.address],
+      asset: sword,
+      asOf: new Date(upper),
+    })
+    expect(equal).toHaveLength(1)
+    expect(equal[0]?.hash).toBe(trade.hash)
+  })
+
+  test('range.from and window cannot be mixed', async () => {
+    const offer = await alice.market.sell({ asset: sword, amount: 1, price: 3 })
+    await bob.market.accept(offer)
+    const failure = (await bob.market.trades({
+      from: [alice.address],
+      asset: sword,
+      window: '1h',
+      range: { from: 0, to: 1 },
+    }).catch((error: unknown) => error)) as { code?: string }
+    expect(failure.code).toBe('bad-duration')
+  })
+
+  test('range.window and top-level window cannot be mixed', async () => {
+    const offer = await alice.market.sell({ asset: sword, amount: 1, price: 3 })
+    await bob.market.accept(offer)
+    const failure = (await bob.market.trades({
+      from: [alice.address],
+      asset: sword,
+      window: '1h',
+      range: { window: '1m' },
+    }).catch((error: unknown) => error)) as { code?: string }
+    expect(failure.code).toBe('bad-duration')
+  })
+}) 
 
 describe('a lying read model cannot move funds (SPEC §9.2, §9.4)', () => {
   test('a node that halves the asking price gets its accept refused by the ledger', async () => {

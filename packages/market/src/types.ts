@@ -97,6 +97,15 @@ export interface Cancellation {
 /** A duration resolving to at least 1 safe integer millisecond, or a string like `'7d'`, `'90m'`, `'12h'`. */
 export type Duration = number | string
 
+export interface TradeRange {
+  /** Inclusive upper bound for this query in node-local milliseconds. */
+  to?: number | Date
+  /** Inclusive lower bound for this query in node-local milliseconds. */
+  from?: number | Date
+  /** Window width backwards from `to` when `from` is omitted. */
+  window?: Duration
+}
+
 export interface ExpiryOptions {
   /** Advisory, and the SDK cancels the offer itself when it passes (SPEC §9.3). */
   expiresIn?: Duration
@@ -177,6 +186,12 @@ export interface MineOptions extends ReadOptions {
 export interface TradeOptions extends ReadOptions {
   /** Whose chains to read, or a directory. Defaults to this wallet's own trades. */
   from?: AccountSource
+  /**
+   * Explicit range control. New callers should prefer this over bare `window`
+   * for readability and future-proofing. Do not pair `range.window` with
+   * top-level `window`; this is a typed conflict.
+   */
+  range?: TradeRange
   /** Only trades in this asset, on either leg. */
   asset?: AssetId | { id: AssetId }
   /** Only trades against this asset. Default Kei. */
@@ -189,7 +204,7 @@ export interface TradeOptions extends ReadOptions {
    * with `window`, both ends of the range are derived from this same anchor.
    * Untimed trades are retained only when no window is requested.
    */
-  asOf?: number
+  asOf?: number | Date
   /** Keep only the most recent n. */
   last?: number
   /** History rows read per account. Positive safe integer; default 100. */
