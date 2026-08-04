@@ -1,27 +1,27 @@
 {
-  "name": "@keicoin/economy",
+  "name": "@keicoin/player-economy",
   "version": "0.1.0",
-  "description": "Declarative game-economy recipes for Kei: rewards, sinks, and atomic shop/craft exchanges, with a dry run before anything is signed.",
+  "description": "Noncustodial player shops for Kei: list, buy, cancel, and gift through the player's own wallet, with honest pending state and chart-ready history.",
   "license": "MIT",
   "author": "Sano",
-  "homepage": "https://keicoin.org#economy",
+  "homepage": "https://keicoin.org#player-economy",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/keicoin-org/kei-transaction.git",
-    "directory": "packages/economy"
+    "directory": "packages/player-economy"
   },
   "bugs": {
     "url": "https://github.com/keicoin-org/kei-transaction/issues"
   },
   "keywords": [
     "kei",
-    "game-economy",
-    "recipes",
-    "crafting",
-    "shop",
-    "loot",
-    "sink",
-    "faucet"
+    "player-economy",
+    "player-shop",
+    "auction-house",
+    "trading",
+    "gifting",
+    "atomic-swap",
+    "noncustodial"
   ],
   "type": "module",
   "exports": {

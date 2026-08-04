@@ -34,8 +34,27 @@ import {
 } from '@keicoin/core'
 
 import { readTrades, summarise, type LegMeta, type MarketContext } from './history.js'
+import { readBook, type Book, type BookOptions } from './book.js'
+import { resolveAccounts } from './directory.js'
+import {
+  assertMatches,
+  classify,
+  reconcileOffers,
+  type OfferLife,
+  type Reconciliation,
+} from './lifecycle.js'
+import {
+  priceIndex,
+  toCandles,
+  toSeries,
+  type Candle,
+  type CandleOptions,
+  type Series,
+  type SeriesOptions,
+} from './series.js'
 import { assetIdOf, durationMs } from './util.js'
 import type {
+  AcceptOptions,
   AssetAmount,
   BidOptions,
   Cancellation,
@@ -59,8 +78,15 @@ export interface MarketApi {
   bid(options: BidOptions): Promise<Offer>
   /** Any asset for any asset. `sell` and `bid` are this with Kei on one side. */
   offer(options: OfferOptions): Promise<Offer>
-  /** Take an offer. One block, both legs or neither (SPEC §9.2). */
-  accept(offer: string | Offer): Promise<Settlement>
+  /**
+   * Take an offer. One block, both legs or neither (SPEC §9.2).
+   *
+   * Pass `{ expect }` with the terms your view rendered and the offer is checked
+   * against the chain, field by field, immediately before signing. Any index
+   * that told you about this listing is a list of where to look and never an
+   * authority (SPEC §9.4) — this is how that stays true.
+   */
+  accept(offer: string | Offer, options?: AcceptOptions): Promise<Settlement>
   /** Recover your own locked asset. Only valid while the offer is unaccepted. */
   cancel(offer: string | Offer): Promise<Cancellation>
   /** Cancel this wallet's own expired offers — what actually frees them (§9.3). */
@@ -74,6 +100,25 @@ export interface MarketApi {
   /** `medianPrice(sword, { window: '7d' })`, the §9.1 query. Null if never sold. */
   medianPrice(asset: AssetId | { id: AssetId }, options?: TradeOptions): Promise<number | null>
   price(asset: AssetId | { id: AssetId }, options?: TradeOptions): Promise<PriceSummary | null>
+
+  /**
+   * Asks and bids for one asset across the chains you name, in one walk per
+   * account, with an honest account of what the walk could not see.
+   */
+  book(options: BookOptions): Promise<Book>
+  /** Settled trades as an ordered price series, ready to draw (see `series.ts`). */
+  series(options: SeriesOptions & TradeOptions): Promise<Series>
+  /** The same series as OHLCV buckets. Bucketing is advisory — read `series.ts`. */
+  candles(options: CandleOptions & TradeOptions): Promise<Candle[]>
+  /** Every traded asset's summary out of one walk, instead of one walk each. */
+  prices(options?: TradeOptions & { assets?: Iterable<AssetId | { id: AssetId }> }): Promise<
+    Map<AssetId, PriceSummary>
+  >
+  /** Re-read a snapshot of listings and say what became of each one. */
+  reconcile(snapshot: Iterable<string | Offer>): Promise<Reconciliation>
+  /** A listing's state in a view's terms: live, reserved, stale, taken, cancelled. */
+  lifeOf(offer: Offer): OfferLife
+
   /** Stop the background expiry sweep. `Kei.close()` calls this. */
   close(): void
 }
@@ -111,8 +156,6 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     return found
   }
 
-  const context: MarketContext = { client, meta, now }
-
   const toOffer = async (raw: SwapOffer): Promise<Offer> => {
     const [give, want] = await Promise.all([meta(raw.asset), meta(raw.wantAsset)])
     const giveAmount = fromRaw(BigInt(raw.amount), give.decimals)
@@ -134,6 +177,8 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
       settledAt: raw.settledAt,
     }
   }
+
+  const context: MarketContext = { client, meta, now, toOffer }
 
   /** What this wallet can actually put behind a block, in raw units. */
   const spendable = async (leg: LegMeta): Promise<bigint> =>
@@ -241,7 +286,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     return toOffer(created)
   }
 
-  const accept = async (target: string | Offer): Promise<Settlement> => {
+  const accept = async (target: string | Offer, acceptOptions: AcceptOptions = {}): Promise<Settlement> => {
     const hash = hashOf(target, 'accept')
     const raw = await client.node.swapOffer(hash)
     if (!raw) {
@@ -271,6 +316,10 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
         `Offer ${hash} is reserved for ${offer.to}, so this wallet cannot accept it (SPEC §9.2).`,
       )
     }
+    // Last thing before the signature, and against the chain's copy rather than
+    // the caller's: whatever told this wallet the listing existed is a list of
+    // where to look, never an authority (SPEC §9.4).
+    if (acceptOptions.expect !== undefined) assertMatches(offer, acceptOptions.expect)
     // Sign `raw`'s own wantAsset/wantAmount, not offer.want.amount — that field
     // round-tripped through a JS number for display and loses precision above
     // Number.MAX_SAFE_INTEGER. The chain only ever sees the raw string.
@@ -373,9 +422,12 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
         'market.offers() needs the accounts to read: an offer lives on its author\'s chain, so listings are a bounded walk of the chains you name (SPEC §9.1). Pass { from: sellerAddress } or { from: [ ... ] }. Kei has no network-wide listing index (SPEC §9.4).',
       )
     }
-    const accounts = typeof options.from === 'string' ? [options.from] : [...options.from]
+    const accounts = await resolveAccounts(options.from)
     if (accounts.length === 0) {
-      fail('no-accounts', 'market.offers({ from: [] }) reads nothing. Name at least one account.')
+      fail(
+        'no-accounts',
+        'market.offers({ from }) was given no accounts to read, so there is nothing to walk. Name at least one address — or, if that was a directory, nobody has announced themselves to it yet (see createDirectory).',
+      )
     }
     return list(accounts, {
       ...(options.asset === undefined ? {} : { asset: assetIdOf(options.asset) }),
@@ -445,6 +497,36 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
       return summary ? summary.median : null
     },
     price,
+
+    book: (bookOptions) => readBook(context, bookOptions),
+
+    async series(seriesOptions) {
+      // The quote defaults to Kei in both halves, and the trade walk is filtered
+      // by it as well as the series is — otherwise a sword that traded for gold
+      // and for Kei draws one chart out of two different currencies.
+      const quote = seriesOptions.quote === undefined ? KEI_ASSET : assetIdOf(seriesOptions.quote)
+      const read = await readTrades(context, { ...seriesOptions, asset: seriesOptions.asset, quote })
+      return toSeries(read, { ...seriesOptions, quote })
+    },
+
+    async candles(candleOptions) {
+      const quote = candleOptions.quote === undefined ? KEI_ASSET : assetIdOf(candleOptions.quote)
+      const read = await readTrades(context, { ...candleOptions, asset: candleOptions.asset, quote })
+      return toCandles(read, { ...candleOptions, quote })
+    },
+
+    async prices(priceOptions = {}) {
+      const read = await readTrades(context, priceOptions)
+      return priceIndex(read, {
+        ...(priceOptions.quote === undefined ? {} : { quote: priceOptions.quote }),
+        ...(priceOptions.assets === undefined ? {} : { assets: priceOptions.assets }),
+      })
+    },
+
+    reconcile: (snapshot) => reconcileOffers(context, snapshot),
+
+    lifeOf: (offer) => classify(offer, { viewer: client.address, now }),
+
     close() {
       if (timer !== undefined) clearTimeout(timer)
       timer = undefined

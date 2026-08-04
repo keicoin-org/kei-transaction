@@ -48,6 +48,11 @@ import {
 } from '@keicoin/tokens'
 import { createMarket, type MarketApi } from '@keicoin/market'
 import { createEconomy, type EconomyApi, type Recipe, type RecipeSpec } from '@keicoin/economy'
+import {
+  createPlayerEconomy,
+  type PlayerEconomyApi,
+  type PlayerEconomyOptions,
+} from '@keicoin/player-economy'
 import { createWorkProvider } from '@keicoin/work'
 import { createWallet, type WalletApi } from '@keicoin/wallet'
 
@@ -93,7 +98,18 @@ export interface StartOptions {
    * `kei.economy`, and more can be added later with `economy.define()`.
    */
   recipes?: Iterable<Recipe | RecipeSpec>
+  /**
+   * The player's own shop: what it prices in, what this world deals in, and
+   * which chains to read when browsing (SPEC §9.1, §9.4). Reaches `kei.shop`.
+   *
+   * Everything about it is optional — a shop with no options prices in Kei and
+   * reads only the accounts it has been told about.
+   */
+  shop?: ShopSetup
 }
+
+/** `PlayerEconomyOptions` minus the market, which `Kei` always supplies its own. */
+export type ShopSetup = Omit<PlayerEconomyOptions, 'market'>
 
 export interface ServerOptions extends StartOptions {
   /** Required. The game's issuer seed — server-side only, always (SPEC §6.3). */
@@ -149,6 +165,14 @@ export class Kei {
   readonly market: MarketApi
   /** Rewards, sinks, shops and crafts, declared as recipes and dry-run first. */
   readonly economy: EconomyApi
+  /**
+   * This wallet's own stall, and everybody else's: list, buy, cancel, gift.
+   *
+   * The counterpart to `economy`, and the difference is who signs. `economy` is
+   * the game's catalogue, stocked from the game's account. `shop` is the
+   * player's, and nothing in it can be moved by the world it is embedded in.
+   */
+  readonly shop: PlayerEconomyApi
 
   private constructor(
     client: KeiClient,
@@ -157,6 +181,7 @@ export class Kei {
       autoClaim?: boolean
       autoCancelExpired?: boolean
       recipes?: Iterable<Recipe | RecipeSpec>
+      shop?: ShopSetup
     },
   ) {
     this.client = client
@@ -175,6 +200,9 @@ export class Kei {
       market: this.market,
       ...(options.recipes === undefined ? {} : { recipes: options.recipes }),
     })
+    // Same market again, for the same reason: one background expiry sweep, and
+    // a listing this shop writes is swept by it like any other (SPEC §9.3).
+    this.shop = createPlayerEconomy(client, { ...(options.shop ?? {}), market: this.market })
 
     const get = (symbolOrId: string, issuer?: string): Promise<PlayerToken> =>
       readToken(client, symbolOrId, issuer)
@@ -251,6 +279,7 @@ export class Kei {
       ...(options.autoClaim === undefined ? {} : { autoClaim: options.autoClaim }),
       ...(options.autoCancelExpired === undefined ? {} : { autoCancelExpired: options.autoCancelExpired }),
       ...(options.recipes === undefined ? {} : { recipes: options.recipes }),
+      ...(options.shop === undefined ? {} : { shop: options.shop }),
     })
     await client.start(options.autoReceive === false ? { autoReceive: false } : {})
     return kei
@@ -355,6 +384,7 @@ export class Kei {
   }
 
   close(): void {
+    this.shop.close()
     this.market.close()
     this.client.close()
   }

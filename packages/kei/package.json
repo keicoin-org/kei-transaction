@@ -47,7 +47,8 @@
     "@keicoin/claims": "^0.4.0",
     "@keicoin/core": "^0.4.0",
     "@keicoin/economy": "^0.1.0",
-    "@keicoin/market": "^0.1.1",
+    "@keicoin/market": "^0.2.0",
+    "@keicoin/player-economy": "^0.1.0",
     "@keicoin/tokens": "^0.5.0",
     "@keicoin/wallet": "^0.4.1",
     "@keicoin/work": "^0.4.0"

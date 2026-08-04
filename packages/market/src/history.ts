@@ -20,7 +20,8 @@
 import type { AssetId, KeiClient, SwapOffer } from '@keicoin/core'
 import { fromRaw } from '@keicoin/core'
 
-import type { PriceSummary, Trade, TradeOptions } from './types.js'
+import { resolveAccounts } from './directory.js'
+import type { Offer, PriceSummary, Trade, TradeOptions } from './types.js'
 import { assetIdOf, durationMs } from './util.js'
 
 export interface LegMeta {
@@ -34,6 +35,8 @@ export interface MarketContext {
   client: KeiClient
   meta(asset: AssetId): Promise<LegMeta>
   now(): number
+  /** One raw offer as the public shape. Shared so book and lifecycle agree. */
+  toOffer(raw: SwapOffer): Promise<Offer>
 }
 
 /** Offers read per account, and blocks scanned for accepts, unless told otherwise. */
@@ -47,15 +50,18 @@ export async function readTrades(context: MarketContext, options: TradeOptions =
 
   const found = new Map<string, SwapOffer>()
   const accounts =
-    options.from === undefined
-      ? [client.address]
-      : typeof options.from === 'string'
-        ? [options.from]
-        : [...options.from]
+    options.from === undefined ? [client.address] : await resolveAccounts(options.from)
 
   for (const account of accounts) {
-    for (const raw of await client.node.accountSwaps(account, { limit, state: 'accepted' })) {
-      found.set(raw.hash, raw)
+    try {
+      for (const raw of await client.node.accountSwaps(account, { limit, state: 'accepted' })) {
+        found.set(raw.hash, raw)
+      }
+    } catch {
+      // One unreachable chain is a gap in the history rather than the end of it.
+      // A price summary missing a seller's trades is wrong by omission; one that
+      // throws is a chart that disappears whenever a node call times out.
+      continue
     }
   }
 

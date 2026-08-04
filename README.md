@@ -234,6 +234,71 @@ actually clears them off the ledger.
 the chains you name — there is no network-wide listing index, on purpose
 (the chain moves and records assets; it does not run a matching engine).
 
+Above those primitives sit the pieces a market screen actually needs: a bounded
+**directory** of which chains to read, a **book** that reads them in one walk per
+chain and reports what it could not see, **price series and candles** ready to
+draw, and a **verify-before-signing** check so an index can never become an
+authority.
+
+```js
+const directory = createDirectory()         // or your own { accounts() }
+directory.watch(sellerAddress)
+
+const book = await kei.market.book({ from: directory, asset: sword })
+book.asks[0]        // cheapest per unit
+book.coverage       // { asked, read, failed, truncated, dropped, complete }
+
+const series = await kei.market.series({ asset: sword, from: directory })
+series.ordering     // { by: 'advisory-time', exact, estimated, note }
+```
+
+**`coverage` and `ordering` are the honest half.** A book over a roster is a
+floor, never a census, and `complete: false` says which of four reasons applies.
+Prices are consensus; the *order* of them is the node's own first-seen time,
+because this chain has no clock — and the value says so rather than a comment.
+
+## Player shops
+
+The counterpart to the recipes below: a shop that belongs to the **player**, that
+a world can embed and cannot touch.
+
+```js
+const kei = await Kei.start({
+  shop: {
+    currency: gold.id,                                        // your money, not Kei
+    catalogue: [{ key: 'sword', asset: sword.id, title: 'Iron Sword' }],
+    directory,                                                // which chains to read
+  },
+})
+
+await kei.shop.list({ item: 'sword', qty: 2, each: 120 })     // open a stall
+const shelves = await kei.shop.browse()                        // everybody else's
+await kei.shop.buy(shelves.listings[0])                        // one block, both legs
+await kei.shop.gift({ to: friend, item: 'sword' })             // no price, no offer
+```
+
+`buy()` re-reads the offer and checks the seller, the item, the quantity and the
+price against the row you rendered before it signs — because matching price and
+quantity alone lets a dishonest index hand you a different item at the same
+price.
+
+A balance is three numbers here, not one, and the SDK keeps them apart:
+
+```js
+const funds = await kei.shop.funds()
+funds.confirmed   // what the chain says is spendable
+funds.incoming    // owed to you, not yet signed for
+funds.spendable   // confirmed minus what you signed a moment ago — the only one a spend uses
+```
+
+Nothing is custodial and nothing is stored. The world provides a directory of
+addresses and no more; it cannot list, cancel, buy, or gift for anybody, because
+it has no key for their account. A wrong directory hides a stall and cannot move
+an item.
+
+There is a runnable version in
+[`examples/player-shops`](examples/player-shops).
+
 ## Recipes: the systems around the money
 
 Rewards, sinks, shops and crafts are the same four shapes in every game, and
@@ -300,7 +365,8 @@ price it in one currency, or split it into a sink and a reward and say plainly
 that they are two steps.
 
 There is a runnable version of all of this in
-[`examples/economy`](examples/economy).
+[`examples/economy`](examples/economy), and its player-owned counterpart in
+[`examples/player-shops`](examples/player-shops).
 
 ## The wallet
 
@@ -339,6 +405,40 @@ cannot ask a follow-up question:
 ```
 Not enough Kei — balance is 0.4, tried to send 1.2.
 ```
+
+### The four tasks, in full
+
+Everything below is the complete call. There is no setup step missing, no
+session to establish, and no id to correlate.
+
+```js
+// 1. Sell something you hold, priced in the world's currency.
+await kei.shop.list({ item: 'sword', qty: 2, each: 120 })
+
+// 2. Find what is for sale, and buy one.
+const shelves = await kei.shop.browse()
+await kei.shop.buy(shelves.listings[0])      // verified against what you read
+
+// 3. Give something away.
+await kei.shop.gift({ to: address, item: 'sword' })     // or { kei: 0.5 }
+
+// 4. Take your own listing back.
+await kei.shop.cancel(listing)
+```
+
+Three return values are worth reading rather than ignoring, because each one
+reports a limit the chain genuinely has:
+
+| Field | What it means when it is not the happy value |
+|---|---|
+| `shelves.coverage.complete` | `false` — some chain failed, filled its page, or was evicted from the directory. The rows are a floor, not a census. |
+| `series.ordering.exact` | `false` — some trades had no settlement time and fell back to first-seen. The prices are still consensus; the order is not. |
+| `funds.spendable` vs `funds.confirmed` | They differ — something is signed and not yet read back. Check spends against `spendable`, always. |
+
+Refusals name the account that has to act. `"only its author can cancel it"`,
+`"is granted by kei_… and only that account can sign for it"`, and
+`"is not the trade that was shown to you"` are all telling you that the fix is a
+different signer or a re-read, not a retry.
 
 The ongoing M9 harness work lives in the standalone
 [`create-kei-game`](https://github.com/keicoin-org/create-kei-game) repository;
@@ -426,8 +526,9 @@ for people who care about bundle size, not as a puzzle everyone must solve.
 | `@keicoin/claims` | Merkle roots, proofs, claim blocks |
 | `@keicoin/work` | proof-of-work tiers, local generation, work-server client |
 | `@keicoin/wallet` | in-game wallet: balances, inventory, pending claims |
-| `@keicoin/market` | offers, atomic swap settlement, price history — depends on `@keicoin/core` alone |
+| `@keicoin/market` | offers, atomic swap settlement, bounded multi-account books, price history — depends on `@keicoin/core` alone |
 | `@keicoin/economy` | recipes: rewards, sinks, shops and crafts, with a dry run before anything signs |
+| `@keicoin/player-economy` | player-owned shops: list, browse, buy, cancel, gift, and honest pending state |
 
 `@keicoin/core` depends on nothing else in the tree.
 
@@ -455,6 +556,9 @@ Documentation worth reading before changing anything:
   process boundary changed, including the two bugs the test suite could not see
 - [`docs/decisions-m5.md`](docs/decisions-m5.md) — the swap wire layout proposal,
   and what the mock's accept-vs-cancel race does and does not prove
+- [`docs/decisions-player-economy.md`](docs/decisions-player-economy.md) — what
+  two applications had to invent on top of `@keicoin/market`, what moved into the
+  SDK, the acceptance criteria, and the gaps that remain
 - [`docs/rpc.md`](docs/rpc.md) — the node contract the fork has to serve
 
 ## Credit
