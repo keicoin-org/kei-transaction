@@ -27,6 +27,7 @@ import {
   toRaw,
   verifyProof,
   workRoot,
+  workValue,
 } from '@keicoin/core'
 
 const SEED_A = 'A'.repeat(64)
@@ -176,12 +177,15 @@ describe('work', () => {
     expect(meetsThreshold(root, nonce, BigInt(MOCK_THRESHOLDS.A))).toBe(true)
   })
 
-  test('work for one root does not satisfy another', async () => {
+  test('the work value is bound to its root', async () => {
     const keys = await keyPairFromSeed(SEED_A)
-    const nonce = generateWork(keys.publicKey, BigInt(MOCK_THRESHOLDS.A))
     const otherRoot = 'F'.repeat(64)
-    // Overwhelmingly likely to fail; the point is that the root is bound in.
-    expect(meetsThreshold(otherRoot, nonce, BigInt(MOCK_THRESHOLDS.A))).toBe(false)
+    const nonce = '0'.repeat(16)
+
+    // A valid nonce can satisfy multiple roots independently, so threshold
+    // rejection is probabilistic. Comparing fixed digest values proves the
+    // root is input to work without relying on a random negative outcome.
+    expect(workValue(keys.publicKey, nonce)).not.toBe(workValue(otherRoot, nonce))
   })
 })
 
