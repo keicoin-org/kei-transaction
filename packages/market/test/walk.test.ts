@@ -34,6 +34,7 @@ import {
   walkAccounts,
   withCoverage,
   type AccountRead,
+  type Coverage,
 } from '@keicoin/market'
 import { accountLimitOf } from '../src/walk.js'
 
@@ -254,11 +255,37 @@ describe('walkAccounts — coverage is the honest half', () => {
       complete: false,
     }
 
-    expect(mergeCoverage(missedFirst, missedSecond)).toMatchObject({
+    const merged = mergeCoverage(missedFirst, missedSecond)
+    expect(merged).toMatchObject({
       asked: 2,
       read: 0,
       complete: false,
     })
+    expect(coverageOf(withCoverage([], merged))).toEqual(merged)
+  })
+
+  test('the same failed account reduces read once and keeps both reasons', () => {
+    const first = {
+      ...emptyCoverage(),
+      asked: 2,
+      read: 1,
+      failed: [{ account: 'kei_a', reason: 'offers failed' }],
+      complete: false,
+    }
+    const second = {
+      ...emptyCoverage(),
+      asked: 2,
+      read: 1,
+      failed: [{ account: 'kei_a', reason: 'history failed' }],
+      complete: false,
+    }
+
+    const merged = mergeCoverage(first, second)
+    expect(merged).toMatchObject({ asked: 2, read: 1, complete: false })
+    expect(merged.failed).toEqual([
+      { account: 'kei_a', reason: 'offers failed; history failed' },
+    ])
+    expect(coverageOf(withCoverage([], merged))).toEqual(merged)
   })
 
   test('merging different account cardinalities refuses instead of inventing coverage', () => {
@@ -278,23 +305,125 @@ describe('walkAccounts — coverage is the honest half', () => {
     })
   })
 
+  test('an impossible failure union exposes equal-sized but different scopes', () => {
+    const missedA = {
+      ...emptyCoverage(),
+      asked: 1,
+      read: 0,
+      failed: [{ account: 'kei_a', reason: 'first failed' }],
+      complete: false,
+    }
+    const missedB = {
+      ...emptyCoverage(),
+      asked: 1,
+      read: 0,
+      failed: [{ account: 'kei_b', reason: 'second failed' }],
+      complete: false,
+    }
+
+    expect(() => mergeCoverage(missedA, missedB)).toThrow(
+      /name 2 failed accounts inside a scope of 1/,
+    )
+  })
+
   test('scope cardinality validation ignores absent optional reads', () => {
     const whole = { ...emptyCoverage(), asked: 2, read: 2 }
     expect(mergeCoverage(undefined, whole, null)).toEqual(whole)
   })
 
-  test('an unnamed read deficit is never upgraded to complete coverage', () => {
+  test('an unnamed read deficit is rejected before it can inflate read', () => {
     const partial = { ...emptyCoverage(), asked: 2, read: 1, complete: false }
-    expect(mergeCoverage(undefined, partial, null)).toMatchObject({
-      asked: 2,
-      read: 1,
-      complete: false,
-    })
+    expect(() => mergeCoverage(undefined, partial, null)).toThrow(/failed names 0 unique accounts/)
+    expect(coverageOf(withCoverage([], partial))).toBeNull()
   })
 
-  test('two incomplete reads with unnamed deficits refuse an unknowable intersection', () => {
-    const partial = { ...emptyCoverage(), asked: 2, read: 1, complete: false }
-    expect(() => mergeCoverage(partial, partial)).toThrow(/unnamed unread accounts/)
+  test('malformed public coverage rejects with a stable typed error before arithmetic', () => {
+    const cases: Array<{ value: unknown; message: string }> = [
+      {
+        value: { ...emptyCoverage(), asked: 1, read: 1, failed: [{ account: 'foreign', reason: 'forged' }], complete: false },
+        message: 'failed names 1 unique accounts',
+      },
+      {
+        value: { ...emptyCoverage(), asked: 1, read: 1, truncated: ['kei_x'], complete: true },
+        message: 'complete can only be true',
+      },
+      {
+        value: { ...emptyCoverage(), skipped: ['not-an-address'], complete: true },
+        message: 'complete can only be true',
+      },
+      {
+        value: { ...emptyCoverage(), dropped: 1, complete: true },
+        message: 'complete can only be true',
+      },
+      {
+        value: {
+          ...emptyCoverage(),
+          asked: 1,
+          read: 0,
+          failed: [{ account: 'kei_x', reason: 'node unreachable' }],
+          complete: true,
+        },
+        message: 'complete can only be true',
+      },
+      { value: { ...emptyCoverage(), asked: 0, read: 1 }, message: 'read (1) cannot exceed asked (0)' },
+      { value: { asked: 0, read: 0, dropped: 0, complete: true }, message: 'failed must be an array' },
+      { value: { ...emptyCoverage(), failed: undefined }, message: 'failed must be an array' },
+      { value: { ...emptyCoverage(), failed: {} }, message: 'failed must be an array' },
+      { value: { ...emptyCoverage(), truncated: undefined }, message: 'truncated must be an array of strings' },
+      { value: { ...emptyCoverage(), truncated: 'kei_x' }, message: 'truncated must be an array of strings' },
+      { value: { ...emptyCoverage(), skipped: undefined }, message: 'skipped must be an array of strings' },
+      { value: { ...emptyCoverage(), skipped: {} }, message: 'skipped must be an array of strings' },
+      {
+        value: { ...emptyCoverage(), asked: 1, read: 0, failed: [{ account: 'kei_x' }], complete: false },
+        message: 'failed[0] must contain string account and reason fields',
+      },
+      {
+        value: { ...emptyCoverage(), asked: 1, read: 0, failed: [{ account: 7, reason: 'failed' }], complete: false },
+        message: 'failed[0] must contain string account and reason fields',
+      },
+      {
+        value: { ...emptyCoverage(), asked: 1, read: 0, failed: [{ account: 'kei_x', reason: 7 }], complete: false },
+        message: 'failed[0] must contain string account and reason fields',
+      },
+      {
+        value: {
+          ...emptyCoverage(),
+          asked: 1,
+          read: 0,
+          failed: [
+            { account: 'kei_x', reason: 'first' },
+            { account: 'kei_x', reason: 'second' },
+          ],
+          complete: false,
+        },
+        message: 'more than once',
+      },
+      { value: { ...emptyCoverage(), truncated: [1] }, message: 'truncated must be an array of strings' },
+      { value: { ...emptyCoverage(), skipped: [null] }, message: 'skipped must be an array of strings' },
+      { value: { ...emptyCoverage(), complete: 'yes' }, message: 'complete must be a boolean' },
+    ]
+    for (const field of ['asked', 'read', 'dropped'] as const) {
+      for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
+        cases.push({
+          value: { ...emptyCoverage(), [field]: bad },
+          message: `${field} must be a non-negative safe integer`,
+        })
+      }
+    }
+
+    for (const entry of cases) {
+      let failure: unknown
+      try {
+        mergeCoverage(entry.value as Coverage)
+      } catch (error) {
+        failure = error
+      }
+      expect(failure).toBeInstanceOf(KeiError)
+      expect(failure).toMatchObject({
+        code: 'coverage-mismatch',
+        message: expect.stringContaining(entry.message),
+      })
+    }
   })
 })
 
@@ -421,7 +550,13 @@ describe('mapConcurrent', () => {
 })
 
 describe('coverage rides along without changing the rows', () => {
-  const coverage = { ...emptyCoverage(), asked: 2, read: 1, complete: false }
+  const coverage = {
+    ...emptyCoverage(),
+    asked: 2,
+    read: 1,
+    failed: [{ account: 'kei_missing', reason: 'node unreachable' }],
+    complete: false,
+  }
 
   test('the value is still an array in every way anything already used it', () => {
     const covered = withCoverage([1, 2, 3], coverage)
@@ -452,8 +587,22 @@ describe('coverage rides along without changing the rows', () => {
       { asked: 1, complete: true },
       { ...emptyCoverage(), asked: 1.5 },
       { ...emptyCoverage(), asked: 1, read: 0, complete: true },
+      { ...emptyCoverage(), asked: 2, read: 1, complete: false },
+      { ...emptyCoverage(), asked: 1, read: 1, failed: [{ account: 'foreign', reason: 'forged' }], complete: false },
+      { ...emptyCoverage(), asked: Number.NaN },
       { ...emptyCoverage(), failed: [{ account: 'kei_x' }] },
+      {
+        ...emptyCoverage(),
+        asked: 1,
+        read: 0,
+        failed: [
+          { account: 'kei_x', reason: 'first' },
+          { account: 'kei_x', reason: 'second' },
+        ],
+        complete: false,
+      },
       { ...emptyCoverage(), truncated: [1] },
+      { ...emptyCoverage(), truncated: ['kei_x'], complete: true },
       { ...emptyCoverage(), skipped: ['ok', null] },
     ]
     for (const carried of cases) {

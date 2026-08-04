@@ -179,7 +179,13 @@ describe('price series — consensus numbers, advisory order', () => {
   })
 
   test('an empty candle transform keeps the coverage of the walk that found nothing', () => {
-    const coverage = { ...emptyCoverage(), asked: 2, read: 1, complete: false }
+    const coverage = {
+      ...emptyCoverage(),
+      asked: 2,
+      read: 1,
+      failed: [{ account: 'kei_missing', reason: 'node unreachable' }],
+      complete: false,
+    }
     const candles = toCandles(withCoverage<Trade>([], coverage), {
       asset: 'SWORD',
       quote: KEI_ASSET,
