@@ -63,8 +63,12 @@ credential. Browser storage is recovery, not a backup; inject a store whose
 privacy and durability fit the application. A Node process can implement the
 same small `ClaimStore` interface without making the game or issuer a custodian.
 Persistent custom adapters should implement `admit` and `readAdmitted`; older
-adapters fail closed before mutation until upgraded. Legacy browser namespace
-v1 and claim-envelope v1/v2 records require explicit re-add and are not signed.
+adapters fail closed before mutation until upgraded. Browser namespace v3 binds
+a domain-separated admission digest to the exact stored envelope bytes. Legacy
+browser namespace v1/v2 records (including v2 boolean admission markers) and
+claim-envelope v1/v2 records have no current admission authority: they are not
+signed and require explicit re-add, which rewrites and admits the exact v3
+bytes.
 
 A forged proof, a forged amount, or a second claim from the same account is rejected
 by the ledger, not by the SDK. Roots are salted, so two identical batches are two

@@ -80,11 +80,14 @@ reaches 128; the other receives a typed refusal with capacity/concurrency
 guidance. A later writer cannot publish a stale namespace over an acknowledged
 proof.
 
-Browser namespace schema v2 stores the admission marker separately from the
-envelope bytes. Schema-v1 records and claim-envelope v1/v2 records have no such
-authority and are never signed automatically. Their raw bytes remain available
-for an explicit re-add of the original bundle, which rewrites and admits the v3
-record safely.
+Browser namespace schema v3 stores a domain-separated admission digest beside
+each envelope. The digest is bound to the exact stored envelope bytes, so a
+rewritten envelope cannot inherit authority from an earlier candidate. Browser
+namespace schemas v1 and v2 (whose marker was only a boolean), as well as
+claim-envelope schemas v1 and v2, have no current admission authority and are
+never signed automatically. Their raw bytes remain available for an explicit
+re-add of the original bundle, which rewrites the namespace and envelope as v3
+and admits the exact bytes safely.
 
 `createBrowserClaimStore(localStorage)` discovers `navigator.locks`. Browsers
 without Web Locks fail closed: records are not hydrated or signed, writes are

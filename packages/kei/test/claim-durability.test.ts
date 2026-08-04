@@ -339,6 +339,61 @@ describe('durable claim bundles', () => {
     expect(claimSubmissions).toBe(0)
   })
 
+  test('browser namespace v2 boolean authority requires explicit v3 re-admission', async () => {
+    const storage = new MemoryWebStorage()
+    const lockManager = new SerializedClaimLockManager()
+    const setup = remember(await Kei.start({ node, seed: PLAYER_SEED, autoClaim: false }))
+    const drop = await gems.commit([{ to: setup.address, amount: 21 }])
+    const bundle = drop.proofFor(setup.address)
+    const envelope = claimEnvelope(bundle)
+    const namespaceKey = `kei:claim-store:v1:mock:${encodeURIComponent(setup.address)}`
+    storage.setItem(namespaceKey, JSON.stringify({
+      version: 2,
+      records: [[bundle.root, envelope, true]],
+    }))
+    setup.close()
+
+    let claimSubmissions = 0
+    const originalProcess = node.process.bind(node)
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
+      return originalProcess(block)
+    }
+    const migrated = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: createBrowserClaimStore(storage, { lockManager }),
+    }))
+    expect(await migrated.claims.pending()).toHaveLength(0)
+    expect((await migrated.claims.storageStatus()).diagnostics.map(({ code }) => code))
+      .toEqual(['claim-store-quarantined'])
+    expect(claimSubmissions).toBe(0)
+
+    await migrated.claims.add(bundle)
+    expect((await migrated.claims.pending()).map(({ root }) => root)).toEqual([bundle.root])
+    const rewritten = JSON.parse(storage.getItem(namespaceKey) as string) as {
+      version: number
+      records: [string, string, string | null][]
+    }
+    expect(rewritten.version).toBe(3)
+    expect(rewritten.records).toHaveLength(1)
+    expect(rewritten.records[0]?.[0]).toBe(bundle.root)
+    expect(rewritten.records[0]?.[1]).toBe(envelope)
+    expect(typeof rewritten.records[0]?.[2]).toBe('string')
+    migrated.close()
+
+    const reopened = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: createBrowserClaimStore(storage, { lockManager }),
+    }))
+    expect((await reopened.claims.pending()).map(({ root, amount }) => ({ root, amount })))
+      .toEqual([{ root: bundle.root, amount: 21 }])
+    expect(claimSubmissions).toBe(0)
+  })
+
   test('altered browser candidate or authority bytes remain non-signable after recreation', async () => {
     const originalProcess = node.process.bind(node)
     let claimSubmissions = 0
