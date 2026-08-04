@@ -204,7 +204,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     return lookup
   }
 
-  const toOffer = async (raw: SwapOffer): Promise<Offer> => {
+  const toOffer = async (raw: SwapOffer, checkedNow?: number): Promise<Offer> => {
     const [give, want] = await Promise.all([meta(raw.asset), meta(raw.wantAsset)])
     const giveAmount = fromRaw(BigInt(raw.amount), give.decimals)
     const wantAmount = fromRaw(BigInt(raw.wantAmount), want.decimals)
@@ -216,7 +216,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
       price: giveAmount === 0 ? 0 : wantAmount / giveAmount,
       to: raw.counterparty,
       expiresAt: raw.expiresAt,
-      expired: raw.expiresAt !== null && raw.expiresAt <= now(),
+      expired: raw.expiresAt !== null && raw.expiresAt <= (checkedNow ?? now()),
       state: raw.state,
       mine: raw.from === client.address,
       acceptedBy: raw.acceptedBy,
@@ -377,8 +377,18 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     if (!created) {
       fail('offer-failed', `Offer ${hash} was published but cannot be read back. This is a node bug.`)
     }
-    arm(expiresAt, schedulingNow)
-    return toOffer(created)
+    let armingNow = schedulingNow
+    if (expiresAt !== undefined) {
+      try {
+        armingNow = clockTime(now)
+      } catch {
+        // The offer is already published. A clock that breaks during network
+        // work must not turn that successful write into a rejected call; the
+        // prevalidated value still provides a safe fallback timer.
+      }
+    }
+    arm(expiresAt, armingNow)
+    return toOffer(created, armingNow)
   }
 
   const accept = async (target: string | Offer, acceptOptions: AcceptOptions = {}): Promise<Settlement> => {
