@@ -464,6 +464,55 @@ screenshots, streams, and shoulder-surfing. It does not defend against an
 attacker: the seed is in browser storage, and any XSS on your page reads it
 whatever the UI does.
 
+### Whether the wallet survives a reload
+
+Browser storage is not always there. Private browsing, a switched-off store, a
+full quota, and browser policy all make `localStorage.setItem()` throw, and some
+of them make `getItem()` throw too. A generated seed that nothing kept is a
+wallet that a reload replaces — with everything sent to the old address gone —
+so `Kei.start()` says which one you have rather than looking identical either
+way:
+
+```js
+const kei = await Kei.start()
+
+kei.custody.durability   // 'persistent' | 'session' | 'supplied'
+kei.custody.origin       // 'generated' | 'restored' | 'supplied' | 'environment'
+kei.custody.reason       // why it is session-only: 'storage-write-refused', …
+kei.custody.message      // one sentence, safe to render or log — never the seed
+```
+
+`persistent` means the seed was written **and read back**, so a reload finds the
+same wallet. `session` means memory only, and a reload is a different wallet.
+`supplied` means you passed the seed (or `KEI_PLAYER_SEED`), so keeping it is
+yours to do and nothing was written anywhere.
+
+Two things follow from a `session` wallet, and both are handled rather than
+warned about:
+
+- **The address holds still for the rest of the session.** A seed browser
+  storage refused is kept in memory, so a second `Kei.start()` on the same page
+  is the same wallet rather than a second one that abandons the first's balance.
+- **`WalletPanel` says so, first and undismissably**, and puts the seed-backup
+  control inside the warning. A game drawing its own UI should read
+  `kei.custody` and do the same before it lets a wallet hold anything;
+  `panel.element.dataset.durability` carries the same fact for styling or for
+  disabling a buy button.
+
+If the wallet is meant to hold something and a session-only one is not
+acceptable, refuse at the door instead:
+
+```js
+const kei = await Kei.start({ requireDurableSeed: true })
+// KeiError seed-not-durable: "…browser storage refused to keep it — private
+// browsing, storage switched off, or a full quota. …"
+```
+
+A custom `storage` store keeps working unchanged. If it cannot survive a reload,
+say so — return `{ durability: 'session' }` from `write()`, or implement
+`status()` — and it will be reported as session rather than assumed durable. A
+store that returns nothing is verified by reading the seed back.
+
 ## For agents
 
 No signup, no API key, no dashboard, no OAuth, no interactive prompt anywhere.
@@ -554,10 +603,10 @@ The M0–M10 ladder was retired on 3 August 2026 for four concurrent tracks
 | **The network** | One public, rate-limited, best-effort Hetzner testnet node. `Kei.start()` selects it by default; `Kei.mock()` is explicit |
 | **The demo** | [Button](../button) — playable single-player, every number on the chain and none in a database |
 | **The market** | `@keicoin/market@0.2.0` — offers, atomic settlement, price history, all read from the chain, plus the directory, `book()`, `series()`, `candles()` and `accept(offer, { expect })`. Published 4 August 2026, on its own version line rather than the SDK set's because it is the newest package here and has the least mileage. **`kei.market` from a plain SDK install is `0.2.0`**: `kei-transaction@0.6.0`, published 4 August 2026, moved the umbrella's range from `^0.1.1` to `^0.2.0` rather than republishing the market itself |
-| **The wallet panel** | `WalletPanel.mount()` is real and tested end to end, with the SPEC §6.6 seed-reveal friction |
+| **The wallet panel** | `WalletPanel.mount()` is real and tested end to end, with the SPEC §6.6 seed-reveal friction — that much is in the published `@keicoin/wallet@0.4.2`. A wallet browser storage would not keep now says so before it shows a balance: `kei.custody` carries `persistent`/`session`/`supplied`, and the panel renders the session-only warning with the hex-seed backup control inside it (SPEC §6.4). **That pair is source-only in this tree and on no version yet** — see Releases below |
 | **Recipes and loot tables** | Recipes — declare a reward, a sink, or a shop once, dry-run it, and run only the half this key may sign — and drop tables — declare a table once, roll a party into one issuer block, and let the browser check the batch was published for the odds it was shown — are both reachable as `kei.economy` from an install. Drop tables add no consensus rules: every block written is one the SDK could already write by hand. Both are `@keicoin/economy@0.2.0`, published 4 August 2026 and depended on by `kei-transaction@0.6.0` |
 | **Player shops** | `@keicoin/player-economy@0.1.0` — `kei.shop`, the player's half of the same idea: list, browse, buy, cancel and gift from the player's own key, with nothing stocked or approved by the game. Published 4 August 2026. The `0.5.0` umbrella predated it and did not depend on it. `kei-transaction@0.6.0`, published 4 August 2026, takes the dependency, so `kei.shop` is reachable from a plain install; the package itself needed no new version |
-| **npm** | Every package in this tree has been published at least once. `@keicoin/market@0.2.0` and `@keicoin/player-economy@0.1.0` went out on 4 August 2026, and `kei-transaction@0.6.0` followed the same day, moving the umbrella's dependencies to `@keicoin/tokens@^0.5.1`, `@keicoin/wallet@^0.4.2`, `@keicoin/claims@^0.5.0`, `@keicoin/economy@^0.2.0`, `@keicoin/market@^0.2.0` and `@keicoin/player-economy@^0.1.0`, with `core`/`work` unchanged at `0.4.0`. A clean `bun add kei-transaction` (or `npm install`) now resolves that full set, including `kei.shop` and the market's `book()`/`series()`/`candles()`/`accept(offer, { expect })`, with one version of every package in the tree — verified against the registry on 4 August 2026. `create-kei-game@0.2.0` was released before the package moved to its standalone repository; future harness releases are owned there |
+| **npm** | Every package in this tree has been published at least once. `@keicoin/market@0.2.0` and `@keicoin/player-economy@0.1.0` went out on 4 August 2026, and `kei-transaction@0.6.0` followed the same day, moving the umbrella's dependencies to `@keicoin/tokens@^0.5.1`, `@keicoin/wallet@^0.4.2`, `@keicoin/claims@^0.5.0`, `@keicoin/economy@^0.2.0`, `@keicoin/market@^0.2.0` and `@keicoin/player-economy@^0.1.0`, with `core`/`work` unchanged at `0.4.0`. A clean `bun add kei-transaction` (or `npm install`) resolves that full set, including `kei.shop` and the market's `book()`/`series()`/`candles()`/`accept(offer, { expect })`, with one version of every package in the tree — verified against the registry on 4 August 2026. **What it does not resolve is the durability work below**, which is source-only in this tree, carries no version of its own yet, and is released by a PR of its own after it merges. `create-kei-game@0.2.0` was released before the package moved to its standalone repository; future harness releases are owned there |
 | **The harness** | Create Kei MMO owns its own releases. Its repository is still named [`create-kei-game`](https://github.com/keicoin-org/create-kei-game) pending the rename, and its default branch still carries the retired scaffolder that `create-kei-game@0.2.0` was published from; the transition into an ongoing MMO creation harness is an unmerged draft, [PR #1](https://github.com/keicoin-org/create-kei-game/pull/1) |
 | **The work server** | `@keicoin/work@0.4.0` exports the bounded handler/server integration and the `kei-work-server` CLI; operating a public instance is separate deployment work |
 
@@ -599,6 +648,20 @@ reason to share a number. What ties them together is the umbrella: whatever
 published outside that range may as well not exist. The **npm** row above is
 that lesson learned the expensive way, and this section exists so the next
 release is read as a set rather than as nine independent publishes.
+
+### Unreleased — the durability work, source-only
+
+`kei.custody`, `Kei.start({ requireDurableSeed })`, the `SeedStore` durability
+contract, and the wallet panel's session-only warning are in this tree and in no
+published package. Every version number in this repository is still the one that
+is on npm — `npm view kei-transaction version` reports `0.6.0`, `@keicoin/wallet`
+is `0.4.2` — and no version or dependency range has been moved ahead of a
+publish. The release that carries this work is a separate PR of its own, opened
+after the source lands, in the same order [#32] was followed by [#33]: the
+feature merges first, then one PR moves the whole set together.
+
+[#32]: https://github.com/keicoin-org/kei-transaction/pull/32
+[#33]: https://github.com/keicoin-org/kei-transaction/pull/33
 
 ### `0.6.0` — published 4 August 2026
 
@@ -673,6 +736,9 @@ Documentation worth reading before changing anything:
   and what the mock's accept-vs-cancel race does and does not prove
 - [`docs/decisions-drop-tables.md`](docs/decisions-drop-tables.md) — how a loot
   table binds to a published root, and the boundary of what that proves
+- [`docs/decisions-wallet-durability.md`](docs/decisions-wallet-durability.md) —
+  why a seed store now reports what a write was worth, and why a session-only
+  wallet reports rather than throws
 - [`docs/decisions-player-economy.md`](docs/decisions-player-economy.md) — what
   two applications had to invent on top of `@keicoin/market`, what moved into the
   SDK, the acceptance criteria, and the gaps that remain

@@ -33,7 +33,7 @@ import {
 import { createClaims } from '@keicoin/claims'
 import { createIssuerItems, createPlayerItems, type IssuerItemsApi, type PlayerItemsApi } from '@keicoin/tokens'
 import { createWallet } from '../src/index.js'
-import type { WalletPanelKei } from '../src/panel.js'
+import type { WalletPanelCustody, WalletPanelKei } from '../src/panel.js'
 
 /** Generates work locally against whatever thresholds the node advertises. */
 function localWork(node: KeiNode): WorkProvider {
@@ -53,11 +53,15 @@ interface BaseWallet {
   close(): void
 }
 
-async function baseWallet(
-  node: MockNode,
-  role: Role,
-  options: { seed?: string; reveal?: RevealPolicy; autoClaim?: boolean },
-): Promise<BaseWallet> {
+interface WalletOptions {
+  seed?: string
+  reveal?: RevealPolicy
+  autoClaim?: boolean
+  /** What `Kei.start()` would have reported about this seed (SPEC §6.4). */
+  custody?: WalletPanelCustody
+}
+
+async function baseWallet(node: MockNode, role: Role, options: WalletOptions): Promise<BaseWallet> {
   const keys = await keyPairFromSeed(options.seed ?? randomSeed())
   const client = new KeiClient({
     node,
@@ -83,6 +87,7 @@ async function baseWallet(
       },
     },
     wallet,
+    ...(options.custody === undefined ? {} : { custody: options.custody }),
   }
 
   return { client, kei, claims, close: () => client.close() }
@@ -96,10 +101,7 @@ export interface TestIssuer extends BaseWallet {
   items: IssuerItemsApi
 }
 
-export async function makePlayer(
-  node: MockNode,
-  options: { seed?: string; reveal?: RevealPolicy; autoClaim?: boolean } = {},
-): Promise<TestPlayer> {
+export async function makePlayer(node: MockNode, options: WalletOptions = {}): Promise<TestPlayer> {
   const base = await baseWallet(node, 'player', options)
   return { ...base, items: createPlayerItems(base.client) }
 }

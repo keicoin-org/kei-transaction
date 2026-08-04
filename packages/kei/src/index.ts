@@ -29,8 +29,15 @@ export {
   looksLikeBrowser,
   testnetAllowedInDeployment,
 } from './environment.js'
-export { defaultSeedStore, seedStoreKey } from './storage.js'
-export type { SeedStore } from './storage.js'
+export { defaultSeedStore, describeCustody, persistSeed, readSeed, seedStoreKey } from './storage.js'
+export type {
+  SeedCustody,
+  SeedDurability,
+  SeedOrigin,
+  SeedSessionReason,
+  SeedStore,
+  SeedWriteResult,
+} from './storage.js'
 
 // Re-export the common surface, so an integration never has to reach past the
 // umbrella for a type or a helper it can see in its own editor.
@@ -246,6 +253,7 @@ export type {
   ItemHolding,
   TokenBalance,
   WalletApi,
+  WalletPanelCustody,
   WalletPanelHandle,
   WalletPanelKei,
   WalletPanelOptions,

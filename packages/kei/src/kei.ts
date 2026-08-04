@@ -64,7 +64,17 @@ import { createWorkProvider } from '@keicoin/work'
 import { createWallet, type WalletApi } from '@keicoin/wallet'
 
 import { assertServerOnly, deploymentSignal, testnetAllowedInDeployment } from './environment.js'
-import { defaultSeedStore, environmentSeed, seedStoreKey, type SeedStore } from './storage.js'
+import {
+  defaultSeedStore,
+  describeCustody,
+  environmentSeed,
+  persistSeed,
+  readDurability,
+  readSeed,
+  seedStoreKey,
+  type SeedCustody,
+  type SeedStore,
+} from './storage.js'
 
 const DEFAULT_TESTNET_NODE_URL = 'https://testnet.keicoin.org/rpc'
 
@@ -97,6 +107,17 @@ export interface StartOptions {
   /** A work server, so proof-of-work does not pause the game (SPEC §5.5). */
   workServer?: string
   storage?: SeedStore
+  /**
+   * Refuse to start rather than hand back a wallet that a reload would lose
+   * (SPEC §6.4). Default false, because a session-only wallet is still the
+   * right thing for a demo, a test, or a player in private browsing — what is
+   * never right is not saying so, which is what `kei.custody` is for.
+   *
+   * Turn it on where the wallet is meant to hold something: the error names the
+   * reason and the fix, and it arrives before the address does rather than
+   * after it has been funded.
+   */
+  requireDurableSeed?: boolean
   /** Where item images go. Defaults to a local stand-in until M4. */
   uploader?: IpfsUploader
   /**
@@ -190,9 +211,19 @@ export class Kei {
    * player's, and nothing in it can be moved by the world it is embedded in.
    */
   readonly shop: PlayerEconomyApi
+  /**
+   * Where this wallet's seed came from and whether it survives a reload
+   * (SPEC §6.4). `durability: 'session'` means memory only — the wallet works,
+   * and anything sent to it is lost the moment the page reloads.
+   *
+   * `WalletPanel` reads this and warns the player; a game drawing its own UI
+   * should do the same before it lets a wallet hold anything.
+   */
+  readonly custody: SeedCustody
 
   private constructor(
     client: KeiClient,
+    custody: SeedCustody,
     options: {
       uploader?: IpfsUploader
       autoClaim?: boolean
@@ -205,6 +236,7 @@ export class Kei {
     this.client = client
     this.network = client.node.network
     this.role = client.role
+    this.custody = custody
 
     this.claims = createClaims(client, options.autoClaim === false ? { autoClaim: false } : {})
     this.wallet = createWallet(client, { claims: this.claims })
@@ -252,8 +284,14 @@ export class Kei {
   /** The player, in the browser. Self-provisions with no signup (SPEC §6.2, §12). */
   static async start(options: StartOptions = {}): Promise<Kei> {
     const node = await resolveNode(options)
-    const keys = await resolvePlayerKeys(options, node.network)
-    return Kei.assemble(node, keys, 'player', options)
+    const { keys, custody } = await resolvePlayerKeys(options, node.network)
+    if (options.requireDurableSeed && custody.durability === 'session') {
+      fail(
+        'seed-not-durable',
+        `Kei.start({ requireDurableSeed: true }) is refusing to hand back a wallet nothing can keep. ${custody.message}`,
+      )
+    }
+    return Kei.assemble(node, keys, 'player', custody, options)
   }
 
   /** The game, on a server. Refuses to run in a browser (SPEC §6.3). */
@@ -268,7 +306,9 @@ export class Kei {
     const node = await resolveNode(options)
     assertNetworkFitsDeployment(node.network)
     const keys = await keyPairFromSeed(normalizeSeed(options.seed, 'issuer seed'), options.index ?? 0)
-    return Kei.assemble(node, keys, 'issuer', options)
+    // An issuer seed is always the caller's: `Kei.server()` requires one and
+    // this SDK never writes it anywhere (SPEC §6.3).
+    return Kei.assemble(node, keys, 'issuer', describeCustody('supplied'), options)
   }
 
   /**
@@ -283,6 +323,7 @@ export class Kei {
     node: KeiNode,
     keys: KeyPair,
     role: Role,
+    custody: SeedCustody,
     options: StartOptions,
   ): Promise<Kei> {
     const work: WorkProvider = createWorkProvider(node, options.workServer ? { workServer: options.workServer } : {})
@@ -293,7 +334,7 @@ export class Kei {
       role,
       ...(options.reveal === undefined ? {} : { reveal: options.reveal }),
     })
-    const kei = new Kei(client, {
+    const kei = new Kei(client, custody, {
       ...(options.uploader === undefined ? {} : { uploader: options.uploader }),
       ...(options.autoClaim === undefined ? {} : { autoClaim: options.autoClaim }),
       ...(options.autoCancelExpired === undefined ? {} : { autoCancelExpired: options.autoCancelExpired }),
@@ -460,17 +501,44 @@ async function resolveNode(options: StartOptions): Promise<KeiNode> {
   return new HttpNode({ url: DEFAULT_TESTNET_NODE_URL, network: 'testnet' })
 }
 
-async function resolvePlayerKeys(options: StartOptions, network: NetworkName): Promise<KeyPair> {
-  if (options.seed) return keyPairFromSeed(normalizeSeed(options.seed), options.index ?? 0)
+/**
+ * The seed, and an honest account of where it came from (SPEC §6.4).
+ *
+ * The order matters and is unchanged: an explicit seed, then the store, then
+ * the environment, then a new one. What is new is that the last case reports
+ * whether the write survived — a generated seed nothing kept is a wallet that a
+ * reload loses, and the one thing this must never do is hand that back looking
+ * exactly like a saved one.
+ */
+async function resolvePlayerKeys(
+  options: StartOptions,
+  network: NetworkName,
+): Promise<{ keys: KeyPair; custody: SeedCustody }> {
+  const index = options.index ?? 0
+  if (options.seed) {
+    return { keys: await keyPairFromSeed(normalizeSeed(options.seed), index), custody: describeCustody('supplied') }
+  }
 
   const store = options.storage ?? defaultSeedStore()
   const key = seedStoreKey(network)
-  const existing = store.read(key) ?? environmentSeed()
-  if (existing) return keyPairFromSeed(normalizeSeed(existing, 'stored seed'), options.index ?? 0)
+  const stored = readSeed(store, key)
+  if (stored) {
+    return {
+      keys: await keyPairFromSeed(normalizeSeed(stored, 'stored seed'), index),
+      custody: describeCustody('restored', readDurability(store)),
+    }
+  }
+  const fromEnvironment = environmentSeed()
+  if (fromEnvironment) {
+    return {
+      keys: await keyPairFromSeed(normalizeSeed(fromEnvironment, 'seed from KEI_PLAYER_SEED'), index),
+      custody: describeCustody('environment'),
+    }
+  }
 
   const seed = randomSeed()
-  store.write(key, seed)
-  return keyPairFromSeed(seed, options.index ?? 0)
+  const written = persistSeed(store, key, seed)
+  return { keys: await keyPairFromSeed(seed, index), custody: describeCustody('generated', written) }
 }
 
 export { KEI_DECIMALS }

@@ -112,6 +112,7 @@ export function createWallet(client: KeiClient, options: WalletOptions = {}): Wa
 
 export { WalletPanel } from './panel.js'
 export type {
+  WalletPanelCustody,
   WalletPanelHandle,
   WalletPanelKei,
   WalletPanelOptions,

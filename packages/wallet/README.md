@@ -27,9 +27,28 @@ handle.unmount()   // deterministic: removes the DOM, unsubscribes, clears any r
 ```
 
 `kei` is whatever `Kei.start()`/`Kei.server()` returned — the panel only needs its
-public `address`, `seed`, `client.reveal`, and `wallet` (`WalletPanelKei`), so no
-adapter is needed. The panel re-renders on `kei.wallet`'s own `change` event, so
-balances, tokens, items, and pending claims stay live with no polling.
+public `address`, `seed`, `client.reveal`, `wallet`, and `custody`
+(`WalletPanelKei`), so no adapter is needed. The panel re-renders on
+`kei.wallet`'s own `change` event, so balances, tokens, items, and pending claims
+stay live with no polling.
+
+### A wallet a reload would lose says so first
+
+Browser storage is not durable, and in private browsing it can refuse a write
+outright (SPEC §6.4). When `kei.custody.durability` is `'session'` the panel
+renders an undismissable warning **above every number**, and puts the seed-backup
+control inside it — the sentence that names the risk and the control that answers
+it are one thing, not two places.
+
+```js
+kei.custody.durability            // 'persistent' | 'session' | 'supplied'
+handle.element.dataset.durability // the same fact, for styling or for disabling your own buy button
+```
+
+With `reveal: 'never'` there is no backup control to offer, so the warning says
+that too: the wallet cannot be saved at all and should be kept empty until the
+game turns backup on. A `kei` object that carries no `custody` mounts as before
+and the panel claims nothing.
 
 ### Seed reveal, and streamer mode
 
