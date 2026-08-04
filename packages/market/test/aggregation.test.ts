@@ -308,6 +308,21 @@ describe('price series — consensus numbers, advisory order', () => {
     expect((error as Error).message).toContain('18014398509481983 candles')
   })
 
+  test('negative advisory times use mathematical-floor candle buckets', () => {
+    for (const fill of [false, true]) {
+      const candles = toCandles([sale('NEGATIVE', 1, 5, -1)], {
+        asset: 'SWORD',
+        quote: KEI_ASSET,
+        every: 2,
+        fill,
+      })
+
+      expect(candles).toHaveLength(1)
+      expect(candles[0]?.at).toBe(-2)
+      expect(Number.isSafeInteger(candles[0]?.at)).toBe(true)
+    }
+  })
+
   test('negative extreme times cannot form unsafe sparse or single filled buckets', () => {
     for (const fill of [false, true]) {
       const error = caught(() =>
