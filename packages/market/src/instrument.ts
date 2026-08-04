@@ -404,6 +404,7 @@ function createInstrument(
       from: bound.accounts,
       asset: base,
       quote,
+      asOf: requestedAt,
       ...(window === undefined ? {} : { window }),
       ...(last === undefined ? {} : { last }),
       ...(limit === undefined ? {} : { limit }),
@@ -462,6 +463,7 @@ function createInstrument(
         from: readSource,
         asset: base,
         quote,
+        asOf: requestedAt,
         ...(window === undefined ? {} : { window }),
         ...(last === undefined ? {} : { last }),
         ...(historyLimit === undefined ? {} : { limit: historyLimit }),
@@ -948,6 +950,7 @@ function assertInstrumentLevel(instrument: InstrumentIdentity, level: Instrument
   const exact = exactPrice(level, instrument)
   const shown = level.exact
   if (!shown || shown.baseRaw !== exact.baseRaw || shown.quoteRaw !== exact.quoteRaw
+    || shown.baseDecimals !== exact.baseDecimals || shown.quoteDecimals !== exact.quoteDecimals
     || shown.numerator !== exact.numerator || shown.denominator !== exact.denominator) {
     fail('offer-changed', `Offer ${level.hash} has display ratio metadata that disagrees with its displayed raw terms. Refresh the instrument before accepting it.`)
   }

@@ -25,7 +25,7 @@
  * `price()` and chart views can label a partial read instead of stating it flat.
  */
 
-import type { AssetId, KeiClient, SwapOffer } from '@keicoin/core'
+import { fail, type AssetId, type KeiClient, type SwapOffer } from '@keicoin/core'
 
 import type { Offer, PriceSummary, Trade, TradeOptions } from './types.js'
 import { assetIdOf, durationMs } from './util.js'
@@ -62,6 +62,12 @@ export async function readTrades(context: MarketContext, options: TradeOptions =
   const limit = accountLimitOf(options.limit, 'trade history limit')
   const asset = options.asset === undefined ? undefined : assetIdOf(options.asset)
   const quote = options.quote === undefined ? undefined : assetIdOf(options.quote)
+  // Anchor the requested interval before touching a directory or the network.
+  // A slow page must not move either edge of the range, and rows observed after
+  // the caller's advertised `asOf` do not belong in that response.
+  const asOf = tradeTime(options.asOf, () => context.now())
+  const window = options.window === undefined ? undefined : durationMs(options.window, 'window')
+  const since = window === undefined ? undefined : subtractTime(asOf, window)
   const read = {
     signal: options.signal,
     concurrency: options.concurrency,
@@ -88,15 +94,15 @@ export async function readTrades(context: MarketContext, options: TradeOptions =
   for (const raw of bought?.rows ?? []) found.set(raw.hash, raw)
   const coverage = mergeCoverage(walk.coverage, bought?.coverage)
 
-  const since =
-    options.window === undefined ? undefined : context.now() - durationMs(options.window, 'window')
-
   const matched: SwapOffer[] = []
   for (const raw of found.values()) {
     if (raw.state !== 'accepted') continue
     if (asset !== undefined && raw.asset !== asset && raw.wantAsset !== asset) continue
     if (quote !== undefined && raw.asset !== quote && raw.wantAsset !== quote) continue
-    if (since !== undefined && (raw.settledAt === null || raw.settledAt < since)) continue
+    // With a window, an untimed row cannot honestly be placed inside it. With
+    // no window, retain untimed legacy history while bounding every timed row.
+    if (raw.settledAt !== null && (raw.settledAt > asOf || (since !== undefined && raw.settledAt < since))) continue
+    if (since !== undefined && raw.settledAt === null) continue
     matched.push(raw)
   }
 
@@ -120,6 +126,30 @@ export async function readTrades(context: MarketContext, options: TradeOptions =
     read,
   )
   return withCoverage(trades, coverage)
+}
+
+function tradeTime(requested: number | undefined, now: () => number): number {
+  let at: number
+  try {
+    at = requested ?? now()
+  } catch (error) {
+    fail(
+      'bad-market-time',
+      `The market clock threw instead of returning a safe whole-number millisecond time: ${error instanceof Error ? error.message : String(error)}.`,
+    )
+  }
+  if (!Number.isSafeInteger(at)) {
+    fail('bad-market-time', `Trade history asOf must be a safe whole-number millisecond time; got ${String(at)}.`)
+  }
+  return at
+}
+
+function subtractTime(at: number, duration: number): number {
+  const answer = at - duration
+  if (!Number.isSafeInteger(answer)) {
+    fail('bad-duration', 'The requested trade window reaches outside safe whole-number millisecond time.')
+  }
+  return answer
 }
 
 /**

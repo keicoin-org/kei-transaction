@@ -213,6 +213,7 @@ describe('instrument market product surface', () => {
     await expect(instrument.snapshot({ history: { limit: Infinity } })).rejects.toMatchObject({ code: 'bad-limit' })
     await expect(instrument.snapshot({ history: { last: -1 } })).rejects.toMatchObject({ code: 'bad-limit' })
     await expect(instrument.snapshot({ history: { maxCandles: Infinity } })).rejects.toMatchObject({ code: 'bad-max-candles' })
+    await expect(buyer.market.trades({ from: source, asOf: Number.NaN })).rejects.toMatchObject({ code: 'bad-market-time' })
     expect(touched).toBe(0)
   })
 
@@ -240,6 +241,59 @@ describe('instrument market product surface', () => {
     expect(history.candles).toEqual([])
   })
 
+  test('a delayed history read keeps the lower bound anchored to request time', async () => {
+    const { world, seller, buyer, sword } = await marketWorld()
+    const sellerInstrument = seller.market.instrument({ base: sword, quote: KEI_ASSET, source: [seller.address] })
+    const included = await sellerInstrument.sell({ units: 1, unitPrice: 2 })
+    await buyer.market.accept(included)
+    world.clock.tick(500)
+
+    const gated = new GateNode(world.node)
+    gated.hold('accountSwaps', (account) => account === seller.address)
+    const observer = await world.actor('lower-bound-observer', { node: gated })
+    const requestedAt = world.clock.at
+    const pending = observer.market
+      .instrument({ base: sword, quote: KEI_ASSET, source: [seller.address] })
+      .history({ interval: 1, range: { window: 1_000 } })
+    const read = await gated.captured()
+
+    // If the lower bound were computed after this delay, the included trade
+    // would fall out of the window even though it was in range when requested.
+    world.clock.tick(1_000)
+    read.release()
+    const history = await pending
+
+    expect(history.requested).toEqual({ window: 1_000, from: requestedAt - 1_000, to: requestedAt })
+    expect(history.points.map((point) => point.hash)).toEqual([included.hash])
+  }, 30_000)
+
+  test('a delayed history read excludes rows settled after its advertised upper bound', async () => {
+    const { world, seller, buyer, sword } = await marketWorld()
+    const sellerInstrument = seller.market.instrument({ base: sword, quote: KEI_ASSET, source: [seller.address] })
+    const before = await sellerInstrument.sell({ units: 1, unitPrice: 2 })
+    await buyer.market.accept(before)
+    world.clock.tick(1)
+
+    const gated = new GateNode(world.node)
+    gated.hold('accountSwaps', (account) => account === seller.address)
+    const observer = await world.actor('upper-bound-observer', { node: gated })
+    const requestedAt = world.clock.at
+    const pending = observer.market
+      .instrument({ base: sword, quote: KEI_ASSET, source: [seller.address] })
+      .history({ interval: 1, range: { window: 1_000 } })
+    const read = await gated.captured()
+
+    world.clock.tick(1)
+    const after = await sellerInstrument.sell({ units: 1, unitPrice: 3 })
+    await buyer.market.accept(after)
+    read.release()
+    const history = await pending
+
+    expect(history.requested.to).toBe(requestedAt)
+    expect(history.points.map((point) => point.hash)).toEqual([before.hash])
+    expect(history.points.some((point) => point.hash === after.hash)).toBe(false)
+  }, 30_000)
+
   test('unit-priced asks and bids produce exact total terms and displayed levels cannot weaken acceptance', async () => {
     const { seller, buyer, sword } = await marketWorld()
     const source = [seller.address, buyer.address]
@@ -266,6 +320,23 @@ describe('instrument market product surface', () => {
     expect(level.unitPrice).toBe(1.5)
     expect(level.exact).toMatchObject({ baseRaw: '2', quoteRaw: '3000000000000000000' })
   })
+
+  test('displayed exact decimal metadata cannot be changed before instrument acceptance', async () => {
+    const { seller, buyer, sword } = await marketWorld()
+    const sell = seller.market.instrument({ base: sword, quote: KEI_ASSET, source: [seller.address] })
+    const buy = buyer.market.instrument({ base: sword, quote: KEI_ASSET, source: [seller.address] })
+    const offer = await sell.sell({ units: 1, unitPrice: 2 })
+    const shown = (await buy.snapshot()).book.bestAsk!
+
+    const wrongBaseDecimals = structuredClone(shown)
+    wrongBaseDecimals.exact.baseDecimals += 1
+    await expect(buy.accept(wrongBaseDecimals)).rejects.toMatchObject({ code: 'offer-changed' })
+
+    const wrongQuoteDecimals = structuredClone(shown)
+    wrongQuoteDecimals.exact.quoteDecimals -= 1
+    await expect(buy.accept(wrongQuoteDecimals)).rejects.toMatchObject({ code: 'offer-changed' })
+    expect((await buyer.market.get(offer.hash))?.state).toBe('open')
+  }, 30_000)
 
   test('subscription never overlaps, aborts cleanly, and emits nothing after stop', async () => {
     const { world, seller, sword } = await marketWorld()

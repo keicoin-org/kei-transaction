@@ -183,6 +183,13 @@ export interface TradeOptions extends ReadOptions {
   quote?: AssetId | { id: AssetId }
   /** Node-local time window, e.g. `'7d'` — see the caveat on `Trade.settledAt`. */
   window?: Duration
+  /**
+   * Inclusive node-local observation-time upper bound for this read. Defaults
+   * to the market clock captured before the account walk starts. When paired
+   * with `window`, both ends of the range are derived from this same anchor.
+   * Untimed trades are retained only when no window is requested.
+   */
+  asOf?: number
   /** Keep only the most recent n. */
   last?: number
   /** History rows read per account. Positive safe integer; default 100. */
