@@ -61,7 +61,7 @@ describe('chart aliases are strict compatibility wrappers', () => {
     await buyer.market.accept(listing)
 
     const chart = await seller.market.chart({ from: [seller.address, buyer.address], asset, every: '1m' })
-    const series = await seller.market.series({ from: [seller.address, buyer.address], asset, every: '1m' })
+    const series = await seller.market.series({ from: [seller.address, buyer.address], asset })
     const candles = await seller.market.candles({ from: [seller.address, buyer.address], asset, every: '1m' })
 
     expect(chart.series).toEqual(series)

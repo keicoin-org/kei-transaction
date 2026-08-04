@@ -304,6 +304,21 @@ try {
 const series  = await market.series({ asset: sword, from: directory })
 const candles = await market.candles({ asset: sword, from: directory, every: '1h' })
 const prices  = await market.prices({ from: directory })   // every asset, one walk
+
+// One pass, both series and candles when you need both views:
+const chart = await market.chart({
+  asset: sword,
+  from: directory,
+  every: '1h',
+  window: '30d',
+})
+```
+
+For shorter chart-oriented naming, the same calls are available as:
+
+```js
+const seriesAlias = await market.history({ asset: sword, from: directory })
+const candlesAlias = await market.ohlc({ asset: sword, from: directory, every: '1h' })
 ```
 
 **Read this before shipping a chart.** The prices, units, medians, ranges and

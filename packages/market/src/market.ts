@@ -135,8 +135,13 @@ export interface MarketApi {
   book(options: BookOptions): Promise<Book>
   /** Settled trades as an ordered price series, ready to draw (see `series.ts`). */
   series(options: SeriesOptions & TradeOptions): Promise<Series>
+  /** Market-friendly alias for `series(...)` when you are building a chart. */
+  history(options: SeriesOptions & TradeOptions): Promise<Series>
   /** The same series as OHLCV buckets. Bucketing is advisory — read `series.ts`. */
   candles(options: CandleOptions & TradeOptions): Promise<Covered<Candle>>
+  /** Market-friendly alias for `candles(...)` when charting an instrument. */
+  ohlc(options: CandleOptions & TradeOptions): Promise<Covered<Candle>>
+  chart(options: SeriesOptions & CandleOptions & TradeOptions): Promise<{ series: Series; candles: Covered<Candle> }>
   /** Every traded asset's summary out of one walk, instead of one walk each. */
   prices(options?: TradeOptions & { assets?: Iterable<AssetId | { id: AssetId }> }): Promise<PriceIndex>
   /** Re-read a snapshot of listings and say what became of each one. */
@@ -717,6 +722,10 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
       return toSeries(read, { ...seriesOptions, quote })
     },
 
+    history(seriesOptions) {
+      return this.series(seriesOptions)
+    },
+
     async candles(candleOptions) {
       const quote = candleOptions.quote === undefined ? KEI_ASSET : assetIdOf(candleOptions.quote)
       const read = await readTrades(context, {
@@ -726,6 +735,24 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
         quote,
       })
       return withCoverage(toCandles(read, { ...candleOptions, quote }), coverageOf(read) ?? emptyCoverage())
+    },
+
+    ohlc(candleOptions) {
+      return this.candles(candleOptions)
+    },
+
+    async chart(chartOptions) {
+      const quote = chartOptions.quote === undefined ? KEI_ASSET : assetIdOf(chartOptions.quote)
+      const read = await readTrades(context, {
+        concurrency,
+        ...chartOptions,
+        asset: chartOptions.asset,
+        quote,
+      })
+      return {
+        series: toSeries(read, { ...chartOptions, quote }),
+        candles: withCoverage(toCandles(read, { ...chartOptions, quote }), coverageOf(read) ?? emptyCoverage()),
+      }
     },
 
     async prices(priceOptions = {}) {

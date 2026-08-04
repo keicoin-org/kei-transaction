@@ -266,6 +266,9 @@ describe('a walk is bounded, and a read can be stopped', () => {
       () => bob.market.prices({ from, signal: controller.signal }),
       () => bob.market.series({ asset: sword, from, signal: controller.signal }),
       () => bob.market.candles({ asset: sword, from, every: '1h', signal: controller.signal }),
+      () => bob.market.chart({ asset: sword, from, every: '1h', signal: controller.signal }),
+      () => bob.market.history({ asset: sword, from, signal: controller.signal }),
+      () => bob.market.ohlc({ asset: sword, from, every: '1h', signal: controller.signal }),
       () => bob.market.reconcile([sword.id], { signal: controller.signal }),
     ]
     for (const read of reads) {

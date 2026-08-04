@@ -275,4 +275,40 @@ describe('series and candles, read from the chain', () => {
     expect(candles).toHaveLength(1)
     expect(candles[0]).toMatchObject({ open: 5, high: 5, low: 5, close: 5, trades: 1, every: 86_400_000 })
   })
+
+  test('history and ohlc are aliases for series and candles', async () => {
+    const first = await alice.market.sell({ asset: sword, price: 4 })
+    const second = await bob.market.sell({ asset: sword, price: 6 })
+    await carol.market.accept(first)
+    await carol.market.accept(second)
+    await alice.sync()
+
+    const series = await alice.market.series({ asset: sword, from: [alice.address, bob.address] })
+    const candles = await alice.market.candles({ asset: sword, from: [alice.address, bob.address], every: '1d' })
+    const aliasSeries = await alice.market.history({ asset: sword, from: [alice.address, bob.address] })
+    const aliasCandles = await alice.market.ohlc({ asset: sword, from: [alice.address, bob.address], every: '1d' })
+
+    expect(aliasSeries).toEqual(series)
+    expect(aliasCandles).toEqual(candles)
+  })
+
+  test('chart() returns series and candles from the same read', async () => {
+    for (const price of [3, 4, 6]) {
+      const offer = await alice.market.sell({ asset: sword, price })
+      await bob.market.accept(offer)
+    }
+    await alice.sync()
+
+    const chart = await alice.market.chart({ asset: sword, from: [alice.address], every: '1d' })
+    const series = await alice.market.series({ asset: sword, from: [alice.address] })
+    const candles = await alice.market.candles({ asset: sword, from: [alice.address], every: '1d' })
+
+    expect(chart.series.points.map((point) => point.price)).toEqual([3, 4, 6])
+    expect(chart.series.first).toBe(3)
+    expect(chart.series.last).toBe(6)
+    expect(chart.series.summary?.median).toBe(4)
+    expect(chart.candles).toHaveLength(candles.length)
+    expect(chart.candles).toEqual(candles)
+    expect(chart.series.coverage).toEqual(series.coverage)
+  })
 })
