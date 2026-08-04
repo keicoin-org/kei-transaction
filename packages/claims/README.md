@@ -50,8 +50,9 @@ status contains an actionable diagnostic. Tests or embedded browser runtimes
 may inject a shared `ClaimWebLockManager` as the adapter's second argument.
 
 Records are namespaced by network, wallet address, and root. Every public claim
-path is read back exactly before signing; successful/already-claimed/closed
-roots are removed durably, and startup retries retained claims. The finite
+path writes and reads back a non-signable candidate, then atomically admits it
+before signing. Failed candidates and quarantine records are never signed;
+successful/already-claimed/closed roots are removed durably, and startup retries retained claims. The finite
 public limits are 128 records per wallet/network, 16,384 serialised bytes per
 record, 128 sibling hashes per proof, and 39 decimal amount digits (the ledger's
 unsigned 128-bit field). Unsupported versions, failed integrity checks, and
@@ -60,7 +61,8 @@ malformed or over-budget records are diagnosed and never signed.
 Bundles reveal award metadata even though they contain no seed, key, or server
 credential. Browser storage is recovery, not a backup; inject a store whose
 privacy and durability fit the application. A Node process can implement the
-same small `ClaimStore` interface without making the game or issuer a custodian.
+same small `ClaimStore` interface, including its atomic compare-and-set admission,
+without making the game or issuer a custodian.
 
 A forged proof, a forged amount, or a second claim from the same account is rejected
 by the ledger, not by the SDK. Roots are salted, so two identical batches are two

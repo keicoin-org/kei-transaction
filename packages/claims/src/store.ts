@@ -23,6 +23,18 @@ export interface ClaimStore {
   read(scope: ClaimStoreScope, root: string): string | null | Promise<string | null>
   /** Adapters must enforce the finite per-scope record count atomically. */
   write(scope: ClaimStoreScope, root: string, value: string): void | Promise<void>
+  /**
+   * Atomically replace one root only when its current bytes equal `expected`.
+   * `null` means the root is absent. A thrown/rejected operation MUST leave the
+   * record unchanged. This is the admission boundary that prevents a rejected
+   * candidate from becoming signable after a restart.
+   */
+  compareAndSet(
+    scope: ClaimStoreScope,
+    root: string,
+    expected: string | null,
+    replacement: string | null,
+  ): boolean | Promise<boolean>
   remove(scope: ClaimStoreScope, root: string): void | Promise<void>
 }
 
@@ -57,6 +69,28 @@ class MemoryClaimStore implements ClaimStore {
     }
     records.set(root, value)
     this.records.set(key, records)
+  }
+
+  compareAndSet(
+    scope: ClaimStoreScope,
+    root: string,
+    expected: string | null,
+    replacement: string | null,
+  ): boolean {
+    const key = scopeKey(scope)
+    const records = this.records.get(key) ?? new Map<string, string>()
+    if ((records.get(root) ?? null) !== expected) return false
+    if (replacement === null) {
+      records.delete(root)
+      if (records.size === 0) this.records.delete(key)
+      return true
+    }
+    if (!records.has(root) && records.size >= MAX_PENDING_CLAIMS) {
+      throw new ClaimStoreCapacityError('claim store record limit reached')
+    }
+    records.set(root, replacement)
+    this.records.set(key, records)
+    return true
   }
 
   remove(scope: ClaimStoreScope, root: string): void {
@@ -194,6 +228,34 @@ class BrowserClaimStore implements ClaimStore {
       if (existing === -1) records.push([root, value])
       else records[existing] = [root, value]
       this.storage.setItem(key, JSON.stringify({ version: BROWSER_NAMESPACE_VERSION, records }))
+    })
+  }
+
+  compareAndSet(
+    scope: ClaimStoreScope,
+    root: string,
+    expected: string | null,
+    replacement: string | null,
+  ): Promise<boolean> {
+    return this.withLock(scope, () => {
+      const key = browserNamespaceKey(scope)
+      const records = [...this.load(scope).records]
+      const existing = records.findIndex(([candidate]) => candidate === root)
+      const current = existing === -1 ? null : records[existing]?.[1] ?? null
+      if (current !== expected) return false
+      if (replacement === null) {
+        if (existing !== -1) records.splice(existing, 1)
+      } else if (existing === -1) {
+        if (records.length >= MAX_PENDING_CLAIMS) {
+          throw new ClaimStoreCapacityError('claim store record limit reached')
+        }
+        records.push([root, replacement])
+      } else {
+        records[existing] = [root, replacement]
+      }
+      if (records.length === 0) this.storage.removeItem(key)
+      else this.storage.setItem(key, JSON.stringify({ version: BROWSER_NAMESPACE_VERSION, records }))
+      return true
     })
   }
 

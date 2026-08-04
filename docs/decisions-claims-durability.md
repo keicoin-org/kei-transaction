@@ -7,8 +7,9 @@ not change consensus, RPC, blocks, proofs, seed custody, or issuer custody.
 
 ## 1. The boundary is root-addressable and caller-owned
 
-`ClaimStore` has four deliberately small operations: list roots, read one raw
-record, write one raw record, and remove one raw record. Every operation receives
+`ClaimStore` has five deliberately small operations: list roots, read one raw
+record, write one raw record, atomically compare-and-set one record, and remove
+one raw record. Every operation receives
 `{ network, address }`; the root is the logical record key. The browser adapter
 stores one versioned, bounded namespace value at
 `kei:claim-store:v1:<network>:<address>`, while a database adapter can map the
@@ -23,10 +24,11 @@ The SDK never uploads proofs or takes custody on an issuer's behalf.
 ## 2. Retention is established before signing
 
 Every signing entry point, including direct `claims.claim(bundle)`, validates
-and bounds a bundle, writes it, then reads the exact bytes back before claiming
-begins. A refusal or mismatch is a typed `KeiError` and no claim is signed. A
-successful claim is confirmed by the node before the stored record is removed,
-and removal is read back too.
+and bounds a bundle, writes a non-signable candidate, then reads its exact bytes
+back. The candidate is admitted only by an atomic compare-and-set. A refusal or
+mismatch is a typed `KeiError` and no claim is signed. A successful claim is
+confirmed by the node before the stored record is removed, and removal is read
+back too.
 
 This ordering leaves a safe duplicate after a crash between ledger acceptance
 and deletion. On the next start, `hasClaimed(address, root)` proves that no new
@@ -36,13 +38,14 @@ idempotency and later reconciliation remain the authority for submissions.
 
 ## 3. Stored input is versioned, bounded, and fail-closed
 
-Each value is JSON `{ version: 2, bundle, integrity }`, where `integrity` is a
-domain-separated BLAKE2b-256 digest of the normalised bundle. A mismatch is
-removed and read back; if removal cannot be proven, a versioned quarantine
-tombstone is written and read back at that root. Later instances diagnose the
-tombstone and never sign it. If neither cleanup action can be proven, altered
-bytes still fail integrity and a typed diagnostic tells the caller to repair the
-adapter. The public finite limits are:
+Each value is JSON `{ version: 3, state, bundle, integrity }`, where `state` is
+`candidate` or `admitted` and `integrity` is a domain-separated BLAKE2b-256
+digest of both the state and normalised bundle. Hydration signs only `admitted`
+records. On a candidate read-back mismatch, cleanup can replace only the exact
+candidate bytes with a quarantine tombstone; it cannot remove or overwrite a
+value another instance has admitted. A cleanup refusal is typed and remains
+fail-closed because candidate and quarantine records are never signed. The
+public finite limits are:
 
 | Limit | Value |
 |---|---:|
@@ -63,10 +66,11 @@ values, seeds, keys, signatures, or adapter exception text.
 `claims.storageStatus()` is the honest typed report. It includes the adapter's
 `'persistent' | 'session'` declaration, the active namespace, and diagnostics.
 A custom store is trusted code about whether its backing service really
-survives a restart; the SDK can verify immediate read-back, not a future disk.
+survives a restart and whether compare-and-set is atomic; the SDK can verify
+immediate read-back, not a future disk.
 
 The browser adapter encodes all records for one wallet/network in a single
-localStorage value and serialises every read, write, and removal for that
+localStorage value and serialises every read, write, compare-and-set, and removal for that
 namespace through the origin-wide Web Locks API. A mutation therefore reloads
 the latest snapshot while holding the exclusive lock: at 127 records, two tabs
 adding different roots cannot both report success and later lose one. One write

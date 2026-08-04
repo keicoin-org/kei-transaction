@@ -20,13 +20,16 @@ import {
 
 const PLAYER_SEED = 'D'.repeat(64)
 const OTHER_SEED = 'E'.repeat(64)
-const CLAIM_ENVELOPE_DOMAIN = 'kei-claim-envelope-v2\n'
+const CLAIM_ENVELOPE_DOMAIN = 'kei-claim-envelope-v3\n'
 
-function claimEnvelope(bundle: { root: string; asset: string; amount: string; proof: string[] }): string {
+function claimEnvelope(
+  bundle: { root: string; asset: string; amount: string; proof: string[] },
+  state: 'candidate' | 'admitted' = 'admitted',
+): string {
   const integrity = bytesToHex(
-    blake2b(utf8(`${CLAIM_ENVELOPE_DOMAIN}${JSON.stringify(bundle)}`), 32),
+    blake2b(utf8(`${CLAIM_ENVELOPE_DOMAIN}${state}\n${JSON.stringify(bundle)}`), 32),
   )
-  return JSON.stringify({ version: 2, bundle, integrity })
+  return JSON.stringify({ version: 3, state, bundle, integrity })
 }
 
 class MemoryWebStorage implements ClaimWebStorage {
@@ -86,6 +89,8 @@ class InspectableClaimStore implements ClaimStore {
   dropRemoves = false
   dropQuarantines = false
   throwRemoves = false
+  alterReads = 0
+  beforeRead: ((scope: ClaimStoreScope, root: string) => void) | undefined
   listedRoots: readonly string[] | undefined
 
   private key(scope: ClaimStoreScope): string {
@@ -98,7 +103,15 @@ class InspectableClaimStore implements ClaimStore {
   }
 
   read(scope: ClaimStoreScope, root: string): string | null {
-    return this.records.get(this.key(scope))?.get(root) ?? null
+    const beforeRead = this.beforeRead
+    this.beforeRead = undefined
+    beforeRead?.(scope, root)
+    const value = this.records.get(this.key(scope))?.get(root) ?? null
+    if (value !== null && this.alterReads > 0) {
+      this.alterReads -= 1
+      return `${value} `
+    }
+    return value
   }
 
   write(scope: ClaimStoreScope, root: string, value: string): void {
@@ -118,6 +131,39 @@ class InspectableClaimStore implements ClaimStore {
     const records = this.records.get(key) ?? new Map<string, string>()
     records.set(root, value)
     this.records.set(key, records)
+  }
+
+  compareAndSet(
+    scope: ClaimStoreScope,
+    root: string,
+    expected: string | null,
+    replacement: string | null,
+  ): boolean {
+    const key = this.key(scope)
+    const records = this.records.get(key) ?? new Map<string, string>()
+    if ((records.get(root) ?? null) !== expected) return false
+    const parsed = replacement === null ? null : JSON.parse(replacement) as {
+      bundle?: { amount: string }
+      state?: unknown
+    }
+    const creatingCandidate = expected === null && parsed?.state === 'candidate'
+    if (creatingCandidate) {
+      this.writeCount += 1
+      if (this.throwWrites) throw new Error('quota details must not escape')
+      if (this.dropWrites) return true
+    }
+    if (parsed?.state === 'quarantined' && this.dropQuarantines) return false
+    if (replacement === null) records.delete(root)
+    else {
+      if (creatingCandidate && this.alterWrites && parsed?.bundle) {
+        parsed.bundle.amount = String(BigInt(parsed.bundle.amount) + 1n)
+        replacement = JSON.stringify(parsed)
+      }
+      records.set(root, replacement)
+    }
+    if (records.size === 0) this.records.delete(key)
+    else this.records.set(key, records)
+    return true
   }
 
   remove(scope: ClaimStoreScope, root: string): void {
@@ -322,7 +368,7 @@ describe('durable claim bundles', () => {
     expect(error.code).toBe('claim-store-write-refused')
     expect(error.message).not.toContain('quota details')
     expect(store.writeCount).toBe(1)
-    expect(store.removeCount).toBe(1)
+    expect(store.removeCount).toBe(0)
     expect(claimSubmissions).toBe(0)
     expect(await gems.balanceOf(player.address)).toBe(0)
   })
@@ -647,10 +693,9 @@ describe('durable claim bundles', () => {
     expect(await gems.balanceOf(claimant.address)).toBe(13)
   })
 
-  test('a mismatched write that cannot be removed stays quarantined across recreation', async () => {
+  test('a mismatched candidate is atomically quarantined across recreation', async () => {
     const store = new InspectableClaimStore()
-    store.alterWrites = true
-    store.dropRemoves = true
+    store.alterReads = 1
     const player = remember(await Kei.start({
       node,
       seed: PLAYER_SEED,
@@ -679,11 +724,9 @@ describe('durable claim bundles', () => {
     expect(await store.list({ network: 'mock', address: reopened.address }, 2)).toEqual([drop.root])
   })
 
-  test('failed mismatch cleanup is diagnosed and integrity still blocks restart signing', async () => {
+  test('an altered candidate stays non-signable across recreation', async () => {
     const store = new InspectableClaimStore()
     store.alterWrites = true
-    store.dropRemoves = true
-    store.dropQuarantines = true
     const player = remember(await Kei.start({
       node,
       seed: PLAYER_SEED,
@@ -708,7 +751,59 @@ describe('durable claim bundles', () => {
     const reopened = remember(await Kei.start({ node, seed: PLAYER_SEED, claimStore: store }))
     expect(claimSubmissions).toBe(0)
     expect((await reopened.claims.storageStatus()).diagnostics.map(({ code }) => code))
-      .toEqual(['claim-store-corrupt'])
+      .toEqual(['claim-store-quarantined'])
+  })
+
+  test('cleanup refusal is typed and its candidate stays non-signable after restart', async () => {
+    const store = new InspectableClaimStore()
+    store.alterReads = 1
+    store.dropQuarantines = true
+    const player = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: store,
+    }))
+    const drop = await gems.commit([{ to: player.address, amount: 37 }])
+    expect((await refused(player.claims.add(drop.proofFor(player.address)))).code)
+      .toBe('claim-store-readback-mismatch')
+    expect((await player.claims.storageStatus()).diagnostics.map(({ code }) => code)).toEqual([
+      'claim-store-quarantine-failed',
+      'claim-store-readback-mismatch',
+    ])
+    player.close()
+
+    const originalProcess = node.process.bind(node)
+    let claimSubmissions = 0
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
+      return originalProcess(block)
+    }
+    const reopened = remember(await Kei.start({ node, seed: PLAYER_SEED, claimStore: store }))
+    expect(claimSubmissions).toBe(0)
+    expect((await reopened.claims.storageStatus()).diagnostics.map(({ code }) => code))
+      .toEqual(['claim-store-quarantined'])
+  })
+
+  test('failed cleanup never replaces a concurrently admitted same-root proof', async () => {
+    const store = new InspectableClaimStore()
+    const player = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: store,
+    }))
+    const drop = await gems.commit([{ to: player.address, amount: 41 }])
+    const bundle = drop.proofFor(player.address)
+    const scope = { network: 'mock', address: player.address }
+    const admitted = claimEnvelope(bundle)
+    store.beforeRead = (readScope, root) => store.inject(readScope, root, admitted)
+
+    await player.claims.add(bundle)
+
+    expect(await store.read(scope, bundle.root)).toBe(admitted)
+    expect(store.removeCount).toBe(0)
+    expect(await player.claims.pending()).toHaveLength(1)
   })
 
   test('a confirmed claim with failed removal reconciles without signing again', async () => {
@@ -749,14 +844,22 @@ describe('durable claim bundles', () => {
     }))
     const drop = await gems.commit([{ to: player.address, amount: 23 }])
     const bundle = drop.proofFor(player.address)
-    let serialised = false
-    const amount = {
-      toString: () => '9'.repeat(MAX_CLAIM_AMOUNT_DIGITS + 1),
-      toJSON: () => {
-        serialised = true
-        throw new Error('amount reached JSON.stringify')
+    const amount = '9'.repeat(1_000_000)
+    let amountReads = 0
+    const oversized = { ...bundle }
+    Object.defineProperty(oversized, 'amount', {
+      enumerable: true,
+      get: () => {
+        amountReads += 1
+        return amount
       },
-    }
+    })
+    const stringify = JSON.stringify
+    let serialisations = 0
+    JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => {
+      serialisations += 1
+      return stringify(...args)
+    }) as typeof JSON.stringify
     const originalProcess = node.process.bind(node)
     let claimSubmissions = 0
     node.process = async (block: Block) => {
@@ -764,11 +867,14 @@ describe('durable claim bundles', () => {
       return originalProcess(block)
     }
 
-    expect((await refused(player.claims.claim({
-      ...bundle,
-      amount: amount as unknown as string,
-    }))).code).toBe('claim-amount-too-large')
-    expect(serialised).toBe(false)
+    try {
+      expect((await refused(player.claims.claim(oversized))).code)
+        .toBe('claim-amount-too-large')
+    } finally {
+      JSON.stringify = stringify
+    }
+    expect(serialisations).toBe(0)
+    expect(amountReads).toBe(1)
     expect(store.writeCount).toBe(0)
     expect(claimSubmissions).toBe(0)
   })

@@ -30,9 +30,10 @@ export const MAX_CLAIM_PROOF_LENGTH = 128
 export const MAX_CLAIM_AMOUNT_DIGITS = 39
 export { MAX_PENDING_CLAIMS } from './store.js'
 const MAX_CLAIM_DIAGNOSTICS = 32
-const CLAIM_ENVELOPE_VERSION = 2
-const CLAIM_ENVELOPE_DOMAIN = 'kei-claim-envelope-v2\n'
+const CLAIM_ENVELOPE_VERSION = 3
+const CLAIM_ENVELOPE_DOMAIN = 'kei-claim-envelope-v3\n'
 const MAX_CLAIM_AMOUNT = (1n << 128n) - 1n
+type ClaimEnvelopeState = 'candidate' | 'admitted'
 
 export interface PendingClaim {
   root: string
@@ -108,9 +109,18 @@ function validate(bundle: ClaimBundle): ClaimBundle {
   if (!bundle || typeof bundle !== 'object') {
     fail('bad-bundle', 'A claim bundle looks like { root, asset, amount, proof } — the game gives you one.')
   }
-  const root = assertRoot(bundle.root)
-  if (!isHex(bundle.asset, 32)) fail('bad-bundle', 'A claim bundle\'s asset is 64 hex characters.')
-  const amount = String(bundle.amount)
+  // Snapshot accessors once so an untrusted object cannot swap in an
+  // unbounded value between validation and normalisation.
+  const rawRoot = bundle.root
+  const rawAsset = bundle.asset
+  const rawAmount = bundle.amount
+  const rawProof = bundle.proof
+  const root = assertRoot(rawRoot)
+  if (!isHex(rawAsset, 32)) fail('bad-bundle', 'A claim bundle\'s asset is 64 hex characters.')
+  if (typeof rawAmount !== 'string') {
+    fail('bad-bundle', 'A claim bundle\'s amount is a whole number of raw units, as a string.')
+  }
+  const amount = rawAmount
   if (amount.length > MAX_CLAIM_AMOUNT_DIGITS) {
     fail(
       'claim-amount-too-large',
@@ -123,21 +133,21 @@ function validate(bundle: ClaimBundle): ClaimBundle {
   if (BigInt(amount) > MAX_CLAIM_AMOUNT) {
     fail('claim-amount-too-large', 'A claim amount does not fit the ledger\'s unsigned 128-bit field.')
   }
-  if (!Array.isArray(bundle.proof)) fail('bad-bundle', 'A claim bundle\'s proof is an array of hashes.')
-  if (bundle.proof.length > MAX_CLAIM_PROOF_LENGTH) {
+  if (!Array.isArray(rawProof)) fail('bad-bundle', 'A claim bundle\'s proof is an array of hashes.')
+  if (rawProof.length > MAX_CLAIM_PROOF_LENGTH) {
     fail(
       'claim-proof-too-long',
-      `A claim proof has ${bundle.proof.length} hashes; the wallet limit is ${MAX_CLAIM_PROOF_LENGTH}. Split the issuer batch or provide a bounded proof.`,
+      `A claim proof has ${rawProof.length} hashes; the wallet limit is ${MAX_CLAIM_PROOF_LENGTH}. Split the issuer batch or provide a bounded proof.`,
     )
   }
-  if (bundle.proof.some((hash) => !isHex(hash, 32))) {
+  if (rawProof.some((hash) => !isHex(hash, 32))) {
     fail('bad-bundle', 'Every entry in a claim bundle\'s proof must be 64 hex characters.')
   }
   return {
     root,
-    asset: bundle.asset.toUpperCase(),
+    asset: rawAsset.toUpperCase(),
     amount,
-    proof: bundle.proof.map((hash) => hash.toUpperCase()),
+    proof: rawProof.map((hash) => hash.toUpperCase()),
   }
 }
 
@@ -155,16 +165,17 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
     if (diagnostics.length < MAX_CLAIM_DIAGNOSTICS) diagnostics.push(diagnostic)
   }
 
-  const integrityFor = (bundle: ClaimBundle): string =>
-    bytesToHex(blake2b(utf8(`${CLAIM_ENVELOPE_DOMAIN}${JSON.stringify(bundle)}`), 32))
+  const integrityFor = (bundle: ClaimBundle, state: ClaimEnvelopeState): string =>
+    bytesToHex(blake2b(utf8(`${CLAIM_ENVELOPE_DOMAIN}${state}\n${JSON.stringify(bundle)}`), 32))
 
-  const envelopeFor = (bundle: ClaimBundle): string => {
+  const envelopeFor = (bundle: ClaimBundle, state: ClaimEnvelopeState = 'admitted'): string => {
     // `validate()` bounds every variable component before either JSON
     // allocation here: amount digits, proof count, and fixed-size hashes.
     const value = JSON.stringify({
       version: CLAIM_ENVELOPE_VERSION,
+      state,
       bundle,
-      integrity: integrityFor(bundle),
+      integrity: integrityFor(bundle, state),
     })
     const bytes = utf8Bytes(value)
     if (bytes > MAX_CLAIM_RECORD_BYTES) {
@@ -208,6 +219,7 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
       version?: unknown
       bundle?: unknown
       integrity?: unknown
+      state?: unknown
       quarantine?: unknown
     }
     if (record.version !== CLAIM_ENVELOPE_VERSION) {
@@ -218,15 +230,19 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
       })
       return null
     }
-    if (
-      record.quarantine &&
-      typeof record.quarantine === 'object' &&
-      (record.quarantine as { root?: unknown }).root === root
-    ) {
+    if (record.state === 'candidate' || record.state === 'quarantined') {
       diagnose({
         code: 'claim-store-quarantined',
         root,
-        message: `Stored claim ${root} is quarantined after an unverified persistence result and will not be signed. Repair or remove that record before adding it again.`,
+        message: `Stored claim ${root} was never atomically admitted or is quarantined after an unverified persistence result; it will not be signed. Repair or remove that record before adding it again.`,
+      })
+      return null
+    }
+    if (record.state !== 'admitted') {
+      diagnose({
+        code: 'claim-store-corrupt',
+        root,
+        message: `Stored claim ${root} has no valid admission state and was ignored; remove or replace that record.`,
       })
       return null
     }
@@ -243,7 +259,7 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
       if (
         typeof record.integrity !== 'string' ||
         !isHex(record.integrity, 32) ||
-        record.integrity.toUpperCase() !== integrityFor(bundle)
+        record.integrity.toUpperCase() !== integrityFor(bundle, 'admitted')
       ) {
         diagnose({
           code: 'claim-store-corrupt',
@@ -342,26 +358,29 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
     fail(diagnostic.code, diagnostic.message)
   }
 
-  const quarantineUnverified = async (root: string): Promise<void> => {
-    try {
-      await store.remove(namespace, root)
-      if ((await store.read(namespace, root)) === null) return
-    } catch {
-      // Fall through to a durable tombstone in the root-addressed record.
-    }
+  const quarantineCandidate = async (
+    bundle: ClaimBundle,
+    candidate: string,
+    admitted: string,
+  ): Promise<'admitted' | 'quarantined' | 'failed'> => {
+    const root = bundle.root
     const tombstone = JSON.stringify({
       version: CLAIM_ENVELOPE_VERSION,
-      quarantine: { root, reason: 'unverified-persistence' },
+      state: 'quarantined',
+      root,
+      reason: 'unverified-persistence',
     })
     try {
-      await store.write(namespace, root, tombstone)
-      if ((await store.read(namespace, root)) === tombstone) {
+      const replaced = await store.compareAndSet(namespace, root, candidate, tombstone)
+      const current = await store.read(namespace, root)
+      if (current === admitted) return 'admitted'
+      if ((replaced || current === tombstone) && current === tombstone) {
         diagnose({
           code: 'claim-store-quarantined',
           root,
-          message: `Claim ${root} could not be removed after an unverified persistence result, so a durable quarantine was stored and read back. Repair or remove that record before adding it again.`,
+          message: `Claim ${root} did not read back exactly, so its non-signable candidate was atomically quarantined and read back. Repair or remove that record before adding it again.`,
         })
-        return
+        return 'quarantined'
       }
     } catch {
       // The fixed diagnostic below deliberately excludes adapter details.
@@ -369,24 +388,23 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
     diagnose({
       code: 'claim-store-quarantine-failed',
       root,
-      message: `Claim ${root} was not read back exactly and its removal could not be proven. Its versioned integrity check prevents altered bytes from being signed; repair or remove the stored record before retrying.`,
+      message: `Claim ${root} was not read back exactly and its atomic quarantine could not be proven. Only atomically admitted records can be signed, so this candidate remains fail-closed; repair or remove it before retrying.`,
     })
+    return 'failed'
   }
 
-  const verifyPersisted = async (bundle: ClaimBundle, value: string): Promise<void> => {
+  const verifyAdmitted = async (bundle: ClaimBundle, admitted: string): Promise<void> => {
     let readBack: string | null = null
     try {
       readBack = await store.read(namespace, bundle.root)
     } catch {
-      await quarantineUnverified(bundle.root)
       persistenceFailure({
         code: 'claim-store-readback-mismatch',
         root: bundle.root,
         message: `The claim store would not read ${bundle.root} back; no claim was attempted because reload recovery was not established. Fix or replace the adapter, then add the bundle again.`,
       })
     }
-    if (readBack !== value) {
-      await quarantineUnverified(bundle.root)
+    if (readBack !== admitted) {
       persistenceFailure({
         code: 'claim-store-readback-mismatch',
         root: bundle.root,
@@ -395,9 +413,12 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
     }
   }
 
-  const persist = async (bundle: ClaimBundle, value = envelopeFor(bundle)): Promise<void> => {
+  const persist = async (bundle: ClaimBundle): Promise<void> => {
+    const candidate = envelopeFor(bundle, 'candidate')
+    const admitted = envelopeFor(bundle, 'admitted')
+    let created = false
     try {
-      await store.write(namespace, bundle.root, value)
+      created = await store.compareAndSet(namespace, bundle.root, null, candidate)
     } catch (error) {
       if (isClaimStoreCapacityError(error)) {
         persistenceFailure({
@@ -406,14 +427,59 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
           message: `The claim store reached its ${MAX_PENDING_CLAIMS}-record limit while retaining ${bundle.root}; no claim was attempted. Another wallet tab may have filled the last slot. Claim or reconcile an existing entry, then add the bundle again.`,
         })
       }
-      await quarantineUnverified(bundle.root)
       persistenceFailure({
         code: 'claim-store-write-refused',
         root: bundle.root,
         message: `The claim store refused ${bundle.root}; no claim was attempted because reload recovery was not established. Free storage, retry after another wallet tab finishes, or replace the adapter, then add the bundle again.`,
       })
     }
-    await verifyPersisted(bundle, value)
+    if (!created) {
+      let current: string | null = null
+      try {
+        current = await store.read(namespace, bundle.root)
+      } catch {
+        // The fixed failure below deliberately excludes adapter details.
+      }
+      if (current === admitted) return
+      persistenceFailure({
+        code: 'claim-store-write-refused',
+        root: bundle.root,
+        message: `Claim ${bundle.root} changed in another wallet instance before this candidate could be retained; no claim was attempted. Reconcile that instance or retry after it finishes.`,
+      })
+    }
+
+    let readBack: string | null = null
+    try {
+      readBack = await store.read(namespace, bundle.root)
+    } catch {
+      // Quarantine below uses an exact compare-and-set and cannot erase a
+      // concurrently admitted proof.
+    }
+    if (readBack !== candidate) {
+      const cleanup = await quarantineCandidate(bundle, candidate, admitted)
+      if (cleanup === 'admitted') return
+      persistenceFailure({
+        code: 'claim-store-readback-mismatch',
+        root: bundle.root,
+        message: `The claim store did not return the exact non-signable candidate written for ${bundle.root}; no claim was attempted. Fix or replace the adapter, then add the bundle again.`,
+      })
+    }
+
+    let promoted = false
+    try {
+      promoted = await store.compareAndSet(namespace, bundle.root, candidate, admitted)
+    } catch {
+      // A conforming adapter leaves the candidate unchanged on rejection.
+    }
+    if (!promoted) {
+      const cleanup = await quarantineCandidate(bundle, candidate, admitted)
+      if (cleanup === 'admitted') return
+      persistenceFailure({
+        code: 'claim-store-write-refused',
+        root: bundle.root,
+        message: `The claim store would not atomically admit ${bundle.root}; no claim was attempted. Its candidate remains non-signable until the adapter is repaired or the record is removed.`,
+      })
+    }
   }
 
   const retain = async (bundle: ClaimBundle): Promise<ClaimBundle> => {
@@ -426,7 +492,7 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
           `Claim root ${bundle.root} is already retained with different terms. Keep the original bundle or reconcile it before replacing anything.`,
         )
       }
-      await verifyPersisted(existing, value)
+      await verifyAdmitted(existing, value)
       return existing
     }
     if (held.size >= MAX_PENDING_CLAIMS) {
@@ -435,7 +501,7 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
         `Keeping this bundle would exceed the ${MAX_PENDING_CLAIMS}-claim wallet limit. Claim or reconcile an existing entry before adding it.`,
       )
     }
-    await persist(bundle, value)
+    await persist(bundle)
     held.set(bundle.root, bundle)
     return bundle
   }
