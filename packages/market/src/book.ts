@@ -72,7 +72,11 @@ export interface Book {
   bids: BookLevel[]
   bestAsk: BookLevel | null
   bestBid: BookLevel | null
-  /** `bestAsk.unitPrice - bestBid.unitPrice`, or null when either side is empty. */
+  /**
+   * `bestAsk.unitPrice - bestBid.unitPrice`, or null when either side is empty.
+   * This is display arithmetic: it can be zero when the exact ledger prices
+   * differ, while best-level selection still uses those exact prices.
+   */
   spread: number | null
   /** Open offers on the walked chains that are neither, e.g. sword-for-shield. */
   other: Offer[]
@@ -151,21 +155,22 @@ export async function readBook(context: MarketContext, options: BookOptions): Pr
 
   const converted = await mapConcurrent(
     sorted,
-    async (entry) => ({ side: entry.side, offer: await context.toOffer(entry.raw) }),
+    async (entry) => ({ ...entry, offer: await context.toOffer(entry.raw) }),
     { signal: options.signal, concurrency: options.concurrency, what: 'Reading the book' },
   )
 
-  const asks: BookLevel[] = []
-  const bids: BookLevel[] = []
+  const asks: RankedLevel[] = []
+  const bids: RankedLevel[] = []
   const other: Offer[] = []
-  for (const { side, offer } of converted) {
+  for (const { raw, side, offer } of converted) {
     if (offer.expired && !includeExpired) continue
     if (offer.mine && !includeMine) continue
     if (side === 'ask' || side === 'bid') {
       const base = asset ?? (side === 'ask' ? offer.give.asset : offer.want.asset)
       const level = toBookLevel(offer, side, base, quote)
-      if (side === 'ask') asks.push(level)
-      else bids.push(level)
+      const ranked = { level, exact: exactBookPrice(raw, side, offer) }
+      if (side === 'ask') asks.push(ranked)
+      else bids.push(ranked)
     } else other.push(offer)
   }
 
@@ -176,18 +181,20 @@ export async function readBook(context: MarketContext, options: BookOptions): Pr
   // Both sides use quote per base unit: asks are cheapest first and bids are
   // highest-paying first. `Offer.price` keeps its directional meaning for
   // compatibility and is deliberately not the comparator here.
-  asks.sort((a, b) => a.unitPrice - b.unitPrice || a.hash.localeCompare(b.hash))
-  bids.sort((a, b) => b.unitPrice - a.unitPrice || a.hash.localeCompare(b.hash))
+  asks.sort((a, b) => compareRankedLevels(a, b, 'ascending'))
+  bids.sort((a, b) => compareRankedLevels(a, b, 'descending'))
   other.sort((a, b) => a.hash.localeCompare(b.hash))
 
-  const bestAsk = asks[0] ?? null
-  const bestBid = bids[0] ?? null
+  const publicAsks = asks.map(({ level }) => level)
+  const publicBids = bids.map(({ level }) => level)
+  const bestAsk = publicAsks[0] ?? null
+  const bestBid = publicBids[0] ?? null
 
   return {
     asset,
     quote,
-    asks,
-    bids,
+    asks: publicAsks,
+    bids: publicBids,
     bestAsk,
     bestBid,
     // A spread compares two sides of one asset. A whole-shelf book has as many
@@ -200,6 +207,71 @@ export async function readBook(context: MarketContext, options: BookOptions): Pr
 }
 
 type Side = 'ask' | 'bid' | 'other'
+
+interface RankedLevel {
+  level: BookLevel
+  exact: ScaledBookPrice
+}
+
+interface ScaledBookPrice {
+  numerator: bigint
+  denominator: bigint
+}
+
+/** Exact quote-per-base terms used only while a book is being ranked. */
+export interface ExactBookPrice {
+  quoteRaw: bigint
+  baseRaw: bigint
+  quoteDecimals: number
+  baseDecimals: number
+}
+
+/**
+ * Compare two quote-per-base prices without division or number conversion.
+ *
+ * A zero base amount cannot come from a valid offer, but a node is an external
+ * boundary. Treat it as the display layer does (price zero) so malformed input
+ * remains deterministic rather than creating a divide-by-zero special case.
+ */
+export function compareExactBookPrices(a: ExactBookPrice, b: ExactBookPrice): number {
+  return compareScaledBookPrices(scaleBookPrice(a), scaleBookPrice(b))
+}
+
+function scaleBookPrice(price: ExactBookPrice): ScaledBookPrice {
+  return price.baseRaw === 0n
+    ? { numerator: 0n, denominator: 1n }
+    : {
+        numerator: price.quoteRaw * 10n ** BigInt(price.baseDecimals),
+        denominator: price.baseRaw * 10n ** BigInt(price.quoteDecimals),
+      }
+}
+
+function compareScaledBookPrices(a: ScaledBookPrice, b: ScaledBookPrice): number {
+  const left = a.numerator * b.denominator
+  const right = b.numerator * a.denominator
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
+function exactBookPrice(raw: SwapOffer, side: BookLevel['side'], offer: Offer): ScaledBookPrice {
+  return scaleBookPrice(side === 'ask'
+    ? {
+        quoteRaw: BigInt(raw.wantAmount),
+        baseRaw: BigInt(raw.amount),
+        quoteDecimals: offer.want.decimals,
+        baseDecimals: offer.give.decimals,
+      }
+    : {
+        quoteRaw: BigInt(raw.amount),
+        baseRaw: BigInt(raw.wantAmount),
+        quoteDecimals: offer.give.decimals,
+        baseDecimals: offer.want.decimals,
+      })
+}
+
+function compareRankedLevels(a: RankedLevel, b: RankedLevel, order: 'ascending' | 'descending'): number {
+  const price = compareScaledBookPrices(a.exact, b.exact)
+  return (order === 'ascending' ? price : -price) || a.level.hash.localeCompare(b.level.hash)
+}
 
 function toBookLevel(
   offer: Offer,

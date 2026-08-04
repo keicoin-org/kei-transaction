@@ -97,6 +97,11 @@ Book rows are `BookLevel`s: oriented offers whose `base`, `quote`, `side`, and
 a book orientation. In a whole-shelf book, each row uses the non-quote asset as
 its base, so these fields keep the same meaning across every stall.
 
+The ladder chooses `bestAsk` and `bestBid` from the exact ledger ratios, even
+when two `unitPrice` display numbers round to the same value. `unitPrice` and
+`spread` remain plain-number display fields; consequently `spread` can display
+as zero when the exact best ask and bid differ.
+
 `coverage` is the part worth using. A book over a roster is a *floor*, never a
 census, and `complete: false` says which of the four reasons applies. Leave
 `asset` out for the whole shelf against one currency.
