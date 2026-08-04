@@ -238,10 +238,49 @@ describe('walkAccounts — coverage is the honest half', () => {
     expect(merged.failed).toHaveLength(1)
   })
 
-  test('merging different complete scopes cannot claim the smaller read covered the larger scope', () => {
+  test('merged read counts only accounts that answered every part', () => {
+    const missedFirst = {
+      ...emptyCoverage(),
+      asked: 2,
+      read: 1,
+      failed: [{ account: 'kei_a', reason: 'first RPC failed' }],
+      complete: false,
+    }
+    const missedSecond = {
+      ...emptyCoverage(),
+      asked: 2,
+      read: 1,
+      failed: [{ account: 'kei_b', reason: 'second RPC failed' }],
+      complete: false,
+    }
+
+    expect(mergeCoverage(missedFirst, missedSecond)).toMatchObject({
+      asked: 2,
+      read: 0,
+      complete: false,
+    })
+  })
+
+  test('merging different account cardinalities refuses instead of inventing coverage', () => {
     const one = { ...emptyCoverage(), asked: 1, read: 1 }
     const two = { ...emptyCoverage(), asked: 2, read: 2 }
-    expect(mergeCoverage(one, two)).toMatchObject({ asked: 2, read: 1, complete: false })
+    let failure: unknown
+    try {
+      mergeCoverage(one, two)
+    } catch (error) {
+      failure = error
+    }
+
+    expect(isMarketError(failure, 'coverage-mismatch')).toBe(true)
+    expect(failure).toMatchObject({
+      code: 'coverage-mismatch',
+      message: expect.stringContaining('Expected 1 accounts, but another part describes 2'),
+    })
+  })
+
+  test('scope cardinality validation ignores absent optional reads', () => {
+    const whole = { ...emptyCoverage(), asked: 2, read: 2 }
+    expect(mergeCoverage(undefined, whole, null)).toEqual(whole)
   })
 })
 
