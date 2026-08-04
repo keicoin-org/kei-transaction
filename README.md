@@ -21,7 +21,7 @@ await kei.send('kei_3abc...', 0.001)   // sub-cent, instant, feeless
 > `WalletPanel.mount()` gives games a drop-in balance/inventory/claims UI.
 > Player shops (`kei.shop`), the bounded market surface (`book()`, `series()`,
 > `candles()`, `accept(offer, { expect })`), wallet durability reporting, and
-> drop tables ship in the published `0.7.0` umbrella, so
+> drop tables ship in the published `0.8.0` umbrella, so
 > `bun add kei-transaction` resolves the coordinated release —
 > [Releases](#releases) has the exact versions and
 > [Where this is](#where-this-is) the consequences.
@@ -294,12 +294,13 @@ chain and reports what it could not see, **price series and candles** ready to
 draw, and a **verify-before-signing** check so an index can never become an
 authority.
 
-> **Everything below this line ships in `@keicoin/market@0.3.0`**, published 4
+> **Everything below this line ships in `@keicoin/market@0.4.0`**, published 4
 > August 2026. The original directory, `book()`, `series()`, `candles()` and
-> `accept(offer, { expect })` surface arrived in `0.2.0`; `0.3.0` makes its
-> aggregate reads bounded and abortable, preserves explicit coverage
-> provenance, and validates limits. `kei-transaction@0.7.0` depends on
-> `@keicoin/market@^0.3.0`, so a plain install resolves that current surface
+> `accept(offer, { expect })` surface arrived in `0.2.0`; `0.3.0` made aggregate
+> reads bounded and abortable and preserved explicit coverage provenance;
+> `0.4.0` adds defensive read bounds and ranks book levels by exact
+> cross-multiplied price ratios. `kei-transaction@0.8.0` depends on
+> `@keicoin/market@^0.4.0`, so a plain install resolves that current surface
 > without a nested older market copy.
 
 ```js
@@ -323,13 +324,13 @@ because this chain has no clock — and the value says so rather than a comment.
 ## Player shops
 
 > **Published, and in the plain SDK install since `0.6.0`.** `kei.shop` lives in
-> `@keicoin/player-economy`; the current `0.1.1` is resolved by the `0.7.0`
+> `@keicoin/player-economy`; the current `0.1.2` is resolved by the `0.8.0`
 > umbrella.
 > `kei-transaction@0.5.0` predated it and did not depend on it, so `kei.shop`
 > was `undefined` after a `bun add kei-transaction` on that version. `0.6.0`
 > first included `@keicoin/player-economy@^0.1.0`.
-> `kei-transaction@0.7.0`, published 4 August 2026, depends on
-> `@keicoin/player-economy@^0.1.1` and `@keicoin/market@^0.3.0`, so a plain
+> `kei-transaction@0.8.0`, published 4 August 2026, depends on
+> `@keicoin/player-economy@^0.1.2` and `@keicoin/market@^0.4.0`, so a plain
 > `bun add kei-transaction` resolves both with one copy of the market in the
 > tree.
 
@@ -607,11 +608,11 @@ The M0–M10 ladder was retired on 3 August 2026 for four concurrent tracks
 | **The chain** | A real Kei node enforcing the SPEC §5.6 / §7 ledger rules, including native `commit`/`claim`/`commit_close` in its pinned CI gate. Native `swap_offer`/`swap_accept`/`swap_cancel` are merged too; the reference mock remains for hermetic tests |
 | **The network** | One public, rate-limited, best-effort Hetzner testnet node. `Kei.start()` selects it by default; `Kei.mock()` is explicit |
 | **The demo** | [Button](../button) — playable single-player, every number on the chain and none in a database |
-| **The market** | `@keicoin/market@0.3.0` — offers, atomic settlement, price history, the directory, bounded and abortable `book()`/`series()`/`candles()` reads, explicit coverage provenance, oriented book levels, and verified-before-signing acceptance. **`kei.market` from a plain `kei-transaction@0.7.0` install is this release**, without an older nested market copy |
+| **The market** | `@keicoin/market@0.4.0` — offers, atomic settlement, price history, the directory, bounded and abortable `book()`/`series()`/`candles()` reads, explicit coverage provenance, oriented book levels, exact cross-multiplied price ranking, and verified-before-signing acceptance. **`kei.market` from a plain `kei-transaction@0.8.0` install is this release**, without an older nested market copy |
 | **The wallet panel** | `@keicoin/wallet@0.5.0` — `WalletPanel.mount()` plus the SPEC §6.6 seed-reveal friction, explicit `persistent`/`session`/`supplied` custody reporting, bounded identity-checked metadata caching, and an ordered coalesced refresh stream. The panel warns before displaying a balance when browser storage could not persist its seed |
-| **Recipes and loot tables** | `@keicoin/economy@0.2.1` — recipes and drop tables remain reachable as `kei.economy`; the patch aligns its claims, core, and market dependency floors with the coordinated graph. Drop tables add no consensus rules: every block written is one the SDK could already write by hand |
-| **Player shops** | `@keicoin/player-economy@0.1.1` — `kei.shop` lets players list, browse, buy, cancel, and gift from their own keys, with whole-shelf browsing aligned to the market's oriented ask levels. It is reachable from a plain `kei-transaction@0.7.0` install |
-| **npm** | The coordinated graph published on 4 August 2026: core `0.5.0`, work `0.4.1`, claims `0.5.1`, tokens `0.5.2`, market `0.3.0`, wallet `0.5.0`, economy `0.2.1`, player economy `0.1.1`, and umbrella `0.7.0`. Fresh npm and Bun projects installed the umbrella, resolved one compatible copy of every workspace package, imported every public entry, and found the work binary. `create-kei-game@0.2.0` predates the harness's move to its standalone repository; future harness releases are owned there |
+| **Recipes and loot tables** | `@keicoin/economy@0.2.2` — recipes and drop tables remain reachable as `kei.economy`; the patch moves its market dependency floor to the coordinated `0.4.0` graph. Drop tables add no consensus rules: every block written is one the SDK could already write by hand |
+| **Player shops** | `@keicoin/player-economy@0.1.2` — `kei.shop` lets players list, browse, buy, cancel, and gift from their own keys, with whole-shelf browsing aligned to the market's oriented ask levels. It is reachable from a plain `kei-transaction@0.8.0` install |
+| **npm** | The initial `0.8.0` graph published and verified on 4 August 2026 was core `0.5.0`, work `0.4.1`, claims `0.5.1`, tokens `0.5.2`, market `0.4.0`, wallet `0.5.0`, economy `0.2.2`, player economy `0.1.2`, and umbrella `0.8.0`. Fresh npm and Bun projects installed the umbrella, resolved one compatible copy of every workspace package, imported its public entry, and found the work binary. The umbrella uses compatible pre-1.0 ranges, so later patch releases can resolve without an umbrella bump. `create-kei-game@0.2.0` predates the harness's move to its standalone repository; future harness releases are owned there |
 | **The harness** | Create Kei MMO owns its own releases. Its repository is still named [`create-kei-game`](https://github.com/keicoin-org/create-kei-game) pending the rename, and its default branch still carries the retired scaffolder that `create-kei-game@0.2.0` was published from; the transition into an ongoing MMO creation harness is an unmerged draft, [PR #1](https://github.com/keicoin-org/create-kei-game/pull/1) |
 | **The work server** | `@keicoin/work@0.4.1` exports the bounded handler/server integration and the `kei-work-server` CLI; operating a public instance is separate deployment work |
 
@@ -654,15 +655,16 @@ published outside that range may as well not exist. The **npm** row above is
 that lesson learned the expensive way, and this section exists so the next
 release is read as a set rather than as nine independent publishes.
 
-### Unreleased — coordinated market-safety release (`0.8.0` candidate)
+### `0.8.0` — published 4 August 2026
 
-This release candidate is not published. At its opening on 4 August 2026, the
-npm registry still reported the complete `0.7.0` graph below as latest. The
-candidate advances only packages whose public surface or dependency floor
-changed; the other graph members keep their existing registry versions and do
-not need replacement tarballs.
+This coordinated market-safety set is on npm. At publication, fresh empty projects installed
+`kei-transaction@0.8.0` with both npm and Bun, resolved one compatible copy of
+every package in the graph, and imported the umbrella successfully. The release
+advanced only packages whose public surface or dependency floor changed; the
+other graph members keep their existing registry versions and reviewed
+tarballs.
 
-| Package | Published | Candidate | Why |
+| Package | Previous | Published | Why |
 |---|---:|---:|---|
 | `@keicoin/core` | `0.5.0` | `0.5.0` | Unchanged; market's safety work does not change its core dependency |
 | `@keicoin/work` | `0.4.1` | `0.4.1` | Unchanged |
@@ -672,7 +674,7 @@ not need replacement tarballs.
 | `@keicoin/wallet` | `0.5.0` | `0.5.0` | Unchanged; it does not depend on market |
 | `@keicoin/economy` | `0.2.1` | **`0.2.2`** | Patch. Source and exports are unchanged; its market floor moves to `^0.4.0` so the coordinated install cannot retain an older market copy |
 | `@keicoin/player-economy` | `0.1.1` | **`0.1.2`** | Patch. Source and exports are unchanged; its market floor moves to `^0.4.0` for the same single-copy guarantee |
-| `kei-transaction` | `0.7.0` | **`0.8.0`** | Minor. Re-exports `DEFAULT_MAX_CANDLES`, `MAX_CANDLES`, `MAX_ACCOUNTS_PER_WALK`, and `MAX_DIRECTORY_LIMIT`, and moves its market/economy/player-economy ranges to the candidate graph |
+| `kei-transaction` | `0.7.0` | **`0.8.0`** | Minor. Re-exports `DEFAULT_MAX_CANDLES`, `MAX_CANDLES`, `MAX_ACCOUNTS_PER_WALK`, and `MAX_DIRECTORY_LIMIT`, and moves its market/economy/player-economy ranges to the published graph |
 
 The market's new constants and `MarketErrorCode` members are additive public
 surface, and its defensive refusals deliberately tighten previously accepted
@@ -692,9 +694,9 @@ The release incorporates the corrective sequence in PRs
 [#84](https://github.com/keicoin-org/kei-transaction/pull/84),
 [#88](https://github.com/keicoin-org/kei-transaction/pull/88), and
 [#91](https://github.com/keicoin-org/kei-transaction/pull/91). There is no wire,
-ledger, or consensus change. Publication remains market first, then the two
-dependency-only consumers, then the umbrella; the release script still checks
-the unchanged graph members' reviewed integrities before skipping them.
+ledger, or consensus change. Publication ran market first, then the two
+dependency-only consumers, then the umbrella; the release script checked the
+unchanged graph members' reviewed integrities before skipping them.
 
 ### `0.7.0` — published 4 August 2026
 
