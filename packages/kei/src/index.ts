@@ -85,8 +85,33 @@ export type {
   WorkTier,
 } from '@keicoin/core'
 
-export { buildCommit } from '@keicoin/claims'
-export type { ClaimBundle, ClaimResult, ClaimsApi, CommitEntry, PendingClaim } from '@keicoin/claims'
+export {
+  MAX_CLAIM_AMOUNT_DIGITS,
+  MAX_CLAIM_PROOF_LENGTH,
+  MAX_CLAIM_RECORD_BYTES,
+  MAX_PENDING_CLAIMS,
+  buildCommit,
+  createBrowserClaimStore,
+  createMemoryClaimStore,
+} from '@keicoin/claims'
+export type {
+  BrowserClaimStoreOptions,
+  ClaimBundle,
+  ClaimResult,
+  ClaimsApi,
+  ClaimsOptions,
+  ClaimStorageStatus,
+  ClaimStore,
+  ClaimStoreDiagnostic,
+  ClaimStoreDiagnosticCode,
+  ClaimStoreDurability,
+  ClaimStoreScope,
+  ClaimWebLockManager,
+  ClaimWebStorage,
+  CommitEntry,
+  DurableClaimsApi,
+  PendingClaim,
+} from '@keicoin/claims'
 
 export { MockIpfsUploader, itemSymbolFor, looksLikeItem } from '@keicoin/tokens'
 export type {

@@ -52,7 +52,7 @@ export type {
   WorkTier,
 } from './blocks.js'
 
-export { KeiClient } from './client.js'
+export { KeiClient, claimStoreAdmissionHash } from './client.js'
 export type { BlockDraft, ClientConfig, ClientEvents, PaymentEvent, RevealPolicy, Role } from './client.js'
 
 export { blake2b, signHash, verifyHash } from './crypto.js'
