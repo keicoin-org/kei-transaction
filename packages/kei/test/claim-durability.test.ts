@@ -994,4 +994,144 @@ describe('durable claim bundles', () => {
     expect(store.writeCount).toBe(0)
     expect(claimSubmissions).toBe(0)
   })
+
+  test('direct claim snapshots every bundle field and proof element exactly once', async () => {
+    const store = new InspectableClaimStore()
+    const player = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: store,
+    }))
+    const drop = await gems.commit([{ to: player.address, amount: 47 }])
+    const bundle = drop.proofFor(player.address)
+    const proof = [...bundle.proof]
+    const reads = { root: 0, asset: 0, amount: 0, proof: 0, element: 0 }
+    Object.defineProperty(proof, 0, {
+      enumerable: true,
+      configurable: true,
+      get: () => {
+        reads.element += 1
+        return reads.element === 1 ? bundle.proof[0] : 'F'.repeat(1_000_000)
+      },
+    })
+    const input = {} as typeof bundle
+    Object.defineProperties(input, {
+      root: {
+        enumerable: true,
+        get: () => {
+          reads.root += 1
+          return reads.root === 1 ? bundle.root : 'F'.repeat(1_000_000)
+        },
+      },
+      asset: {
+        enumerable: true,
+        get: () => {
+          reads.asset += 1
+          return reads.asset === 1 ? bundle.asset.toLowerCase() : 'F'.repeat(1_000_000)
+        },
+      },
+      amount: {
+        enumerable: true,
+        get: () => {
+          reads.amount += 1
+          return reads.amount === 1 ? bundle.amount : '9'.repeat(1_000_000)
+        },
+      },
+      proof: {
+        enumerable: true,
+        get: () => {
+          reads.proof += 1
+          return reads.proof === 1 ? proof : ['F'.repeat(1_000_000)]
+        },
+      },
+    })
+    const originalProcess = node.process.bind(node)
+    let claimSubmissions = 0
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
+      return originalProcess(block)
+    }
+
+    await expect(player.claims.claim(input)).resolves.toMatchObject({ amount: 47 })
+    expect(reads).toEqual({ root: 1, asset: 1, amount: 1, proof: 1, element: 1 })
+    expect(claimSubmissions).toBe(1)
+    expect(await gems.balanceOf(player.address)).toBe(47)
+  })
+
+  test('sparse, inherited, and oversized proof snapshots refuse before serialisation or side effects', async () => {
+    const store = new InspectableClaimStore()
+    const player = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: store,
+    }))
+    const drop = await gems.commit([{ to: player.address, amount: 53 }])
+    const bundle = drop.proofFor(player.address)
+    const stringify = JSON.stringify
+    let serialisations = 0
+    JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => {
+      serialisations += 1
+      return stringify(...args)
+    }) as typeof JSON.stringify
+    const originalProcess = node.process.bind(node)
+    let claimSubmissions = 0
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
+      return originalProcess(block)
+    }
+
+    const oversized = [...bundle.proof]
+    let elementReads = 0
+    Object.defineProperty(oversized, 0, {
+      enumerable: true,
+      configurable: true,
+      get: () => {
+        elementReads += 1
+        return elementReads === 1 ? 'F'.repeat(1_000_000) : bundle.proof[0]
+      },
+    })
+    const sparse = new Array<string>(bundle.proof.length)
+    const inheritedTarget = new Array<string>(bundle.proof.length)
+    const inheritedPrototype = Object.create(Array.prototype) as string[]
+    inheritedPrototype[0] = bundle.proof[0] as string
+    Object.setPrototypeOf(inheritedTarget, inheritedPrototype)
+    let inheritedIndexReads = 0
+    const inherited = new Proxy(inheritedTarget, {
+      get: (target, property, receiver) => {
+        if (property === '0') inheritedIndexReads += 1
+        return Reflect.get(target, property, receiver) as unknown
+      },
+    })
+    let lengthReads = 0
+    const oversizedLength = new Proxy([...bundle.proof], {
+      get: (target, property, receiver) => {
+        if (property === 'length') {
+          lengthReads += 1
+          return lengthReads === 1 ? MAX_CLAIM_PROOF_LENGTH + 1 : 0
+        }
+        return Reflect.get(target, property, receiver) as unknown
+      },
+    })
+
+    try {
+      expect((await refused(player.claims.claim({ ...bundle, proof: oversized }))).code)
+        .toBe('bad-bundle')
+      expect((await refused(player.claims.claim({ ...bundle, proof: sparse }))).code)
+        .toBe('bad-bundle')
+      expect((await refused(player.claims.claim({ ...bundle, proof: inherited }))).code)
+        .toBe('bad-bundle')
+      expect((await refused(player.claims.claim({ ...bundle, proof: oversizedLength }))).code)
+        .toBe('claim-proof-too-long')
+    } finally {
+      JSON.stringify = stringify
+    }
+    expect(elementReads).toBe(1)
+    expect(inheritedIndexReads).toBe(0)
+    expect(lengthReads).toBe(1)
+    expect(serialisations).toBe(0)
+    expect(store.writeCount).toBe(0)
+    expect(claimSubmissions).toBe(0)
+  })
 })

@@ -135,20 +135,35 @@ function validate(bundle: ClaimBundle): ClaimBundle {
     fail('claim-amount-too-large', 'A claim amount does not fit the ledger\'s unsigned 128-bit field.')
   }
   if (!Array.isArray(rawProof)) fail('bad-bundle', 'A claim bundle\'s proof is an array of hashes.')
-  if (rawProof.length > MAX_CLAIM_PROOF_LENGTH) {
+  const proofLength = rawProof.length
+  if (!Number.isSafeInteger(proofLength) || proofLength < 0) {
+    fail('bad-bundle', 'A claim bundle\'s proof must have a finite whole-number length.')
+  }
+  if (proofLength > MAX_CLAIM_PROOF_LENGTH) {
     fail(
       'claim-proof-too-long',
-      `A claim proof has ${rawProof.length} hashes; the wallet limit is ${MAX_CLAIM_PROOF_LENGTH}. Split the issuer batch or provide a bounded proof.`,
+      `A claim proof has ${proofLength} hashes; the wallet limit is ${MAX_CLAIM_PROOF_LENGTH}. Split the issuer batch or provide a bounded proof.`,
     )
   }
-  if (rawProof.some((hash) => !isHex(hash, 32))) {
-    fail('bad-bundle', 'Every entry in a claim bundle\'s proof must be 64 hex characters.')
+  const proof = new Array<string>(proofLength)
+  for (let index = 0; index < proofLength; index += 1) {
+    // Array iteration skips holes and accepts inherited indices. Neither is a
+    // proof element owned by the delivered bundle, and a Proxy can otherwise
+    // return one value to validation and an unbounded replacement to map().
+    if (!Object.prototype.hasOwnProperty.call(rawProof, index)) {
+      fail('bad-bundle', 'Every position in a claim bundle\'s proof must contain its own hash.')
+    }
+    const hash = rawProof[index]
+    if (typeof hash !== 'string' || hash.length !== 64 || !isHex(hash, 32)) {
+      fail('bad-bundle', 'Every entry in a claim bundle\'s proof must be 64 hex characters.')
+    }
+    proof[index] = hash.toUpperCase()
   }
   return {
     root,
     asset: rawAsset.toUpperCase(),
     amount,
-    proof: rawProof.map((hash) => hash.toUpperCase()),
+    proof,
   }
 }
 
