@@ -32,6 +32,13 @@ fi
 # and an account that does not require 2FA for writes does not need one either.
 OTP="${1:-${NPM_OTP:-}}"
 
+# Every live registry operation names its target explicitly. A user or project
+# .npmrc (or npm_config_* environment) can silently redirect identity, lookup
+# and publish traffic to another registry; the per-command --registry flag
+# outranks all of those, so whoami, view and publish below can only ever talk
+# to the reviewed public registry.
+NPM_REGISTRY='https://registry.npmjs.org/'
+
 cd "$(dirname "$0")/.."
 
 if [ -n "$(git status --porcelain)" ]; then
@@ -39,11 +46,21 @@ if [ -n "$(git status --porcelain)" ]; then
   exit 1
 fi
 
-# A pull request may exercise the entire preflight with --check, but the live
-# path is deliberately narrower: publish only the exact commit currently at
-# the fetched default branch. This rejects release branches, detached HEADs and
-# a local default branch that became stale after it was checked out.
-if [ "$CHECK_ONLY" -eq 0 ]; then
+# The live-publish gate: only a clean worktree whose attached HEAD is the
+# default branch and exactly matches the freshly fetched remote default-branch
+# commit may publish. This rejects release branches, detached HEADs and a local
+# default branch that became stale after checkout. It runs twice — once before
+# the long preflight, and again immediately before authentication — because
+# both the worktree and the remote default branch can change while the checks
+# run, and the second run is the one that guards the irreversible step.
+assert_live_release_head() {
+  gate_stage="$1"
+
+  if [ -n "$(git status --porcelain)" ]; then
+    echo "release refused: the worktree must be clean $gate_stage" >&2
+    exit 1
+  fi
+
   current_branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
   if [ -z "$current_branch" ]; then
     echo "release refused: publication requires the checked-out default branch, not a detached HEAD" >&2
@@ -72,9 +89,15 @@ if [ "$CHECK_ONLY" -eq 0 ]; then
   head_commit=$(git rev-parse HEAD)
   remote_commit=$(git rev-parse "refs/remotes/origin/$default_branch")
   if [ "$head_commit" != "$remote_commit" ]; then
-    echo "release refused: HEAD must exactly match the freshly fetched origin/$default_branch release commit" >&2
+    echo "release refused: HEAD must exactly match the freshly fetched origin/$default_branch release commit $gate_stage" >&2
     exit 1
   fi
+}
+
+# A pull request may exercise the entire preflight with --check, but the live
+# path is deliberately narrower and never reached by --check.
+if [ "$CHECK_ONLY" -eq 0 ]; then
+  assert_live_release_head 'before release checks'
 fi
 
 echo "==> Checking release manifests"
@@ -119,6 +142,13 @@ for package in $PACKAGES; do
     echo "release refused: $name@$version must declare publishConfig.access=public" >&2
     exit 1
   fi
+  # publishConfig.registry outranks even a per-command --registry flag at
+  # publish time, so it must be absent or the pinned public registry.
+  manifest_registry=$(node -p "require('./$directory/package.json').publishConfig?.registry ?? ''")
+  if [ -n "$manifest_registry" ] && [ "$manifest_registry" != "$NPM_REGISTRY" ]; then
+    echo "release refused: $name@$version publishConfig.registry '$manifest_registry' is not the pinned public registry $NPM_REGISTRY" >&2
+    exit 1
+  fi
   manifest="$directory/package.json"
   report="$PACK_TMP/$package.json"
   npm pack --json --pack-destination "$PACK_TMP" "./$directory" > "$report"
@@ -136,8 +166,14 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
   exit 0
 fi
 
+# Re-run the gate now that the long preflight is over: master advancing during
+# the checks, or anything the checks left in the worktree, must refuse here,
+# before the first authenticated or irreversible registry operation.
+echo "==> Re-verifying the release head after preflight"
+assert_live_release_head 'immediately before publication'
+
 echo "==> Verifying npm publisher identity"
-if ! npm whoami >/dev/null; then
+if ! npm whoami --registry="$NPM_REGISTRY" >/dev/null; then
   echo "release refused: npm authentication is required before publication" >&2
   exit 1
 fi
@@ -154,8 +190,8 @@ for package in $PACKAGES; do
 
   # --prefer-online, because a 404 from before the first publish is cached, and a
   # stale "not published" is the one wrong answer that makes this loop fail.
-  if npm view "$name@$version" version --json --prefer-online > "$view_output" 2> "$view_error"; then
-    npm view "$name@$version" dist.integrity --json --prefer-online > "$view_output"
+  if npm view "$name@$version" version --json --prefer-online --registry="$NPM_REGISTRY" > "$view_output" 2> "$view_error"; then
+    npm view "$name@$version" dist.integrity --json --prefer-online --registry="$NPM_REGISTRY" > "$view_output"
     registry_integrity=$(node -e "const fs=require('fs');const v=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));if(typeof v!=='string')process.exit(2);process.stdout.write(v)" "$view_output")
     if [ "$registry_integrity" != "$local_integrity" ]; then
       echo "release refused: $name@$version exists with different tarball integrity" >&2
@@ -171,9 +207,9 @@ for package in $PACKAGES; do
 
   echo "==> Publishing $name@$version"
   if [ -n "$OTP" ]; then
-    npm publish "$PACK_TMP/$filename" --access public --otp "$OTP"
+    npm publish "$PACK_TMP/$filename" --access public --registry="$NPM_REGISTRY" --otp "$OTP"
   else
-    npm publish "$PACK_TMP/$filename" --access public
+    npm publish "$PACK_TMP/$filename" --access public --registry="$NPM_REGISTRY"
   fi
 done
 

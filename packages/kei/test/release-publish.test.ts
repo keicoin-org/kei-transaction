@@ -86,11 +86,23 @@ describe('publish shell safety gate', () => {
 
 const npmMock = `#!/bin/sh
 printf '%s\\n' "$*" >> "$PUBLISH_TEST_LOG"
-case "\${1:-} \${2:-}" in
-  "pack --json") printf '%s\\n' '[]' ;;
-  "install --prefix") exit 0 ;;
-  "whoami ") [ "\${PUBLISH_TEST_WHOAMI_FAIL:-0}" -eq 0 ] && printf '%s\\n' 'release-test-user' || exit 1 ;;
-  "view "*)
+case "\${1:-}" in
+  pack) printf '%s\\n' '[]' ;;
+  install) exit 0 ;;
+  test)
+    # 'npm test' sits between the two live-release gates, so these hooks let a
+    # fixture deterministically race the preflight: advance the bare remote's
+    # default branch, or mutate the worktree, exactly while the checks run.
+    if [ -n "\${PUBLISH_TEST_ADVANCE_REMOTE_FROM:-}" ]; then
+      git -C "$PUBLISH_TEST_ADVANCE_REMOTE_FROM" commit --quiet --allow-empty -m 'advance during preflight'
+      git -C "$PUBLISH_TEST_ADVANCE_REMOTE_FROM" push --quiet origin master
+    fi
+    if [ -n "\${PUBLISH_TEST_MUTATE_WORKTREE_FILE:-}" ]; then
+      printf '%s\\n' 'mutation during preflight' >> "$PUBLISH_TEST_MUTATE_WORKTREE_FILE"
+    fi
+    ;;
+  whoami) [ "\${PUBLISH_TEST_WHOAMI_FAIL:-0}" -eq 0 ] && printf '%s\\n' 'release-test-user' || exit 1 ;;
+  view)
     if [ -z "\${PUBLISH_TEST_REGISTRY_INTEGRITY:-}" ]; then
       printf '%s\\n' 'npm error code E404' >&2
       exit 1
@@ -108,6 +120,7 @@ exit 0
 case "\${1:-}" in
   -p)
     case "\${2:-}" in
+      *publishConfig*registry*) printf '%s\\n' "\${PUBLISH_TEST_MANIFEST_REGISTRY:-}" ;;
       *publishConfig*) printf '%s\\n' public ;;
       *.version*) printf '%s\\n' 9.9.9 ;;
       *) printf '%s\\n' mock-package ;;
@@ -199,10 +212,70 @@ exit 0
     result = await publish()
     expect(result.exitCode, result.output).toBe(0)
     const calls = (await npmCalls()).trim().split('\n')
-    const whoami = calls.indexOf('whoami')
+    const whoami = calls.findIndex((call) => call.startsWith('whoami'))
     const firstPublish = calls.findIndex((call) => call.startsWith('publish'))
     expect(whoami).toBeGreaterThanOrEqual(0)
     expect(firstPublish).toBeGreaterThan(whoami)
+  }, 60_000)
+
+  test('refuses a default branch that advanced during preflight, before whoami or publish', async () => {
+    const result = await publish({ PUBLISH_TEST_ADVANCE_REMOTE_FROM: shellPath(seed) })
+    expect(result.exitCode).not.toBe(0)
+    expect(result.output).toContain('must exactly match the freshly fetched origin/master')
+    expect(result.output).toContain('immediately before publication')
+    const calls = await npmCalls()
+    expect(calls).not.toContain('whoami')
+    expect(calls).not.toContain('publish')
+
+    // The refusal is the point; catch the clone back up for the tests after it.
+    await git(repository, 'fetch', 'origin')
+    await git(repository, 'merge', '--ff-only', 'origin/master')
+  }, 60_000)
+
+  test('refuses tracked and untracked mutations created during preflight, before whoami or publish', async () => {
+    const untracked = join(repository, 'mutation-during-preflight.txt')
+    let result = await publish({ PUBLISH_TEST_MUTATE_WORKTREE_FILE: shellPath(untracked) })
+    expect(result.exitCode).not.toBe(0)
+    expect(result.output).toContain('worktree must be clean immediately before publication')
+    let calls = await npmCalls()
+    expect(calls).not.toContain('whoami')
+    expect(calls).not.toContain('publish')
+    await rm(untracked)
+
+    const tracked = join(repository, 'bun.lock')
+    result = await publish({ PUBLISH_TEST_MUTATE_WORKTREE_FILE: shellPath(tracked) })
+    expect(result.exitCode).not.toBe(0)
+    expect(result.output).toContain('worktree must be clean immediately before publication')
+    calls = await npmCalls()
+    expect(calls).not.toContain('whoami')
+    expect(calls).not.toContain('publish')
+    await git(repository, 'checkout', '--', 'bun.lock')
+  }, 60_000)
+
+  test('pins every live registry operation to the public npm registry despite ambient config', async () => {
+    // The redirect attempt below is ambient npm configuration; the script must
+    // hand each live command the reviewed target explicitly, which outranks it.
+    const result = await publish({ npm_config_registry: 'https://registry.attacker.invalid/' })
+    expect(result.exitCode, result.output).toBe(0)
+    const calls = (await npmCalls()).trim().split('\n')
+    const live = calls.filter(
+      (call) =>
+        call.startsWith('whoami') || call.startsWith('view') || call.startsWith('publish'),
+    )
+    expect(live.length).toBeGreaterThanOrEqual(1 + 2 * packageDirectories.length)
+    for (const call of live) {
+      expect(call).toContain('--registry=https://registry.npmjs.org/')
+    }
+    expect(result.output).not.toContain('registry.attacker.invalid')
+
+    const redirected = await publish({
+      PUBLISH_TEST_MANIFEST_REGISTRY: 'https://registry.attacker.invalid/',
+    })
+    expect(redirected.exitCode).not.toBe(0)
+    expect(redirected.output).toContain('is not the pinned public registry')
+    const redirectedCalls = await npmCalls()
+    expect(redirectedCalls).not.toContain('whoami')
+    expect(redirectedCalls).not.toContain('publish')
   }, 60_000)
 
   test('skips only a registry artifact with the same reviewed integrity', async () => {
