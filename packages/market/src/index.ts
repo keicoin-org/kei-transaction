@@ -27,7 +27,14 @@ export {
   walkAccounts,
   withCoverage,
 } from './walk.js'
-export type { AccountRead, Coverage, Covered, ReadOptions, Walk } from './walk.js'
+export type {
+  AccountRead,
+  Coverage,
+  CoverageFailure,
+  Covered,
+  ReadOptions,
+  Walk,
+} from './walk.js'
 
 export { isMarketError } from './errors.js'
 export type { MarketErrorCode } from './errors.js'

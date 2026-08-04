@@ -264,12 +264,12 @@ describe('walkAccounts — coverage is the honest half', () => {
     expect(coverageOf(withCoverage([], merged))).toEqual(merged)
   })
 
-  test('the same failed account reduces read once and keeps both reasons', () => {
+  test('the same failed account reduces read once and keeps exact atomic reasons', () => {
     const first = {
       ...emptyCoverage(),
       asked: 2,
       read: 1,
-      failed: [{ account: 'kei_a', reason: 'offers failed' }],
+      failed: [{ account: 'kei_a', reason: 'offers; failed' }],
       complete: false,
     }
     const second = {
@@ -283,9 +283,83 @@ describe('walkAccounts — coverage is the honest half', () => {
     const merged = mergeCoverage(first, second)
     expect(merged).toMatchObject({ asked: 2, read: 1, complete: false })
     expect(merged.failed).toEqual([
-      { account: 'kei_a', reason: 'offers failed; history failed' },
+      {
+        account: 'kei_a',
+        reason: 'history failed; offers; failed',
+        reasons: ['history failed', 'offers; failed'],
+      },
     ])
     expect(coverageOf(withCoverage([], merged))).toEqual(merged)
+
+    // The summary's semicolons are prose, never a delimiter we parse. Exact
+    // atoms make re-merging the first part a no-op instead of growing text.
+    expect(mergeCoverage(merged, first)).toEqual(merged)
+  })
+
+  test('nested merges are associative and idempotent for repeated failures', () => {
+    const part = (reason: string): Coverage => ({
+      ...emptyCoverage(),
+      asked: 1,
+      read: 0,
+      failed: [{ account: 'kei_a', reason }],
+      complete: false,
+    })
+    const a = part('offers; timed out')
+    const b = part('history failed')
+    const c = part('claims failed')
+
+    const left = mergeCoverage(mergeCoverage(a, b), c)
+    const right = mergeCoverage(a, mergeCoverage(b, c))
+    expect(left).toEqual(right)
+    expect(left.failed).toEqual([
+      {
+        account: 'kei_a',
+        reason: 'claims failed; history failed; offers; timed out',
+        reasons: ['claims failed', 'history failed', 'offers; timed out'],
+      },
+    ])
+    expect(mergeCoverage(left, a, b, c)).toEqual(left)
+
+    for (const permutation of [
+      [a, b, c],
+      [a, c, b],
+      [b, a, c],
+      [b, c, a],
+      [c, a, b],
+      [c, b, a],
+    ]) {
+      expect(mergeCoverage(...permutation)).toEqual(left)
+    }
+
+    const restored = JSON.parse(JSON.stringify(left)) as Coverage
+    expect(coverageOf(withCoverage([], restored))).toEqual(left)
+    expect(mergeCoverage(restored, a, b, c)).toEqual(left)
+  })
+
+  test('truncated and skipped unions are permutation-invariant', () => {
+    const a: Coverage = {
+      ...emptyCoverage(),
+      asked: 2,
+      read: 2,
+      truncated: ['kei_z'],
+      skipped: ['zeta'],
+      complete: false,
+    }
+    const b: Coverage = {
+      ...emptyCoverage(),
+      asked: 2,
+      read: 2,
+      truncated: ['kei_a'],
+      skipped: ['alpha'],
+      complete: false,
+    }
+
+    const merged = mergeCoverage(a, b)
+    expect(mergeCoverage(b, a)).toEqual(merged)
+    expect(merged).toMatchObject({
+      truncated: ['kei_a', 'kei_z'],
+      skipped: ['alpha', 'zeta'],
+    })
   })
 
   test('merging different account cardinalities refuses instead of inventing coverage', () => {
@@ -338,6 +412,29 @@ describe('walkAccounts — coverage is the honest half', () => {
   })
 
   test('malformed public coverage rejects with a stable typed error before arithmetic', () => {
+    const sparseStrings: string[] = []
+    sparseStrings.length = 1
+    const sparseFailures: Coverage['failed'] = Array(1)
+    const sparseReasons: string[] = []
+    sparseReasons.length = 2
+    sparseReasons[1] = 'x'
+    const inheritedStrings: string[] = Array(1)
+    Object.setPrototypeOf(
+      inheritedStrings,
+      Object.assign(Object.create(Array.prototype), { 0: 'inherited' }),
+    )
+    const inheritedFailures: Coverage['failed'] = Array(1)
+    Object.setPrototypeOf(
+      inheritedFailures,
+      Object.assign(Object.create(Array.prototype), {
+        0: { account: 'kei_x', reason: 'inherited' },
+      }),
+    )
+    const inheritedReasons: string[] = Array(2)
+    Object.setPrototypeOf(
+      inheritedReasons,
+      Object.assign(Object.create(Array.prototype), { 0: 'one', 1: 'two' }),
+    )
     const cases: Array<{ value: unknown; message: string }> = [
       {
         value: { ...emptyCoverage(), asked: 1, read: 1, failed: [{ account: 'foreign', reason: 'forged' }], complete: false },
@@ -369,10 +466,19 @@ describe('walkAccounts — coverage is the honest half', () => {
       { value: { asked: 0, read: 0, dropped: 0, complete: true }, message: 'failed must be an array' },
       { value: { ...emptyCoverage(), failed: undefined }, message: 'failed must be an array' },
       { value: { ...emptyCoverage(), failed: {} }, message: 'failed must be an array' },
+      { value: { ...emptyCoverage(), failed: sparseFailures }, message: 'failed[0] must contain string account and reason fields' },
+      {
+        value: { ...emptyCoverage(), asked: 1, read: 0, failed: inheritedFailures, complete: false },
+        message: 'failed[0] must contain string account and reason fields',
+      },
       { value: { ...emptyCoverage(), truncated: undefined }, message: 'truncated must be an array of strings' },
       { value: { ...emptyCoverage(), truncated: 'kei_x' }, message: 'truncated must be an array of strings' },
+      { value: { ...emptyCoverage(), truncated: sparseStrings }, message: 'truncated must be an array of strings' },
+      { value: { ...emptyCoverage(), truncated: inheritedStrings }, message: 'truncated must be an array of strings' },
       { value: { ...emptyCoverage(), skipped: undefined }, message: 'skipped must be an array of strings' },
       { value: { ...emptyCoverage(), skipped: {} }, message: 'skipped must be an array of strings' },
+      { value: { ...emptyCoverage(), skipped: sparseStrings }, message: 'skipped must be an array of strings' },
+      { value: { ...emptyCoverage(), skipped: inheritedStrings }, message: 'skipped must be an array of strings' },
       {
         value: { ...emptyCoverage(), asked: 1, read: 0, failed: [{ account: 'kei_x' }], complete: false },
         message: 'failed[0] must contain string account and reason fields',
@@ -384,6 +490,76 @@ describe('walkAccounts — coverage is the honest half', () => {
       {
         value: { ...emptyCoverage(), asked: 1, read: 0, failed: [{ account: 'kei_x', reason: 7 }], complete: false },
         message: 'failed[0] must contain string account and reason fields',
+      },
+      {
+        value: {
+          ...emptyCoverage(),
+          asked: 1,
+          read: 0,
+          failed: [{ account: 'kei_x', reason: 'one', reasons: 'one' }],
+          complete: false,
+        },
+        message: 'reasons must be an array of strings',
+      },
+      {
+        value: {
+          ...emptyCoverage(),
+          asked: 1,
+          read: 0,
+          failed: [{ account: 'kei_x', reason: 'one; two', reasons: inheritedReasons }],
+          complete: false,
+        },
+        message: 'reasons must be an array of strings',
+      },
+      {
+        value: {
+          ...emptyCoverage(),
+          asked: 1,
+          read: 0,
+          failed: [{ account: 'kei_x', reason: '; x', reasons: sparseReasons }],
+          complete: false,
+        },
+        message: 'reasons must be an array of strings',
+      },
+      {
+        value: {
+          ...emptyCoverage(),
+          asked: 1,
+          read: 0,
+          failed: [{ account: 'kei_x', reason: 'one', reasons: ['one'] }],
+          complete: false,
+        },
+        message: 'only for two or more atomic reasons',
+      },
+      {
+        value: {
+          ...emptyCoverage(),
+          asked: 1,
+          read: 0,
+          failed: [{ account: 'kei_x', reason: 'one; one', reasons: ['one', 'one'] }],
+          complete: false,
+        },
+        message: 'must not repeat an atomic reason',
+      },
+      {
+        value: {
+          ...emptyCoverage(),
+          asked: 1,
+          read: 0,
+          failed: [{ account: 'kei_x', reason: 'two; one', reasons: ['two', 'one'] }],
+          complete: false,
+        },
+        message: 'must be sorted in canonical order',
+      },
+      {
+        value: {
+          ...emptyCoverage(),
+          asked: 1,
+          read: 0,
+          failed: [{ account: 'kei_x', reason: 'wrong summary', reasons: ['one', 'two'] }],
+          complete: false,
+        },
+        message: "reason must be the readable '; ' joined summary",
       },
       {
         value: {
@@ -583,6 +759,12 @@ describe('coverage rides along without changing the rows', () => {
   })
 
   test('coverageOf refuses partial, inconsistent, and malformed lookalikes', () => {
+    const sparseStrings: string[] = []
+    sparseStrings.length = 1
+    const sparseFailures: Coverage['failed'] = Array(1)
+    const sparseReasons: string[] = []
+    sparseReasons.length = 2
+    sparseReasons[1] = 'x'
     const cases: unknown[] = [
       { asked: 1, complete: true },
       { ...emptyCoverage(), asked: 1.5 },
@@ -591,6 +773,30 @@ describe('coverage rides along without changing the rows', () => {
       { ...emptyCoverage(), asked: 1, read: 1, failed: [{ account: 'foreign', reason: 'forged' }], complete: false },
       { ...emptyCoverage(), asked: Number.NaN },
       { ...emptyCoverage(), failed: [{ account: 'kei_x' }] },
+      { ...emptyCoverage(), failed: sparseFailures },
+      { ...emptyCoverage(), truncated: sparseStrings },
+      { ...emptyCoverage(), skipped: sparseStrings },
+      {
+        ...emptyCoverage(),
+        asked: 1,
+        read: 0,
+        failed: [{ account: 'kei_x', reason: '; x', reasons: sparseReasons }],
+        complete: false,
+      },
+      {
+        ...emptyCoverage(),
+        asked: 1,
+        read: 0,
+        failed: [{ account: 'kei_x', reason: 'wrong', reasons: ['one', 'two'] }],
+        complete: false,
+      },
+      {
+        ...emptyCoverage(),
+        asked: 1,
+        read: 0,
+        failed: [{ account: 'kei_x', reason: 'two; one', reasons: ['two', 'one'] }],
+        complete: false,
+      },
       {
         ...emptyCoverage(),
         asked: 1,
