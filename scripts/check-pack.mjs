@@ -1,9 +1,12 @@
 import process from 'node:process'
+import { readFile } from 'node:fs/promises'
 
-const [expectedName, expectedVersion] = process.argv.slice(2)
+const [expectedName, expectedVersion, manifestPath, option] = process.argv.slice(2)
 
-if (!expectedName || !expectedVersion) {
-  throw new Error('usage: node scripts/check-pack.mjs <name> <version>')
+if (!expectedName || !expectedVersion || !manifestPath) {
+  throw new Error(
+    'usage: node scripts/check-pack.mjs <name> <version> <package.json> [--field=integrity|--field=filename]',
+  )
 }
 
 let input = ''
@@ -25,15 +28,40 @@ if (report.name !== expectedName || report.version !== expectedVersion) {
   )
 }
 
+const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
+if (manifest.name !== expectedName || manifest.version !== expectedVersion) {
+  throw new Error(
+    `manifest declares ${String(manifest.name)}@${String(manifest.version)}, expected ${expectedName}@${expectedVersion}`,
+  )
+}
+
 const paths = new Set(report.files.map((file) => file.path))
-for (const required of [
-  'package.json',
-  'README.md',
-  'LICENSE',
-  'src/index.ts',
-  'dist/index.js',
-  'dist/index.d.ts',
-]) {
+const targets = new Set(['package.json', 'README.md', 'LICENSE'])
+
+function addTarget(value, field) {
+  if (typeof value === 'string') {
+    if (value.includes('*')) {
+      throw new Error(`${expectedName}@${expectedVersion} has an uncheckable wildcard in ${field}: ${value}`)
+    }
+    const path = value.replace(/^\.\//, '')
+    if (!path || path.startsWith('../') || path.includes('/../')) {
+      throw new Error(`${expectedName}@${expectedVersion} has an unsafe ${field} target: ${value}`)
+    }
+    targets.add(path)
+    return
+  }
+  if (value && typeof value === 'object') {
+    for (const [key, child] of Object.entries(value)) addTarget(child, `${field}.${key}`)
+  }
+}
+
+addTarget(manifest.exports, 'exports')
+addTarget(manifest.bin, 'bin')
+addTarget(manifest.main, 'main')
+addTarget(manifest.module, 'module')
+addTarget(manifest.types, 'types')
+
+for (const required of targets) {
   if (!paths.has(required)) throw new Error(`${expectedName}@${expectedVersion} omits ${required}`)
 }
 
@@ -45,6 +73,16 @@ const residue = [...paths].filter((path) =>
 if (residue.length > 0) {
   throw new Error(`${expectedName}@${expectedVersion} contains release residue: ${residue.join(', ')}`)
 }
+
+if (option?.startsWith('--field=')) {
+  const field = option.slice('--field='.length)
+  if (!['integrity', 'filename'].includes(field) || typeof report[field] !== 'string') {
+    throw new Error(`npm pack report has no supported string field ${field}`)
+  }
+  process.stdout.write(report[field])
+  process.exit(0)
+}
+if (option) throw new Error(`unknown option: ${option}`)
 
 console.log(
   `    ${expectedName}@${expectedVersion}: ${report.entryCount} files, ${report.unpackedSize} bytes unpacked`,

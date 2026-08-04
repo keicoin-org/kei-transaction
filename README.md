@@ -655,8 +655,8 @@ release is read as a set rather than as nine independent publishes.
 
 ### Unreleased — coordinated SDK release
 
-The source is merged; the registry release is tracked in [#53]. Until its
-publish and clean-install verification finish, the latest npm versions remain
+The source is merged; the registry release is tracked in [#53]. At the opening
+of this release candidate on 4 August 2026, the npm registry baseline was
 `kei-transaction@0.6.0`, `@keicoin/core@0.4.0`,
 `@keicoin/market@0.2.0`, and `@keicoin/wallet@0.4.2`. A release manifest may
 name the next versions before npm accepts them; that is a release candidate,
@@ -671,21 +671,25 @@ not evidence that they are installable.
 | `@keicoin/market` | `0.3.0` | Bounded and abortable aggregate reads, explicit scope-safe coverage provenance with structural validation before merges, oriented `BookLevel` prices, deterministic precision/race/paging conformance, validated limits and retry timers |
 | `@keicoin/wallet` | `0.5.0` | Durable-seed reporting, bounded identity-checked metadata caching, and a coalesced ordered refresh stream with subscription-instance stale-paint protection |
 | `@keicoin/economy` | `0.2.1` | Dependency-only move to core `^0.5.0`, claims `^0.5.1`, and market `^0.3.0` |
-| `@keicoin/player-economy` | `0.1.1` | Dependency-only move to core `^0.5.0` and market `^0.3.0` |
+| `@keicoin/player-economy` | `0.1.1` | Correct whole-shelf browsing to consume oriented ask levels, plus dependency moves to core `^0.5.0` and market `^0.3.0` |
 | `kei-transaction` | `0.7.0` | The coordinated umbrella range that exposes one copy of every release above and records its public npm access policy in the manifest |
 
 `HttpNodeOptions.requestTimeout` is new public configuration, so core takes a
 strict-semver minor rather than hiding that surface in a patch. Under 0.x caret
 rules `^0.4.0` excludes `0.5.0`; every direct core consumer therefore moves its
-floor and is republished. Packages whose own source did not change take a patch,
-while market, wallet, and the umbrella keep the minor versions warranted by
-their own public additions.
+floor and is republished. Dependency-only consumers take patches; player economy
+also carries its compatible browse fix, while market, wallet, and the umbrella
+keep the minor versions warranted by their own public additions.
 
 The publish order is core, work, claims, tokens, market, wallet, economy,
 player-economy, and the umbrella last. Before publication, `sh
 scripts/publish.sh --check` requires the committed Bun lockfile, installs it
 frozen, cleans and rebuilds every declaration and JavaScript artifact, runs the
-suite, and validates each dry-run tarball. The published-release table and
+suite, validates every manifest export and binary in each tarball, then installs
+the packed graph and imports its public Node entries. Publication is allowed only
+from the fetched, merged default-branch commit, and interrupted reruns skip an
+existing version only when its registry integrity matches the reviewed local
+artifact. The published-release table and
 website move only after an empty-project install proves that npm resolves one
 copy of every package.
 

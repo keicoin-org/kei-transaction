@@ -76,12 +76,23 @@ describe('publish shell safety gate', () => {
     await cp(join(workspace, 'scripts', 'publish.sh'), join(seed, 'scripts', 'publish.sh'))
     await writeFile(join(seed, 'bun.lock'), 'mock lock\n')
 
-    const npmMock = `#!/bin/sh
+const npmMock = `#!/bin/sh
 printf '%s\\n' "$*" >> "$PUBLISH_TEST_LOG"
 case "\${1:-} \${2:-}" in
-  "pack --dry-run") printf '%s\\n' '[]' ;;
+  "pack --json") printf '%s\\n' '[]' ;;
+  "install --prefix") exit 0 ;;
   "whoami ") [ "\${PUBLISH_TEST_WHOAMI_FAIL:-0}" -eq 0 ] && printf '%s\\n' 'release-test-user' || exit 1 ;;
-  "view "*) exit 1 ;;
+  "view "*)
+    if [ -z "\${PUBLISH_TEST_REGISTRY_INTEGRITY:-}" ]; then
+      printf '%s\\n' 'npm error code E404' >&2
+      exit 1
+    fi
+    case "\${3:-}" in
+      version) printf '%s\\n' '"9.9.9"' ;;
+      dist.integrity) printf '"%s"\\n' "$PUBLISH_TEST_REGISTRY_INTEGRITY" ;;
+      *) exit 2 ;;
+    esac
+    ;;
 esac
 exit 0
 `
@@ -94,7 +105,14 @@ case "\${1:-}" in
       *) printf '%s\\n' mock-package ;;
     esac
     ;;
-  *) cat >/dev/null ;;
+  -e) exec "$PUBLISH_TEST_REAL_NODE" "$@" ;;
+  *)
+    case "$*" in
+      *--field=filename*) printf '%s' 'mock-package-9.9.9.tgz' ;;
+      *--field=integrity*) printf '%s' 'sha512-release-test' ;;
+      *) cat >/dev/null ;;
+    esac
+    ;;
 esac
 exit 0
 `
@@ -122,7 +140,7 @@ exit 0
 
   async function publish(environment: Record<string, string> = {}, arguments_ = '') {
     await writeFile(log, '')
-    const command = `PATH="$PWD/mock-bin:$PATH" PUBLISH_TEST_LOG="${shellPath(log)}" sh scripts/publish.sh ${arguments_}`
+    const command = `PATH="$PWD/mock-bin:$PATH" PUBLISH_TEST_LOG="${shellPath(log)}" PUBLISH_TEST_REAL_NODE="${shellPath(process.execPath)}" sh scripts/publish.sh ${arguments_}`
     return run([shell, '-c', command], repository, environment)
   }
 
@@ -177,5 +195,17 @@ exit 0
     const firstPublish = calls.findIndex((call) => call.startsWith('publish'))
     expect(whoami).toBeGreaterThanOrEqual(0)
     expect(firstPublish).toBeGreaterThan(whoami)
+  }, 30_000)
+
+  test('skips only a registry artifact with the same reviewed integrity', async () => {
+    let result = await publish({ PUBLISH_TEST_REGISTRY_INTEGRITY: 'sha512-different' })
+    expect(result.exitCode).not.toBe(0)
+    expect(result.output).toContain('exists with different tarball integrity')
+    expect(await npmCalls()).not.toContain('publish')
+
+    result = await publish({ PUBLISH_TEST_REGISTRY_INTEGRITY: 'sha512-release-test' })
+    expect(result.exitCode, result.output).toBe(0)
+    expect(result.output).toContain('artifact matches; skipping')
+    expect(await npmCalls()).not.toContain('publish')
   }, 30_000)
 })
