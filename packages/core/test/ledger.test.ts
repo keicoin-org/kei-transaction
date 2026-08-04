@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import {
   issuanceBurn,
   KEI_ASSET,
+  MAX_ASSETS_PER_ACCOUNT,
   MOCK_THRESHOLDS,
   MockNode,
   NULL_REPRESENTATIVE,
@@ -16,6 +17,7 @@ import {
   generateWork,
   hashBlock,
   keyPairFromSeed,
+  leafHash,
   publicKeyFromAddress,
   signHash,
   tierFor,
@@ -31,14 +33,18 @@ let player: KeyPair
 
 /** Signs and submits a body as `keys`, filling in work. */
 async function submit(keys: KeyPair, body: BlockBody): Promise<string> {
+  const block = await signed(keys, body)
+  const result = await node.process(block)
+  return result.hash
+}
+
+async function signed(keys: KeyPair, body: BlockBody): Promise<Block> {
   const hash = hashBlock(body)
-  const block: Block = {
+  return {
     ...body,
     work: generateWork(workRoot(body), BigInt(MOCK_THRESHOLDS[tierFor(body)])),
     signature: await signHash(keys.privateKey, hash),
   }
-  const result = await node.process(block)
-  return result.hash
 }
 
 async function draft(keys: KeyPair): Promise<{ previous: string; balance: string; representative: string }> {
@@ -201,6 +207,9 @@ describe('assets arrive as receivable (SPEC §5.6.3)', () => {
     await node.faucet(player.address)
     const [receivable] = await node.receivables(player.address)
     expect(receivable?.asset).toBe(KEI_ASSET)
+    const before = await publicLedgerState([player.address])
+    const notifications: unknown[] = []
+    const unsubscribe = node.subscribe(player.address, (event) => notifications.push(event))
 
     const context = await draft(player)
     await expect(
@@ -213,6 +222,198 @@ describe('assets arrive as receivable (SPEC §5.6.3)', () => {
         op: { kind: 'asset_receive', link: receivable?.hash ?? '' },
       }),
     ).rejects.toThrow(/collected by a receive block/)
+    expect(await publicLedgerState([player.address])).toEqual(before)
+    expect(notifications).toEqual([])
+
+    await submit(player, {
+      type: 'state',
+      subtype: 'open',
+      account: player.address,
+      previous: ZERO_HASH,
+      representative: player.address,
+      balance: receivable?.amount ?? '0',
+      link: receivable?.hash ?? '',
+    })
+    expect(await node.receivables(player.address)).toEqual([])
+    unsubscribe()
+  })
+})
+
+describe('rejected process calls are atomic', () => {
+  test('a wrong-balance receive retains its receivable and a correct same-instance retry succeeds once', async () => {
+    await node.faucet(player.address, '100')
+    const [receivable] = await node.receivables(player.address)
+    const before = await publicLedgerState([player.address])
+    const notifications: unknown[] = []
+    const unsubscribe = node.subscribe(player.address, (event) => notifications.push(event))
+
+    await expect(
+      submit(player, {
+        type: 'state',
+        subtype: 'open',
+        account: player.address,
+        previous: ZERO_HASH,
+        representative: player.address,
+        balance: '101',
+        link: receivable?.hash ?? '',
+      }),
+    ).rejects.toThrow(/should leave a balance of 100, not 101/)
+
+    expect(await publicLedgerState([player.address])).toEqual(before)
+    expect(notifications).toEqual([])
+
+    const accepted = await submit(player, {
+      type: 'state',
+      subtype: 'open',
+      account: player.address,
+      previous: ZERO_HASH,
+      representative: player.address,
+      balance: '100',
+      link: receivable?.hash ?? '',
+    })
+    expect((await node.accountInfo(player.address))?.frontier).toBe(accepted)
+    expect(await node.receivables(player.address)).toEqual([])
+    expect(await node.accountHistory(player.address)).toHaveLength(1)
+    unsubscribe()
+  })
+
+  test('asset receive at the holdings limit retains authority and holder indexes', async () => {
+    await fund(issuer, 2_000)
+    const asset = await issueGem()
+    await mint(asset, player.address, '5')
+    const [receivable] = await node.receivables(player.address)
+    const capacity = fillHoldingCapacity(player.address)
+    const before = await publicLedgerState([issuer.address, player.address], [asset])
+    const notifications: unknown[] = []
+    const unsubscribe = node.subscribe(player.address, (event) => notifications.push(event))
+
+    await expect(
+      submit(player, {
+        type: 'asset',
+        account: player.address,
+        previous: ZERO_HASH,
+        representative: player.address,
+        balance: '0',
+        op: { kind: 'asset_receive', link: receivable?.hash ?? '' },
+      }),
+    ).rejects.toThrow(new RegExp(`${MAX_ASSETS_PER_ACCOUNT} different assets`))
+
+    expect(await publicLedgerState([issuer.address, player.address], [asset])).toEqual(before)
+    expect(notifications).toEqual([])
+
+    capacity.clear()
+    await submit(player, {
+      type: 'asset',
+      account: player.address,
+      previous: ZERO_HASH,
+      representative: player.address,
+      balance: '0',
+      op: { kind: 'asset_receive', link: receivable?.hash ?? '' },
+    })
+    expect(await node.holderBalance(asset, player.address)).toBe('5')
+    unsubscribe()
+  })
+
+  test('late invalid-recipient access cannot leave mint circulation behind', async () => {
+    await fund(issuer, 2_000)
+    const asset = await issueGem()
+    const context = await draft(issuer)
+    let reads = 0
+    const op = {
+      kind: 'mint' as const,
+      asset,
+      amount: '7',
+      get to(): string {
+        reads += 1
+        return reads <= 2 ? player.address : 'not-a-kei-address'
+      },
+    }
+    const body: BlockBody = {
+      type: 'asset',
+      account: issuer.address,
+      previous: context.previous,
+      representative: context.representative,
+      balance: context.balance,
+      op,
+    }
+    const block = await signed(issuer, body)
+    const before = await publicLedgerState([issuer.address, player.address], [asset])
+    const notifications: unknown[] = []
+    const unsubscribeIssuer = node.subscribe(issuer.address, (event) => notifications.push(event))
+    const unsubscribePlayer = node.subscribe(player.address, (event) => notifications.push(event))
+
+    await expect(node.process(block)).rejects.toThrow(/address/i)
+    expect(reads).toBeGreaterThanOrEqual(3)
+    expect(await publicLedgerState([issuer.address, player.address], [asset])).toEqual(before)
+    expect(notifications).toEqual([])
+
+    await submit(issuer, {
+      ...body,
+      op: { kind: 'mint', asset, amount: '7', to: player.address },
+    })
+    expect((await node.assetInfo(asset))?.circulating).toBe('7')
+    expect(await node.receivables(player.address)).toEqual([
+      expect.objectContaining({ asset, amount: '7' }),
+    ])
+    unsubscribeIssuer()
+    unsubscribePlayer()
+  })
+
+  test('a claim that cannot add a holding changes neither claim status nor supply', async () => {
+    await fund(issuer, 2_000)
+    const asset = await issueGem()
+    const amount = 3n
+    const root = leafHash(player.publicKey, asset, amount)
+    const issuerContext = await draft(issuer)
+    await submit(issuer, {
+      type: 'asset',
+      account: issuer.address,
+      previous: issuerContext.previous,
+      representative: issuerContext.representative,
+      balance: issuerContext.balance,
+      op: { kind: 'commit', root, asset, count: 1, total: amount.toString() },
+    })
+    const capacity = fillHoldingCapacity(player.address)
+    const before = await publicLedgerState(
+      [issuer.address, player.address],
+      [asset],
+      [{ account: player.address, root }],
+    )
+    const notifications: unknown[] = []
+    const unsubscribe = node.subscribe(player.address, (event) => notifications.push(event))
+
+    await expect(
+      submit(player, {
+        type: 'asset',
+        account: player.address,
+        previous: ZERO_HASH,
+        representative: player.address,
+        balance: '0',
+        op: { kind: 'claim', root, asset, amount: amount.toString(), proof: [] },
+      }),
+    ).rejects.toThrow(new RegExp(`${MAX_ASSETS_PER_ACCOUNT} different assets`))
+
+    expect(
+      await publicLedgerState(
+        [issuer.address, player.address],
+        [asset],
+        [{ account: player.address, root }],
+      ),
+    ).toEqual(before)
+    expect(notifications).toEqual([])
+
+    capacity.clear()
+    await submit(player, {
+      type: 'asset',
+      account: player.address,
+      previous: ZERO_HASH,
+      representative: player.address,
+      balance: '0',
+      op: { kind: 'claim', root, asset, amount: amount.toString(), proof: [] },
+    })
+    expect(await node.hasClaimed(player.address, root)).toBe(true)
+    expect(await node.holderBalance(asset, player.address)).toBe(amount.toString())
+    unsubscribe()
   })
 })
 
@@ -357,4 +558,74 @@ async function mint(asset: string, to: string, amount: string): Promise<void> {
     balance: context.balance,
     op: { kind: 'mint', asset, to, amount },
   })
+}
+
+async function publicAccountState(address: string): Promise<{
+  account: Awaited<ReturnType<MockNode['accountInfo']>>
+  history: Awaited<ReturnType<MockNode['accountHistory']>>
+  receivables: Awaited<ReturnType<MockNode['receivables']>>
+  holdings: Awaited<ReturnType<MockNode['holdings']>>
+}> {
+  const [account, history, receivables, holdings] = await Promise.all([
+    node.accountInfo(address),
+    node.accountHistory(address),
+    node.receivables(address),
+    node.holdings(address),
+  ])
+  return { account, history, receivables, holdings }
+}
+
+/** Every public read model that a rejected transition could partially change. */
+async function publicLedgerState(
+  accounts: string[],
+  assets: string[] = [],
+  claims: Array<{ account: string; root: string }> = [],
+): Promise<{
+  accounts: Record<string, Awaited<ReturnType<typeof publicAccountState>>>
+  assets: Record<
+    string,
+    {
+      info: Awaited<ReturnType<MockNode['assetInfo']>>
+      holders: Awaited<ReturnType<MockNode['holders']>>
+    }
+  >
+  claims: Record<string, boolean>
+}> {
+  return {
+    accounts: Object.fromEntries(
+      await Promise.all(accounts.map(async (account) => [account, await publicAccountState(account)] as const)),
+    ),
+    assets: Object.fromEntries(
+      await Promise.all(
+        assets.map(async (asset) => [
+          asset,
+          { info: await node.assetInfo(asset), holders: await node.holders(asset) },
+        ] as const),
+      ),
+    ),
+    claims: Object.fromEntries(
+      await Promise.all(
+        claims.map(async ({ account, root }) => [
+          `${account}|${root}`,
+          await node.hasClaimed(account, root),
+        ] as const),
+      ),
+    ),
+  }
+}
+
+/**
+ * Set up only the bounded-index edge; generating 1,024 tier-A asset blocks
+ * would turn one deterministic rejection regression into minutes of proof of
+ * work. Public read-model assertions still exercise the attempted transition.
+ */
+function fillHoldingCapacity(address: string): Set<string> {
+  const internals = node.ledger as unknown as {
+    holdingsByAccount: Map<string, Set<string>>
+  }
+  const assets = new Set(
+    Array.from({ length: MAX_ASSETS_PER_ACCOUNT }, (_, index) => index.toString(16).padStart(64, '0')),
+  )
+  internals.holdingsByAccount.set(address, assets)
+  return assets
 }
