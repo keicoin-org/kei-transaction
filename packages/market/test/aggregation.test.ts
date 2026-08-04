@@ -270,6 +270,9 @@ describe('price series — consensus numbers, advisory order', () => {
 
     expect(candlesAt(3, 3)).toHaveLength(3)
     expect(caught(() => candlesAt(4, 3))).toMatchObject({ code: 'too-many-candles' })
+    expect(
+      toCandles([], { asset: 'SWORD', every: 1, fill: true, maxCandles: MAX_CANDLES }),
+    ).toEqual([])
     for (const maxCandles of [0, 0.5, Number.POSITIVE_INFINITY, MAX_CANDLES + 1]) {
       expect(caught(() => toCandles([], { asset: 'SWORD', every: 1, maxCandles }))).toMatchObject({
         code: 'bad-max-candles',
