@@ -454,7 +454,7 @@ function coverageProblem(value: unknown): string | null {
     }
     const reasons = (failure as { reasons?: unknown }).reasons
     if (reasons !== undefined) {
-      if (!Array.isArray(reasons) || reasons.some((entry) => typeof entry !== 'string')) {
+      if (!isStringArray(reasons)) {
         return `failed[${index}].reasons must be an array of strings when present.`
       }
       if (reasons.length < 2) {
@@ -483,7 +483,7 @@ function coverageProblem(value: unknown): string | null {
   }
   for (const field of ['truncated', 'skipped'] as const) {
     const entries = candidate[field]
-    if (!Array.isArray(entries) || entries.some((entry) => typeof entry !== 'string')) {
+    if (!isStringArray(entries)) {
       return `${field} must be an array of strings.`
     }
   }
@@ -505,6 +505,15 @@ function coverageProblem(value: unknown): string | null {
 
 function isCount(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0
+}
+
+/** Array callbacks skip holes, so inspect every numeric slot explicitly. */
+function isStringArray(value: unknown): value is string[] {
+  if (!Array.isArray(value)) return false
+  for (let index = 0; index < value.length; index += 1) {
+    if (typeof value[index] !== 'string') return false
+  }
+  return true
 }
 
 /** Stable UTF-16 code-unit order, independent of host locale. */

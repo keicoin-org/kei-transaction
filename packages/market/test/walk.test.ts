@@ -386,6 +386,11 @@ describe('walkAccounts — coverage is the honest half', () => {
   })
 
   test('malformed public coverage rejects with a stable typed error before arithmetic', () => {
+    const sparseStrings: string[] = []
+    sparseStrings.length = 1
+    const sparseReasons: string[] = []
+    sparseReasons.length = 2
+    sparseReasons[1] = 'x'
     const cases: Array<{ value: unknown; message: string }> = [
       {
         value: { ...emptyCoverage(), asked: 1, read: 1, failed: [{ account: 'foreign', reason: 'forged' }], complete: false },
@@ -419,8 +424,10 @@ describe('walkAccounts — coverage is the honest half', () => {
       { value: { ...emptyCoverage(), failed: {} }, message: 'failed must be an array' },
       { value: { ...emptyCoverage(), truncated: undefined }, message: 'truncated must be an array of strings' },
       { value: { ...emptyCoverage(), truncated: 'kei_x' }, message: 'truncated must be an array of strings' },
+      { value: { ...emptyCoverage(), truncated: sparseStrings }, message: 'truncated must be an array of strings' },
       { value: { ...emptyCoverage(), skipped: undefined }, message: 'skipped must be an array of strings' },
       { value: { ...emptyCoverage(), skipped: {} }, message: 'skipped must be an array of strings' },
+      { value: { ...emptyCoverage(), skipped: sparseStrings }, message: 'skipped must be an array of strings' },
       {
         value: { ...emptyCoverage(), asked: 1, read: 0, failed: [{ account: 'kei_x' }], complete: false },
         message: 'failed[0] must contain string account and reason fields',
@@ -439,6 +446,16 @@ describe('walkAccounts — coverage is the honest half', () => {
           asked: 1,
           read: 0,
           failed: [{ account: 'kei_x', reason: 'one', reasons: 'one' }],
+          complete: false,
+        },
+        message: 'reasons must be an array of strings',
+      },
+      {
+        value: {
+          ...emptyCoverage(),
+          asked: 1,
+          read: 0,
+          failed: [{ account: 'kei_x', reason: '; x', reasons: sparseReasons }],
           complete: false,
         },
         message: 'reasons must be an array of strings',
@@ -681,6 +698,11 @@ describe('coverage rides along without changing the rows', () => {
   })
 
   test('coverageOf refuses partial, inconsistent, and malformed lookalikes', () => {
+    const sparseStrings: string[] = []
+    sparseStrings.length = 1
+    const sparseReasons: string[] = []
+    sparseReasons.length = 2
+    sparseReasons[1] = 'x'
     const cases: unknown[] = [
       { asked: 1, complete: true },
       { ...emptyCoverage(), asked: 1.5 },
@@ -689,6 +711,15 @@ describe('coverage rides along without changing the rows', () => {
       { ...emptyCoverage(), asked: 1, read: 1, failed: [{ account: 'foreign', reason: 'forged' }], complete: false },
       { ...emptyCoverage(), asked: Number.NaN },
       { ...emptyCoverage(), failed: [{ account: 'kei_x' }] },
+      { ...emptyCoverage(), truncated: sparseStrings },
+      { ...emptyCoverage(), skipped: sparseStrings },
+      {
+        ...emptyCoverage(),
+        asked: 1,
+        read: 0,
+        failed: [{ account: 'kei_x', reason: '; x', reasons: sparseReasons }],
+        complete: false,
+      },
       {
         ...emptyCoverage(),
         asked: 1,
