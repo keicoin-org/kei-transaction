@@ -349,6 +349,59 @@ describe('expiry duration normalization is safe before network or signing', () =
     expect(counting.calls.process, evidence('calls', counting.report())).toBe(0)
     expect(counting.calls.swapOffer, evidence('calls', counting.report())).toBe(0)
   })
+
+  test('refreshes the clock after submission so a newly expired offer is armed immediately', async () => {
+    const startingNow = world.clock.at
+    let reads = 0
+    const seller = await world.actor('clock-advances-during-submit', {
+      market: {
+        autoCancelExpired: true,
+        now: () => (reads++ < 2 ? startingNow : startingNow + 1_001),
+      },
+    })
+    await world.mint(sword, seller, 1)
+    const held = holdTimers()
+
+    try {
+      await seller.market.sell({ asset: sword, price: 5, expiresAt: startingNow + 1_000 })
+
+      expect(reads).toBe(3)
+      expect(held.next().delay).toBe(1)
+    } finally {
+      held.restore()
+    }
+  })
+
+  test.each([
+    ['returns an invalid value', () => Number.NaN],
+    [
+      'throws',
+      () => {
+        throw new Error('clock failed after submission')
+      },
+    ],
+  ] as const)('a clock that %s after submission cannot reject the successful write', async (_label, fail) => {
+    const startingNow = world.clock.at
+    let reads = 0
+    const seller = await world.actor(`post-submit-clock-${String(_label).replaceAll(' ', '-')}`, {
+      market: {
+        autoCancelExpired: true,
+        now: () => (reads++ < 2 ? startingNow : fail()),
+      },
+    })
+    await world.mint(sword, seller, 1)
+    const held = holdTimers()
+
+    try {
+      const offer = await seller.market.sell({ asset: sword, price: 5, expiresAt: startingNow + 1_000 })
+
+      expect(offer.state).toBe('open')
+      expect(reads).toBe(3)
+      expect(held.next().delay).toBe(1_001)
+    } finally {
+      held.restore()
+    }
+  })
 })
 
 describe('the sweep cancels what expired, and only that', () => {
