@@ -18,6 +18,7 @@ import type { ClaimBundle } from './tree.js'
 import {
   MAX_PENDING_CLAIMS,
   createMemoryClaimStore,
+  isClaimStoreCapacityError,
   type ClaimStore,
   type ClaimStoreScope,
 } from './store.js'
@@ -291,11 +292,18 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
     const value = envelopeFor(bundle)
     try {
       await store.write(namespace, bundle.root, value)
-    } catch {
+    } catch (error) {
+      if (isClaimStoreCapacityError(error)) {
+        persistenceFailure({
+          code: 'claim-store-overflow',
+          root: bundle.root,
+          message: `The claim store reached its ${MAX_PENDING_CLAIMS}-record limit while retaining ${bundle.root}; no claim was attempted. Another wallet tab may have filled the last slot. Claim or reconcile an existing entry, then add the bundle again.`,
+        })
+      }
       persistenceFailure({
         code: 'claim-store-write-refused',
         root: bundle.root,
-        message: `The claim store refused ${bundle.root}; no claim was attempted because reload recovery was not established. Free storage or replace the adapter, then add the bundle again.`,
+        message: `The claim store refused ${bundle.root}; no claim was attempted because reload recovery was not established. Free storage, retry after another wallet tab finishes, or replace the adapter, then add the bundle again.`,
       })
     }
     let readBack: string | null = null

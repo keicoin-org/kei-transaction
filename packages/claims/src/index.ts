@@ -18,8 +18,10 @@ export type {
 } from './api.js'
 export { createBrowserClaimStore, createMemoryClaimStore } from './store.js'
 export type {
+  BrowserClaimStoreOptions,
   ClaimStore,
   ClaimStoreDurability,
   ClaimStoreScope,
+  ClaimWebLockManager,
   ClaimWebStorage,
 } from './store.js'

@@ -31,8 +31,7 @@ This ordering leaves a safe duplicate after a crash between ledger acceptance
 and deletion. On the next start, `hasClaimed(address, root)` proves that no new
 signature is needed and reconciliation removes the record. Closed and missing
 roots are removed the same way. Multi-tab submissions may race; ledger
-idempotency and later reconciliation are the authority rather than a browser
-lock.
+idempotency and later reconciliation remain the authority for submissions.
 
 ## 3. Stored input is versioned, bounded, and fail-closed
 
@@ -57,11 +56,19 @@ A custom store is trusted code about whether its backing service really
 survives a restart; the SDK can verify immediate read-back, not a future disk.
 
 The browser adapter encodes all records for one wallet/network in a single
-localStorage value. `setItem` atomically replaces that bounded value, so two
-tabs acting on stale snapshots may replace one another, but cannot expose a
-129th record or leave hydration stuck behind an overflow. The SDK's exact
-read-back check still detects contention that happens before read-back completes;
-ledger reconciliation remains authoritative for later multi-tab races.
+localStorage value and serialises every read, write, and removal for that
+namespace through the origin-wide Web Locks API. A mutation therefore reloads
+the latest snapshot while holding the exclusive lock: at 127 records, two tabs
+adding different roots cannot both report success and later lose one. One write
+reaches 128; the other receives a typed refusal with capacity/concurrency
+guidance. A later writer cannot publish a stale namespace over an acknowledged
+proof.
+
+`createBrowserClaimStore(localStorage)` discovers `navigator.locks`. Browsers
+without Web Locks fail closed: records are not hydrated or signed, writes are
+refused, and `storageStatus()` reports a bounded diagnostic. Tests and embedded
+browser runtimes can inject one shared `ClaimWebLockManager`; separate managers
+do not coordinate and are not a valid persistent adapter configuration.
 
 ## 4. Startup retries without making a transient node error fatal
 

@@ -94,6 +94,7 @@ export {
   createMemoryClaimStore,
 } from '@keicoin/claims'
 export type {
+  BrowserClaimStoreOptions,
   ClaimBundle,
   ClaimResult,
   ClaimsApi,
@@ -104,6 +105,7 @@ export type {
   ClaimStoreDiagnosticCode,
   ClaimStoreDurability,
   ClaimStoreScope,
+  ClaimWebLockManager,
   ClaimWebStorage,
   CommitEntry,
   DurableClaimsApi,

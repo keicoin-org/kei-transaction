@@ -10,6 +10,7 @@ import {
   type Block,
   type ClaimStore,
   type ClaimStoreScope,
+  type ClaimWebLockManager,
   type ClaimWebStorage,
   type IssuerToken,
   type MockNode,
@@ -20,7 +21,6 @@ const OTHER_SEED = 'E'.repeat(64)
 
 class MemoryWebStorage implements ClaimWebStorage {
   private readonly values = new Map<string, string>()
-  beforeNextSet: (() => void) | undefined
 
   get length(): number {
     return this.values.size
@@ -35,14 +35,33 @@ class MemoryWebStorage implements ClaimWebStorage {
   }
 
   setItem(key: string, value: string): void {
-    const beforeSet = this.beforeNextSet
-    this.beforeNextSet = undefined
-    beforeSet?.()
     this.values.set(key, value)
   }
 
   removeItem(key: string): void {
     this.values.delete(key)
+  }
+}
+
+class SerializedClaimLockManager implements ClaimWebLockManager {
+  private readonly tails = new Map<string, Promise<void>>()
+
+  request<T>(name: string, callback: () => T | PromiseLike<T>): Promise<T> {
+    const previous = this.tails.get(name) ?? Promise.resolve()
+    let release = (): void => {}
+    const current = new Promise<void>((resolve) => { release = resolve })
+    const tail = previous.then(() => current)
+    this.tails.set(name, tail)
+    return previous.then(callback).finally(() => {
+      release()
+      if (this.tails.get(name) === tail) this.tails.delete(name)
+    })
+  }
+}
+
+class RefusingClaimLockManager implements ClaimWebLockManager {
+  request<T>(): Promise<T> {
+    return Promise.reject(new Error('lock internals must not escape'))
   }
 }
 
@@ -120,11 +139,12 @@ function remember(kei: Kei): Kei {
 describe('durable claim bundles', () => {
   test('beforeReload=1, afterReload=1, claim works, and the claimed entry stays removed', async () => {
     const storage = new MemoryWebStorage()
+    const lockManager = new SerializedClaimLockManager()
     const first = remember(await Kei.start({
       node,
       seed: PLAYER_SEED,
       autoClaim: false,
-      claimStore: createBrowserClaimStore(storage),
+      claimStore: createBrowserClaimStore(storage, { lockManager }),
     }))
     const drop = await gems.commit([{ to: first.address, amount: 9 }])
     await first.claims.add(drop.proofFor(first.address))
@@ -152,7 +172,7 @@ describe('durable claim bundles', () => {
       node,
       seed: PLAYER_SEED,
       autoClaim: false,
-      claimStore: createBrowserClaimStore(storage),
+      claimStore: createBrowserClaimStore(storage, { lockManager }),
     }))
     expect(reconciledReads).toBe(2)
     expect(claimSubmissions).toBe(0)
@@ -169,7 +189,7 @@ describe('durable claim bundles', () => {
       node,
       seed: PLAYER_SEED,
       autoClaim: false,
-      claimStore: createBrowserClaimStore(storage),
+      claimStore: createBrowserClaimStore(storage, { lockManager }),
     }))
     expect(await afterClaimReload.claims.pending()).toHaveLength(0)
     expect(storage.length).toBe(0)
@@ -230,50 +250,150 @@ describe('durable claim bundles', () => {
     expect(await reconciled.claims.pending()).toHaveLength(0)
   })
 
-  test('browser namespaces stay bounded across stale concurrent writers and hydrate cleanly', async () => {
+  test('browser locks admit at most one concurrent 128th proof and preserve the acknowledged write', async () => {
     const storage = new MemoryWebStorage()
-    const firstStore = createBrowserClaimStore(storage)
-    const secondStore = createBrowserClaimStore(storage)
+    const lockManager = new SerializedClaimLockManager()
+    const firstStore = createBrowserClaimStore(storage, { lockManager })
+    const secondStore = createBrowserClaimStore(storage, { lockManager })
     const scoped = remember(await Kei.start({ node, seed: PLAYER_SEED, autoClaim: false }))
     const scope = { network: 'mock', address: scoped.address }
     scoped.close()
-    const roots = Array.from({ length: MAX_PENDING_CLAIMS + 1 }, (_, index) =>
+    const roots = Array.from({ length: MAX_PENDING_CLAIMS + 3 }, (_, index) =>
       index.toString(16).toUpperCase().padStart(64, '0'))
     const envelope = (root: string): string => JSON.stringify({
       version: 1,
       bundle: { root, asset: gems.id, amount: '1', proof: [] },
     })
     for (const root of roots.slice(0, MAX_PENDING_CLAIMS - 1)) {
-      firstStore.write(scope, root, envelope(root))
+      await firstStore.write(scope, root, envelope(root))
     }
 
-    // Both adapters read the same 127-record snapshot. The nested write lands
-    // first; the outer stale snapshot then replaces it atomically.
-    storage.beforeNextSet = () => secondStore.write(
-      scope,
-      roots[MAX_PENDING_CLAIMS] as string,
-      envelope(roots[MAX_PENDING_CLAIMS] as string),
-    )
-    firstStore.write(
-      scope,
-      roots[MAX_PENDING_CLAIMS - 1] as string,
-      envelope(roots[MAX_PENDING_CLAIMS - 1] as string),
-    )
+    node.hasClaimed = async () => false
+    node.commitInfo = async (root) => ({
+      root,
+      issuer: game.address,
+      asset: gems.id,
+      count: 1,
+      total: '1',
+      closed: false,
+    })
+    const first = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: firstStore,
+    }))
+    const second = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: secondStore,
+    }))
+    const candidates = roots.slice(MAX_PENDING_CLAIMS - 1, MAX_PENDING_CLAIMS + 1)
+      .map((root) => ({ root, asset: gems.id, amount: '1', proof: [] as string[] }))
+    const outcomes = await Promise.allSettled([
+      first.claims.add(candidates[0] as (typeof candidates)[number]),
+      second.claims.add(candidates[1] as (typeof candidates)[number]),
+    ])
+    const fulfilled = outcomes.flatMap((outcome, index) =>
+      outcome.status === 'fulfilled' ? [candidates[index]?.root as string] : [])
+    const rejected = outcomes.filter((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected')
+    expect(fulfilled).toHaveLength(1)
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0]?.reason).toBeInstanceOf(KeiError)
+    expect((rejected[0]?.reason as KeiError).code).toBe('claim-store-overflow')
+    expect((rejected[0]?.reason as KeiError).message).toContain('wallet tab')
 
-    const futureStore = createBrowserClaimStore(storage)
+    const futureStore = createBrowserClaimStore(storage, { lockManager })
     const persisted = await futureStore.list(scope, MAX_PENDING_CLAIMS + 1)
     expect(persisted).toHaveLength(MAX_PENDING_CLAIMS)
+    expect(persisted).toContain(fulfilled[0] as string)
     expect(await Promise.all(persisted.map((root) => futureStore.read(scope, root))))
       .not.toContain(null)
 
-    const hydrated = remember(await Kei.start({
+    const later = { root: roots[MAX_PENDING_CLAIMS + 1] as string, asset: gems.id, amount: '1', proof: [] }
+    const staleError = await refused(second.claims.add(later))
+    expect(staleError.code).toBe('claim-store-overflow')
+    expect(await futureStore.read(scope, fulfilled[0] as string)).not.toBeNull()
+
+    first.close()
+    second.close()
+    let submissions = 0
+    const originalProcess = node.process.bind(node)
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') submissions += 1
+      return originalProcess(block)
+    }
+    const reopened = remember(await Kei.start({
       node,
       seed: PLAYER_SEED,
       autoClaim: false,
       claimStore: futureStore,
     }))
-    expect((await hydrated.claims.storageStatus()).diagnostics).toEqual([])
-    expect(await futureStore.list(scope, MAX_PENDING_CLAIMS + 1)).toEqual([])
+    expect((await reopened.claims.pending()).map(({ root }) => root)).toContain(fulfilled[0] as string)
+    expect((await reopened.claims.storageStatus()).diagnostics).toEqual([])
+    expect(submissions).toBe(0)
+  })
+
+  test('browser storage fails closed when Web Locks are unavailable or refuse a request', async () => {
+    const storage = new MemoryWebStorage()
+    const workingLocks = new SerializedClaimLockManager()
+    const retained = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: createBrowserClaimStore(storage, { lockManager: workingLocks }),
+    }))
+    const drop = await gems.commit([{ to: retained.address, amount: 2 }])
+    await retained.claims.add(drop.proofFor(retained.address))
+    retained.close()
+
+    for (const lockManager of [null, new RefusingClaimLockManager()] as const) {
+      let submissions = 0
+      const originalProcess = node.process.bind(node)
+      node.process = async (block: Block) => {
+        if (block.type === 'asset' && block.op.kind === 'claim') submissions += 1
+        return originalProcess(block)
+      }
+      const player = remember(await Kei.start({
+        node,
+        seed: PLAYER_SEED,
+        autoClaim: false,
+        claimStore: createBrowserClaimStore(storage, { lockManager }),
+      }))
+      expect((await player.claims.storageStatus()).diagnostics.map(({ code }) => code))
+        .toContain('claim-store-unreadable')
+      expect(await player.claims.pending()).toEqual([])
+      expect(submissions).toBe(0)
+      player.close()
+    }
+    expect(storage.length).toBe(1)
+  })
+
+  test('a corrupt browser namespace remains fail-closed behind the lock', async () => {
+    const storage = new MemoryWebStorage()
+    const lockManager = new SerializedClaimLockManager()
+    const scoped = remember(await Kei.start({ node, seed: PLAYER_SEED, autoClaim: false }))
+    const key = `kei:claim-store:v1:mock:${encodeURIComponent(scoped.address)}`
+    scoped.close()
+    storage.setItem(key, '{not-json')
+    let submissions = 0
+    const originalProcess = node.process.bind(node)
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') submissions += 1
+      return originalProcess(block)
+    }
+
+    const player = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: createBrowserClaimStore(storage, { lockManager }),
+    }))
+    expect((await player.claims.storageStatus()).diagnostics.map(({ code }) => code))
+      .toContain('claim-store-unreadable')
+    expect(await player.claims.pending()).toEqual([])
+    expect(submissions).toBe(0)
   })
 
   test('wallet and network namespaces do not leak records', async () => {

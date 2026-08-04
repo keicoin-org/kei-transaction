@@ -43,6 +43,12 @@ status.durability       // 'persistent' after opting into this adapter
 status.diagnostics      // typed, bounded remediation records; never secrets
 ```
 
+The built-in browser adapter uses the origin-wide Web Locks API to serialize
+each wallet/network namespace. If `navigator.locks` is unavailable or refuses a
+lock, storage fails closed: no retained record is loaded or signed, and the
+status contains an actionable diagnostic. Tests or embedded browser runtimes
+may inject a shared `ClaimWebLockManager` as the adapter's second argument.
+
 Records are namespaced by network, wallet address, and root. A validated write
 is read back before automatic claiming, successful/already-claimed/closed roots
 are removed durably, and startup retries retained claims. The finite public
