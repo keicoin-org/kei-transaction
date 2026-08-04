@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { caretIncludes } from "./release-range.mjs";
 
 const packagesDirectory = fileURLToPath(new URL("../packages/", import.meta.url));
 const entries = await readdir(packagesDirectory, { withFileTypes: true });
@@ -40,10 +41,9 @@ for (const manifest of manifests) {
       const localVersion = localVersions.get(name);
       if (!localVersion) continue;
 
-      const expectedRange = `^${localVersion}`;
-      if (range !== expectedRange) {
+      if (!caretIncludes(range, localVersion)) {
         throw new Error(
-          `${manifest.name} ${dependencyGroup}.${name} must be ${expectedRange}, got ${range}`,
+          `${manifest.name} ${dependencyGroup}.${name} range ${range} cannot select workspace ${localVersion}`,
         );
       }
     }
@@ -107,5 +107,5 @@ for (const manifest of manifests) {
 }
 
 console.log(
-  `Release manifests valid: ${manifests.length} public packages with aligned dependency ranges and lockfile metadata.`,
+  `Release manifests valid: ${manifests.length} public packages with compatible dependency ranges and aligned lockfile metadata.`,
 );

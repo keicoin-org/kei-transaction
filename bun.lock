@@ -20,7 +20,7 @@
     },
     "packages/core": {
       "name": "@keicoin/core",
-      "version": "0.5.0",
+      "version": "0.5.1",
       "dependencies": {
         "@bananocoin/bananojs": "^2.10.10",
       },
