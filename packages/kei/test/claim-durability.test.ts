@@ -21,6 +21,11 @@ import {
 const PLAYER_SEED = 'D'.repeat(64)
 const OTHER_SEED = 'E'.repeat(64)
 const CLAIM_ENVELOPE_DOMAIN = 'kei-claim-envelope-v3\n'
+const LEGACY_BROWSER_ADMISSION_DOMAIN = 'kei-claim-store-admission-v1\n'
+
+function legacyBrowserAdmission(value: string): string {
+  return bytesToHex(blake2b(utf8(`${LEGACY_BROWSER_ADMISSION_DOMAIN}${value}`), 32))
+}
 
 function claimEnvelope(
   bundle: { root: string; asset: string; amount: string; proof: string[] },
@@ -326,7 +331,7 @@ describe('durable claim bundles', () => {
 
     await migrated.claims.add(bundle)
     expect(await migrated.claims.pending()).toHaveLength(1)
-    expect(JSON.parse(storage.getItem(namespaceKey) as string).version).toBe(3)
+    expect(JSON.parse(storage.getItem(namespaceKey) as string).version).toBe(4)
     migrated.close()
 
     const reopened = remember(await Kei.start({
@@ -339,7 +344,7 @@ describe('durable claim bundles', () => {
     expect(claimSubmissions).toBe(0)
   })
 
-  test('browser namespace v2 boolean authority requires explicit v3 re-admission', async () => {
+  test('browser namespace v2 boolean authority requires explicit v4 re-admission', async () => {
     const storage = new MemoryWebStorage()
     const lockManager = new SerializedClaimLockManager()
     const setup = remember(await Kei.start({ node, seed: PLAYER_SEED, autoClaim: false }))
@@ -376,7 +381,7 @@ describe('durable claim bundles', () => {
       version: number
       records: [string, string, string | null][]
     }
-    expect(rewritten.version).toBe(3)
+    expect(rewritten.version).toBe(4)
     expect(rewritten.records).toHaveLength(1)
     expect(rewritten.records[0]?.[0]).toBe(bundle.root)
     expect(rewritten.records[0]?.[1]).toBe(envelope)
@@ -394,7 +399,60 @@ describe('durable claim bundles', () => {
     expect(claimSubmissions).toBe(0)
   })
 
-  test('altered browser candidate or authority bytes remain non-signable after recreation', async () => {
+  test('browser namespace v3 public digest requires explicit wallet-signed v4 re-admission', async () => {
+    const storage = new MemoryWebStorage()
+    const lockManager = new SerializedClaimLockManager()
+    const setup = remember(await Kei.start({ node, seed: PLAYER_SEED, autoClaim: false }))
+    const drop = await gems.commit([{ to: setup.address, amount: 23 }])
+    const bundle = drop.proofFor(setup.address)
+    const envelope = claimEnvelope(bundle)
+    const namespaceKey = `kei:claim-store:v1:mock:${encodeURIComponent(setup.address)}`
+    storage.setItem(namespaceKey, JSON.stringify({
+      version: 3,
+      records: [[bundle.root, envelope, legacyBrowserAdmission(envelope)]],
+    }))
+    setup.close()
+
+    let claimSubmissions = 0
+    const originalProcess = node.process.bind(node)
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
+      return originalProcess(block)
+    }
+    const migrated = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: createBrowserClaimStore(storage, { lockManager }),
+    }))
+    expect(await migrated.claims.pending()).toHaveLength(0)
+    expect((await migrated.claims.storageStatus()).diagnostics.map(({ code }) => code))
+      .toEqual(['claim-store-quarantined'])
+    expect(claimSubmissions).toBe(0)
+
+    await migrated.claims.add(bundle)
+    expect(await migrated.claims.pending()).toHaveLength(1)
+    const rewritten = JSON.parse(storage.getItem(namespaceKey) as string) as {
+      version: number
+      records: [string, string, string | null][]
+    }
+    expect(rewritten.version).toBe(4)
+    expect(rewritten.records[0]?.[1]).toBe(envelope)
+    expect(rewritten.records[0]?.[2]).not.toBe(legacyBrowserAdmission(envelope))
+    expect(rewritten.records[0]?.[2]).toHaveLength(128)
+    migrated.close()
+
+    const reopened = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: createBrowserClaimStore(storage, { lockManager }),
+    }))
+    expect((await reopened.claims.pending()).map(({ root }) => root)).toEqual([bundle.root])
+    expect(claimSubmissions).toBe(0)
+  })
+
+  test('altered browser bytes with every public checksum recomputed remain non-signable after recreation', async () => {
     const originalProcess = node.process.bind(node)
     let claimSubmissions = 0
     node.process = async (block: Block) => {
@@ -428,6 +486,10 @@ describe('durable claim bundles', () => {
           ...envelope.bundle,
           amount: String(BigInt(envelope.bundle.amount) + 1n),
         })
+        // This is the exact former public admission algorithm. An adversarial
+        // storage implementation can recompute it along with envelope integrity,
+        // but cannot replace the wallet signature now required by namespace v4.
+        if (phase === 'authority') record[2] = legacyBrowserAdmission(record[1])
         return JSON.stringify(namespace)
       }
       storage.rewriteNextSet = phase === 'candidate'
@@ -443,14 +505,23 @@ describe('durable claim bundles', () => {
         .toBe(String(amount + 1))
       player.close()
 
+      let signingPathEntries = 0
+      const originalAccountInfo = node.accountInfo.bind(node)
+      node.accountInfo = async (address) => {
+        signingPathEntries += 1
+        return originalAccountInfo(address)
+      }
       const reopened = remember(await Kei.start({
         node,
         seed: PLAYER_SEED,
+        autoReceive: false,
         claimStore: createBrowserClaimStore(storage, { lockManager }),
       }))
       expect(await reopened.claims.pending()).toEqual([])
       expect((await reopened.claims.storageStatus()).diagnostics.map(({ code }) => code))
         .toEqual(['claim-store-quarantined'])
+      expect(signingPathEntries).toBe(0)
+      node.accountInfo = originalAccountInfo
       reopened.close()
     }
     expect(claimSubmissions).toBe(0)
@@ -470,6 +541,7 @@ describe('durable claim bundles', () => {
     const drop = await gems.commit([{ to: player.address, amount: 47 }])
     const bundle = drop.proofFor(player.address)
     const expected = claimEnvelope(bundle)
+    const authority = await player.client.authorizeClaimStore(bundle.root, expected)
     const scope = { network: 'mock', address: player.address }
     storage.rewriteNextSet = (_key, raw) => {
       const namespace = JSON.parse(raw) as {
@@ -483,7 +555,7 @@ describe('durable claim bundles', () => {
     // The other tab acquires the released namespace lock before the rejecting
     // caller can quarantine. Its exact proof must remain the durable authority.
     lockManager.afterNextRelease = async () => {
-      expect(await secondStore.admit?.(scope, bundle.root, expected)).toBe(true)
+      expect(await secondStore.admit?.(scope, bundle.root, expected, authority)).toBe(true)
     }
 
     expect((await refused(player.claims.add(bundle))).code).toBe('claim-store-write-refused')
@@ -671,7 +743,6 @@ describe('durable claim bundles', () => {
     const secondStore = createBrowserClaimStore(storage, { lockManager })
     const scoped = remember(await Kei.start({ node, seed: PLAYER_SEED, autoClaim: false }))
     const scope = { network: 'mock', address: scoped.address }
-    scoped.close()
     const roots = Array.from({ length: MAX_PENDING_CLAIMS + 3 }, (_, index) =>
       index.toString(16).toUpperCase().padStart(64, '0'))
     const envelope = (root: string): string => claimEnvelope({
@@ -683,8 +754,10 @@ describe('durable claim bundles', () => {
     for (const root of roots.slice(0, MAX_PENDING_CLAIMS - 1)) {
       const value = envelope(root)
       await firstStore.write(scope, root, value)
-      expect(await firstStore.admit?.(scope, root, value)).toBe(true)
+      const authority = await scoped.client.authorizeClaimStore(root, value)
+      expect(await firstStore.admit?.(scope, root, value, authority)).toBe(true)
     }
+    scoped.close()
 
     node.hasClaimed = async () => false
     node.commitInfo = async (root) => ({
@@ -751,7 +824,7 @@ describe('durable claim bundles', () => {
     expect((await reopened.claims.pending()).map(({ root }) => root)).toContain(fulfilled[0] as string)
     expect((await reopened.claims.storageStatus()).diagnostics).toEqual([])
     expect(submissions).toBe(0)
-  })
+  }, 20_000)
 
   test('browser storage fails closed when Web Locks are unavailable or refuse a request', async () => {
     const storage = new MemoryWebStorage()

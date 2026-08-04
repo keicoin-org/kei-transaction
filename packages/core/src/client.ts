@@ -12,10 +12,11 @@ import { assertAddress, publicKeyFromAddress } from './address.js'
 import { KEI_DECIMALS, formatRaw, fromRaw, toRaw } from './amount.js'
 import type { AssetId, AssetOp, Block, BlockBody } from './blocks.js'
 import { KEI_ASSET, ZERO_HASH, tierFor } from './blocks.js'
-import { signHash } from './crypto.js'
+import { blake2b, signHash } from './crypto.js'
 import { KeiError, fail, registerSecret } from './errors.js'
 import { Emitter } from './events.js'
 import { hashBlock } from './hash.js'
+import { bytesToHex, utf8 } from './hex.js'
 import type { KeyPair } from './keys.js'
 import type { AssetInfo, KeiNode, Receivable, Unsubscribe } from './node.js'
 import type { WorkProvider } from './work.js'
@@ -58,6 +59,26 @@ export interface BlockDraft {
   balance: bigint
   representative: string
   height: number
+}
+
+const CLAIM_STORE_ADMISSION_DOMAIN = 'kei-claim-store-admission-v2\n'
+
+/**
+ * Hash the exact local claim-store record a wallet authorises.
+ *
+ * This is deliberately not a block hash and never reaches the ledger. The
+ * network, account, root, and exact stored bytes are all signed so authority
+ * cannot move between namespaces or records.
+ */
+export function claimStoreAdmissionHash(
+  network: string,
+  address: string,
+  root: string,
+  value: string,
+): string {
+  return bytesToHex(blake2b(utf8(
+    `${CLAIM_STORE_ADMISSION_DOMAIN}${JSON.stringify([network, address, root, value])}`,
+  ), 32))
 }
 
 export class KeiClient {
@@ -110,6 +131,19 @@ export class KeiClient {
       )
     }
     return this.#keys.seed
+  }
+
+  /**
+   * Authorise exact bytes for this wallet's local claim store.
+   *
+   * The fixed domain cannot produce a ledger-valid block signature. Storage
+   * receives only the resulting signature, never this client's private key.
+   */
+  async authorizeClaimStore(root: string, value: string): Promise<string> {
+    return signHash(
+      this.#keys.privateKey,
+      claimStoreAdmissionHash(this.node.network, this.address, root, value),
+    )
   }
 
   // -------------------------------------------------------------- lifecycle

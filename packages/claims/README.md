@@ -51,7 +51,9 @@ may inject a shared `ClaimWebLockManager` as the adapter's second argument.
 
 Records are namespaced by network, wallet address, and root. Every public claim
 path uses the adapter's optional atomic admission capability, then reads back
-the separately admitted exact bytes before signing. Rejected raw values are never signed;
+the separately admitted exact bytes before signing. The built-in browser store
+requires a wallet signature bound to network, address, root, and those exact
+bytes. Rejected raw values are never signed;
 successful/already-claimed/closed roots are removed durably, and startup retries retained claims. The finite
 public limits are 128 records per wallet/network, 16,384 serialised bytes per
 record, 128 sibling hashes per proof, and 39 decimal amount digits (the ledger's
@@ -63,12 +65,12 @@ credential. Browser storage is recovery, not a backup; inject a store whose
 privacy and durability fit the application. A Node process can implement the
 same small `ClaimStore` interface without making the game or issuer a custodian.
 Persistent custom adapters should implement `admit` and `readAdmitted`; older
-adapters fail closed before mutation until upgraded. Browser namespace v3 binds
-a domain-separated admission digest to the exact stored envelope bytes. Legacy
-browser namespace v1/v2 records (including v2 boolean admission markers) and
-claim-envelope v1/v2 records have no current admission authority: they are not
-signed and require explicit re-add, which rewrites and admits the exact v3
-bytes.
+adapters fail closed before mutation until upgraded. Browser namespace v4 binds
+a domain-separated wallet signature to the exact stored envelope and namespace.
+Legacy browser namespace v1-v3 records (including v2 boolean markers and v3
+public digests) and claim-envelope v1/v2 records have no current admission
+authority: they are not signed and require explicit re-add, which writes a v3
+envelope into the wallet-authorised v4 namespace.
 
 A forged proof, a forged amount, or a second claim from the same account is rejected
 by the ledger, not by the SDK. Roots are salted, so two identical batches are two

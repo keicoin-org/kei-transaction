@@ -456,7 +456,8 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
     const admittedStore = capableStore as NonNullable<typeof capableStore>
     let admitted = false
     try {
-      admitted = await admittedStore.admit(namespace, bundle.root, value)
+      const authority = await client.authorizeClaimStore(bundle.root, value)
+      admitted = await admittedStore.admit(namespace, bundle.root, value, authority)
     } catch (error) {
       if (isClaimStoreCapacityError(error)) {
         persistenceFailure({

@@ -9,7 +9,9 @@ not change consensus, RPC, blocks, proofs, seed custody, or issuer custody.
 
 `ClaimStore` keeps its legacy list/read/write/remove surface and adds two
 optional capability methods: atomically retain-and-admit exact bytes, and read
-only bytes carrying that adapter-level admission authority. Every operation receives
+only bytes carrying that adapter-level admission authority. Admission also receives
+the wallet's domain-separated signature over the network, address, root, and
+exact envelope bytes. Every operation receives
 `{ network, address }`; the root is the logical record key. The browser adapter
 stores one versioned, bounded namespace value at
 `kei:claim-store:v1:<network>:<address>`, while a database adapter can map the
@@ -25,7 +27,8 @@ The SDK never uploads proofs or takes custody on an issuer's behalf.
 
 Every signing entry point, including direct `claims.claim(bundle)`, validates
 and bounds a bundle, then asks the adapter to atomically retain and admit its
-exact bytes. The SDK reads those bytes back through the separate admitted-only
+exact bytes with an authority signed inside `KeiClient`'s private-key boundary.
+The SDK reads those bytes back through the separate admitted-only
 surface before signing. A refusal or mismatch is a typed `KeiError` and no claim is signed. A successful claim is
 confirmed by the node before the stored record is removed, and removal is read
 back too.
@@ -40,10 +43,12 @@ idempotency and later reconciliation remain the authority for submissions.
 
 Each value is JSON `{ version: 3, state, bundle, integrity }`. The
 domain-separated BLAKE2b-256 digest detects accidental corruption; it is not a
-keyed authenticator and does not grant admission. Hydration reads only values
-the adapter reports through `readAdmitted`. A rejected or mismatched raw value
-therefore remains non-signable even if it is internally valid and recomputes
-its own digest. The SDK does not delete such a value during failure cleanup,
+keyed authenticator and does not grant admission. The browser adapter separately
+verifies a wallet signature over the exact bytes and their network/address/root
+scope before returning them from `readAdmitted`. A rejected or mismatched raw
+value therefore remains non-signable even if it is internally valid and
+recomputes every public digest. The SDK does not delete such a value during
+failure cleanup,
 because another wallet instance may have admitted the same root concurrently.
 The public finite limits are:
 
@@ -61,7 +66,8 @@ an unbounded set. Roots deduplicate before reads. Malformed roots, JSON,
 envelopes, bundles, unsupported versions, oversized records, and excessive
 counts are not placed in the signing set. Diagnostics are themselves bounded to
 32 and contain codes, roots, and fixed remediation sentences — never raw stored
-values, seeds, keys, signatures, or adapter exception text.
+values, seeds, keys, or adapter exception text. It never echoes admission
+signatures in diagnostics.
 
 `claims.storageStatus()` is the honest typed report. It includes the adapter's
 `'persistent' | 'session'` declaration, the active namespace, and diagnostics.
@@ -80,14 +86,15 @@ reaches 128; the other receives a typed refusal with capacity/concurrency
 guidance. A later writer cannot publish a stale namespace over an acknowledged
 proof.
 
-Browser namespace schema v3 stores a domain-separated admission digest beside
-each envelope. The digest is bound to the exact stored envelope bytes, so a
-rewritten envelope cannot inherit authority from an earlier candidate. Browser
-namespace schemas v1 and v2 (whose marker was only a boolean), as well as
-claim-envelope schemas v1 and v2, have no current admission authority and are
-never signed automatically. Their raw bytes remain available for an explicit
-re-add of the original bundle, which rewrites the namespace and envelope as v3
-and admits the exact bytes safely.
+Browser namespace schema v4 stores a domain-separated wallet signature beside
+each envelope. The signed hash binds network, wallet address, root, and exact
+stored envelope bytes. Storage can recompute the envelope's public integrity
+digest, but it cannot sign altered bytes without the wallet's private key.
+Namespace v3 used an unkeyed digest and v2 used a boolean marker; neither grants
+current authority. Namespace schemas v1 through v3 and claim-envelope schemas
+v1 and v2 are never signed automatically. Their raw bytes remain available for
+an explicit re-add of the original bundle, which rewrites the namespace as v4,
+the envelope as v3, and admits the exact bytes safely.
 
 `createBrowserClaimStore(localStorage)` discovers `navigator.locks`. Browsers
 without Web Locks fail closed: records are not hydrated or signed, writes are
@@ -110,8 +117,8 @@ A bundle contains asset, amount, root, and proof metadata. It is not a signing
 secret and only the committed account can use its leaf, but it can reveal what a
 player was awarded. Browser storage is therefore a recovery mechanism, not a
 backup, and applications should choose a store consistent with their privacy
-model. No seed or private key crosses this boundary, and the seed store is not
-overloaded with claim JSON.
+model. A scoped public signature crosses the store boundary; no seed or private
+key does, and the seed store is not overloaded with claim JSON.
 
 This source PR changes no package version and publishes nothing. Release
 coordination remains separate.

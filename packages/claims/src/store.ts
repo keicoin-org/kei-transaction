@@ -3,11 +3,16 @@
  *
  * A Merkle root cannot reproduce a player's sibling path, so a wallet that
  * wants claims to survive a restart has to retain the bundle itself. Stores
- * receive only public claim metadata: never a seed, private key, signature, or
- * server credential.
+ * receive only public claim metadata and a scoped wallet signature: never a
+ * seed, private key, or server credential.
  */
 
-import { blake2b, bytesToHex, utf8 } from '@keicoin/core'
+import {
+  claimStoreAdmissionHash,
+  isHex,
+  publicKeyFromAddress,
+  verifyHash,
+} from '@keicoin/core'
 
 export type ClaimStoreDurability = 'persistent' | 'session'
 export const MAX_PENDING_CLAIMS = 128
@@ -32,7 +37,13 @@ export interface ClaimStore {
    * Older custom adapters may omit this capability; the claims API then fails
    * closed before mutation.
    */
-  admit?(scope: ClaimStoreScope, root: string, value: string): boolean | Promise<boolean>
+  admit?(
+    scope: ClaimStoreScope,
+    root: string,
+    value: string,
+    /** Wallet signature over the scoped root and exact value, when required. */
+    authority?: string,
+  ): boolean | Promise<boolean>
   /** Return bytes only when the adapter durably admitted that exact value. */
   readAdmitted?(scope: ClaimStoreScope, root: string): string | null | Promise<string | null>
   remove(scope: ClaimStoreScope, root: string): void | Promise<void>
@@ -134,11 +145,24 @@ export interface BrowserClaimStoreOptions {
 }
 
 const BROWSER_PREFIX = 'kei:claim-store:v1:'
-const BROWSER_NAMESPACE_VERSION = 3
-const BROWSER_ADMISSION_DOMAIN = 'kei-claim-store-admission-v1\n'
+const BROWSER_NAMESPACE_VERSION = 4
 
-function browserAdmission(value: string): string {
-  return bytesToHex(blake2b(utf8(`${BROWSER_ADMISSION_DOMAIN}${value}`), 32))
+async function hasWalletAuthority(
+  scope: ClaimStoreScope,
+  root: string,
+  value: string,
+  authority: string | null | undefined,
+): Promise<boolean> {
+  if (!isHex(authority, 64)) return false
+  try {
+    return await verifyHash(
+      claimStoreAdmissionHash(scope.network, scope.address, root, value),
+      authority,
+      publicKeyFromAddress(scope.address),
+    )
+  } catch {
+    return false
+  }
 }
 
 function browserNamespaceKey(scope: ClaimStoreScope): string {
@@ -181,7 +205,7 @@ function parseBrowserNamespace(raw: string | null): BrowserNamespace {
   }
   if (!parsed || typeof parsed !== 'object') throw new Error('claim store namespace is corrupt')
   const namespace = parsed as { version?: unknown; records?: unknown }
-  if (namespace.version !== 1 && namespace.version !== 2 &&
+  if (namespace.version !== 1 && namespace.version !== 2 && namespace.version !== 3 &&
       namespace.version !== BROWSER_NAMESPACE_VERSION) {
     throw new Error('claim store namespace version is unsupported')
   }
@@ -195,13 +219,14 @@ function parseBrowserNamespace(raw: string | null): BrowserNamespace {
     if (!Array.isArray(record) || record.length !== (legacy ? 2 : 3) ||
         typeof record[0] !== 'string' || typeof record[1] !== 'string' ||
         (namespace.version === 2 && typeof record[2] !== 'boolean') ||
+        (namespace.version === 3 && record[2] !== null && typeof record[2] !== 'string') ||
         (namespace.version === BROWSER_NAMESPACE_VERSION &&
           record[2] !== null && typeof record[2] !== 'string') || roots.has(record[0])) {
       throw new Error('claim store namespace is corrupt')
     }
     roots.add(record[0])
-    // Boolean namespaces do not bind their authority to exact bytes. Preserve
-    // legacy candidates for explicit re-add, but never infer admission.
+    // Boolean markers and unkeyed digests do not prove wallet authority.
+    // Preserve legacy candidates for explicit re-add, but never infer admission.
     records.push([
       record[0],
       record[1],
@@ -219,7 +244,7 @@ class BrowserClaimStore implements ClaimStore {
     private readonly lockManager: ClaimWebLockManager | null,
   ) {}
 
-  private withLock<T>(scope: ClaimStoreScope, operation: () => T): Promise<T> {
+  private withLock<T>(scope: ClaimStoreScope, operation: () => T | PromiseLike<T>): Promise<T> {
     if (!this.lockManager) {
       return Promise.reject(new Error('browser claim storage requires the Web Locks API'))
     }
@@ -241,9 +266,11 @@ class BrowserClaimStore implements ClaimStore {
   }
 
   readAdmitted(scope: ClaimStoreScope, root: string): Promise<string | null> {
-    return this.withLock(scope, () => {
+    return this.withLock<string | null>(scope, async () => {
       const record = this.load(scope).records.find(([candidate]) => candidate === root)
-      return record && record[2] === browserAdmission(record[1]) ? record[1] : null
+      return record && await hasWalletAuthority(scope, root, record[1], record[2])
+        ? record[1]
+        : null
     })
   }
 
@@ -261,13 +288,19 @@ class BrowserClaimStore implements ClaimStore {
     })
   }
 
-  admit(scope: ClaimStoreScope, root: string, value: string): Promise<boolean> {
-    return this.withLock(scope, () => {
+  admit(scope: ClaimStoreScope, root: string, value: string, authority?: string): Promise<boolean> {
+    return this.withLock<boolean>(scope, async () => {
+      if (!await hasWalletAuthority(scope, root, value, authority)) return false
       const key = browserNamespaceKey(scope)
       const records = [...this.load(scope).records]
       const existing = records.findIndex(([candidate]) => candidate === root)
       const existingRecord = records[existing]
-      if (existingRecord && existingRecord[2] === browserAdmission(existingRecord[1])) {
+      if (existingRecord && await hasWalletAuthority(
+        scope,
+        root,
+        existingRecord[1],
+        existingRecord[2],
+      )) {
         return existingRecord[1] === value
       }
       if (existing === -1 && records.length >= MAX_PENDING_CLAIMS) {
@@ -281,16 +314,22 @@ class BrowserClaimStore implements ClaimStore {
       if (candidate === -1 || candidateRecords[candidate]?.[1] !== value ||
           candidateRecords[candidate]?.[2] !== null) {
         return candidate !== -1 && candidateRecords[candidate]?.[1] === value &&
-          candidateRecords[candidate]?.[2] === browserAdmission(value)
+          await hasWalletAuthority(
+            scope,
+            root,
+            candidateRecords[candidate]?.[1] as string,
+            candidateRecords[candidate]?.[2],
+          )
       }
-      const admission = browserAdmission(value)
-      candidateRecords[candidate] = [root, value, admission]
+      candidateRecords[candidate] = [root, value, authority as string]
       this.storage.setItem(key, JSON.stringify({
         version: BROWSER_NAMESPACE_VERSION,
         records: candidateRecords,
       }))
       const admitted = this.load(scope).records.find(([storedRoot]) => storedRoot === root)
-      return admitted?.[1] === value && admitted[2] === admission
+      // `authority` was verified before mutation. Exact read-back proves the
+      // storage layer did not replace either the bytes or their signature.
+      return admitted?.[1] === value && admitted[2] === authority
     })
   }
 
