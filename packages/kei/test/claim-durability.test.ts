@@ -1391,8 +1391,13 @@ describe('durable claim bundles', () => {
       claimStore: store,
     }))
     const drop = await gems.commit([{ to: player.address, amount: 31 }])
-    expect((await refused(player.claims.claim(drop.proofFor(player.address)))).code)
-      .toBe('claim-store-remove-refused')
+    // The claim landed. A store that will not drop the spent proof is a
+    // diagnostic, not a refusal: rejecting here would hand back an error for a
+    // transfer that already happened and throw the block hash away with it.
+    const settled = await player.claims.claim(drop.proofFor(player.address))
+    expect(settled.hash).toBeTruthy()
+    expect((await player.claims.storageStatus()).diagnostics.map(({ code }) => code))
+      .toContain('claim-store-remove-refused')
     expect(await gems.balanceOf(player.address)).toBe(31)
     expect(await store.list({ network: 'mock', address: player.address }, 2)).toEqual([drop.root])
     player.close()
@@ -1407,6 +1412,51 @@ describe('durable claim bundles', () => {
     const reopened = remember(await Kei.start({ node, seed: PLAYER_SEED, claimStore: store }))
     expect(claimSubmissions).toBe(0)
     expect(await store.list({ network: 'mock', address: reopened.address }, 2)).toEqual([])
+  })
+
+  test('a node reporting no commit keeps the proof and the claim survives to be made', async () => {
+    const store = new InspectableClaimStore()
+    const player = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: store,
+    }))
+    const drop = await gems.commit([{ to: player.address, amount: 17 }])
+    await player.claims.add(drop.proofFor(player.address))
+    const scope = { network: 'mock', address: player.address }
+    expect(await store.list(scope, 2)).toEqual([drop.root])
+    player.close()
+
+    // A node that has not yet applied the issuer's commit answers exactly like
+    // one that pruned a closed root. Reconciling on that answer must not delete
+    // anything: the bundle cannot be rebuilt from the root alone.
+    const openCommit = node.commitInfo.bind(node)
+    node.commitInfo = async () => null
+    const blinded = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: store,
+    }))
+    expect(await blinded.claims.pending()).toEqual([])
+    expect((await blinded.claims.storageStatus()).diagnostics.map(({ code }) => code))
+      .toContain('claim-store-commit-unknown')
+    expect(store.removeCount).toBe(0)
+    expect(await store.list(scope, 2)).toEqual([drop.root])
+    blinded.close()
+
+    // And once the node has caught up, the entitlement is still claimable.
+    node.commitInfo = openCommit
+    const recovered = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: store,
+    }))
+    expect((await recovered.claims.pending()).map(({ root }) => root)).toEqual([drop.root])
+    expect((await recovered.claims.claim(drop.proofFor(recovered.address))).hash).toBeTruthy()
+    expect(await gems.balanceOf(recovered.address)).toBe(17)
   })
 
   test('direct claim bounds variable components before serialising or submitting', async () => {
