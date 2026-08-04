@@ -30,6 +30,8 @@ export type MarketErrorCode =
   | 'bad-asset'
   /** Nothing on this network has that asset id. */
   | 'no-such-asset'
+  /** A node returned metadata for a different public asset id. Nothing was cached or signed. */
+  | 'asset-info-mismatch'
   /** An amount or a price that is not a positive number. */
   | 'bad-amount'
   /** `expiresIn` and `expiresAt` together, or an `expiresAt` that is not a time. */
@@ -76,6 +78,7 @@ export type MarketErrorCode =
 const CODES = new Set<string>([
   'bad-asset',
   'no-such-asset',
+  'asset-info-mismatch',
   'bad-amount',
   'bad-expiry',
   'bad-duration',
