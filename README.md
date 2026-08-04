@@ -668,8 +668,8 @@ not evidence that they are installable.
 | `@keicoin/work` | `0.4.1` | Dependency-only move to `@keicoin/core@^0.5.0` |
 | `@keicoin/claims` | `0.5.1` | Dependency-only move to `@keicoin/core@^0.5.0` |
 | `@keicoin/tokens` | `0.5.2` | Dependency-only move to `@keicoin/core@^0.5.0` and `@keicoin/claims@^0.5.1` |
-| `@keicoin/market` | `0.3.0` | Bounded and abortable aggregate reads, explicit coverage provenance, deterministic precision/race/paging conformance, validated limits and retry timers |
-| `@keicoin/wallet` | `0.5.0` | Durable-seed reporting plus bounded immutable metadata caching and a coalesced, ordered refresh stream |
+| `@keicoin/market` | `0.3.0` | Bounded and abortable aggregate reads, explicit scope-safe coverage provenance, oriented `BookLevel` prices, deterministic precision/race/paging conformance, validated limits and retry timers |
+| `@keicoin/wallet` | `0.5.0` | Durable-seed reporting, bounded identity-checked metadata caching, and a coalesced ordered refresh stream with subscription-instance stale-paint protection |
 | `@keicoin/economy` | `0.2.1` | Dependency-only move to core `^0.5.0`, claims `^0.5.1`, and market `^0.3.0` |
 | `@keicoin/player-economy` | `0.1.1` | Dependency-only move to core `^0.5.0` and market `^0.3.0` |
 | `kei-transaction` | `0.7.0` | The coordinated umbrella range that exposes one copy of every release above and records its public npm access policy in the manifest |
