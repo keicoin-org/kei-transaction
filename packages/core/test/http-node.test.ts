@@ -7,11 +7,60 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { HttpNode } from '@keicoin/core'
+import { HttpNode, KeiError } from '@keicoin/core'
 
 interface Call {
   action: string
   body: Record<string, unknown>
+}
+
+const RPC = 'https://node.example/rpc'
+
+/** For the constructor tests, which check that a fetch exists and never call it. */
+const unusedFetch = (() => new Promise<Response>(() => {})) as unknown as typeof globalThis.fetch
+
+/**
+ * The worse node, and the one the bound has to be measured against: it accepts
+ * the request, never answers, and ignores the `AbortSignal` completely. Nothing
+ * the client does *to the request* can make a call against this settle, so a
+ * test that passes here is testing the client's own deadline and not `fetch`'s
+ * cooperation. `answer` is the reply that arrives long after anyone wanted it.
+ */
+function deafFetch(): {
+  fetch: typeof globalThis.fetch
+  started: () => number
+  signals: AbortSignal[]
+  answer: (body: unknown) => void
+} {
+  const signals: AbortSignal[] = []
+  const pending: ((response: Response) => void)[] = []
+  const fetchImpl = ((_url: string | URL | Request, init?: RequestInit) => {
+    signals.push(init?.signal as AbortSignal)
+    return new Promise<Response>((resolve) => {
+      pending.push(resolve)
+    })
+  }) as unknown as typeof globalThis.fetch
+  return {
+    fetch: fetchImpl,
+    started: () => signals.length,
+    signals,
+    answer: (body) => {
+      for (const resolve of pending.splice(0)) resolve(new Response(JSON.stringify(body)))
+    },
+  }
+}
+
+/** Let every already-queued microtask and timer callback run. */
+const settle = (ms = 0): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms))
+
+async function refused(promise: Promise<unknown>): Promise<KeiError> {
+  const error = await promise.then(
+    () => new Error('the call resolved, and it was supposed to be refused'),
+    (reason: unknown) => reason,
+  )
+  expect(error).toBeInstanceOf(KeiError)
+  return error as KeiError
 }
 
 function stubNode(handler: (call: Call) => unknown): { node: HttpNode; calls: Call[] } {
@@ -177,5 +226,333 @@ describe('HttpNode', () => {
     stop()
     expect(served).toBeGreaterThan(1)
     expect(seen).toEqual(['D'.repeat(64)])
+  })
+})
+
+/**
+ * Issue #36: a node that accepts a request and never finishes it used to leave
+ * `Kei.start()`, a send, or a read pending forever, and the polling subscription
+ * kept starting new requests on top of the ones already stuck.
+ */
+describe('HttpNode against a node that never answers', () => {
+  test('a direct call settles against a fetch that ignores the signal', async () => {
+    // The signal is a request, not a guarantee: this fetch never looks at it,
+    // so only the client's own deadline can end the call.
+    const deaf = deafFetch()
+    const node = new HttpNode({
+      url: RPC,
+      requestTimeout: 25,
+      headers: { authorization: 'Bearer abcdef0123456789' },
+      fetch: deaf.fetch,
+    })
+
+    const error = await refused(node.accountInfo('kei_1'))
+    expect(error.code).toBe('node-timeout')
+    expect(error.message).toContain('account_info')
+    expect(error.message).toContain(RPC)
+    expect(error.message).toContain('25ms')
+    // The endpoint and the action, and nothing that was sent with them.
+    expect(error.message).not.toContain('abcdef0123456789')
+    expect(error.message).not.toContain('authorization')
+    expect(error.message).not.toContain('kei_1')
+
+    // Abandoned by the client, and still aborted for the sake of a fetch that
+    // would have freed a socket on hearing it.
+    expect(deaf.started()).toBe(1)
+    expect(deaf.signals[0]?.aborted).toBe(true)
+  })
+
+  test('a hanging response body is inside the bound too', async () => {
+    // Headers arrive, the body never does. `response.json()` hangs exactly as
+    // `fetch` does, so the deadline has to cover the whole exchange.
+    const fetchImpl = (async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start() {
+            // Never enqueues, never closes.
+          },
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      )) as unknown as typeof globalThis.fetch
+
+    const node = new HttpNode({ url: RPC, requestTimeout: 25, fetch: fetchImpl })
+    const error = await refused(node.accountInfo('kei_1'))
+    expect(error.code).toBe('node-timeout')
+  })
+
+  test('a timed-out call is one attempt, never a replay', async () => {
+    const deaf = deafFetch()
+    const node = new HttpNode({ url: RPC, requestTimeout: 20, fetch: deaf.fetch })
+
+    // A `process` that timed out may still have landed. Resending it is the
+    // caller's decision about a signed block, so the transport does not make it.
+    const error = await refused(node.process({} as never))
+    expect(error.code).toBe('node-timeout')
+    await settle(60)
+    expect(deaf.started()).toBe(1)
+  })
+
+  test('requestTimeout has to be a finite number of milliseconds', () => {
+    const build = (requestTimeout: number): HttpNode =>
+      new HttpNode({ url: RPC, requestTimeout, fetch: unusedFetch })
+    expect(() => build(Number.POSITIVE_INFINITY)).toThrow(/finite/)
+    expect(() => build(Number.NaN)).toThrow(/finite/)
+    expect(() => build(0)).toThrow(/finite/)
+    expect(() => build(-1)).toThrow(/finite/)
+    // Omitting it is not a way to opt out of one, and giving one is allowed.
+    expect(new HttpNode({ url: RPC, fetch: unusedFetch })).toBeInstanceOf(HttpNode)
+    expect(new HttpNode({ url: RPC, requestTimeout: 5, fetch: unusedFetch })).toBeInstanceOf(HttpNode)
+  })
+
+  test('at most one poll is ever in flight', async () => {
+    const deaf = deafFetch()
+    // A poll interval far below the timeout: the old interval would have
+    // started roughly fifty requests in the window below.
+    const node = new HttpNode({ url: RPC, pollInterval: 1, requestTimeout: 10_000, fetch: deaf.fetch })
+
+    const stop = node.subscribe('kei_1', () => {})
+    await settle(50)
+    expect(deaf.started()).toBe(1)
+    stop()
+  })
+
+  test('unsubscribing aborts the poll it is inside, and schedules no other', async () => {
+    const deaf = deafFetch()
+    const node = new HttpNode({ url: RPC, pollInterval: 1, requestTimeout: 10_000, fetch: deaf.fetch })
+
+    const seen: string[] = []
+    const stop = node.subscribe('kei_1', (event) => seen.push(event.hash))
+    expect(deaf.started()).toBe(1)
+    expect(deaf.signals[0]?.aborted).toBe(false)
+
+    stop()
+    expect(deaf.signals[0]?.aborted).toBe(true)
+
+    // The poll is inside a fetch that ignored that abort, so the reply still
+    // comes — to nobody, and without starting the next poll.
+    deaf.answer({ receivables: [{ hash: 'D'.repeat(64), from: 'kei_2', asset: '0'.repeat(64), amount: '1' }] })
+    await settle(30)
+    expect(deaf.started()).toBe(1)
+    expect(seen).toEqual([])
+  })
+
+  test('a listener that unsubscribes stops the rest of its own batch', async () => {
+    const hashes = ['D', 'E', 'F'].map((letter) => letter.repeat(64))
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          receivables: hashes.map((hash) => ({ hash, from: 'kei_2', asset: '0'.repeat(64), amount: '1' })),
+        }),
+      )) as unknown as typeof globalThis.fetch
+
+    const node = new HttpNode({ url: RPC, pollInterval: 1, fetch: fetchImpl })
+    const seen: string[] = []
+    const stop = node.subscribe('kei_1', (event) => {
+      seen.push(event.hash)
+      stop()
+    })
+
+    await settle(20)
+    expect(seen).toEqual(hashes.slice(0, 1))
+  })
+
+  test('polling recovers after a transient timeout, without a storm', async () => {
+    let attempts = 0
+    const fetchImpl = (() => {
+      attempts += 1
+      // The first attempt is deaf as well as silent: recovery has to come from
+      // the deadline, not from the abort being honoured.
+      if (attempts === 1) return new Promise<Response>(() => {})
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            receivables: [{ hash: 'D'.repeat(64), from: 'kei_2', asset: '0'.repeat(64), amount: '1' }],
+          }),
+        ),
+      )
+    }) as unknown as typeof globalThis.fetch
+
+    const node = new HttpNode({ url: RPC, pollInterval: 5, requestTimeout: 15, fetch: fetchImpl })
+    const seen: string[] = []
+    // Awaited rather than slept on: the assertion is that it arrives, not when.
+    const arrived = new Promise<void>((resolve) => {
+      const stop = node.subscribe('kei_1', (event) => {
+        seen.push(event.hash)
+        stop()
+        resolve()
+      })
+    })
+
+    await arrived
+    expect(seen).toEqual(['D'.repeat(64)])
+    // The first attempt was abandoned, and the second is what answered — the
+    // failure backed off by at least one interval rather than retrying at once.
+    expect(attempts).toBe(2)
+  })
+})
+
+/**
+ * Backoff read as numbers rather than waited out.
+ *
+ * `setTimeout` is recorded instead of armed, and the poll loop is stepped by
+ * hand. Sleeping through a schedule would make these tests slow where they can
+ * be, flaky where they must not be, and — for the interval that matters most,
+ * one longer than the 30s cap — impossible to write at all.
+ */
+function captureTimers(): { flush: () => Promise<void>; step: () => Promise<number>; restore: () => void } {
+  const armed: { ms: number; fire: () => void }[] = []
+  const realSetTimeout = globalThis.setTimeout
+  const realClearTimeout = globalThis.clearTimeout
+  globalThis.setTimeout = ((fire: () => void, ms = 0) => {
+    armed.push({ ms, fire })
+    return armed.length
+  }) as unknown as typeof globalThis.setTimeout
+  globalThis.clearTimeout = (() => {}) as unknown as typeof globalThis.clearTimeout
+
+  return {
+    /** Lets the immediately-started poll settle and arm its first retry. */
+    flush: () => new Promise((resolve) => realSetTimeout(resolve, 0)),
+    /**
+     * Runs the timer armed last and returns how long it had been asked to
+     * wait. The loop's final act before going quiet is arming its next poll, so
+     * the newest timer is that poll rather than some request's deadline.
+     */
+    step: async (): Promise<number> => {
+      const next = armed.pop()
+      next?.fire()
+      // A real macrotask, which every microtask the poll queues runs before.
+      await new Promise((resolve) => realSetTimeout(resolve, 0))
+      return next?.ms ?? Number.NaN
+    },
+    restore: (): void => {
+      globalThis.setTimeout = realSetTimeout
+      globalThis.clearTimeout = realClearTimeout
+    },
+  }
+}
+
+/** A node that refuses every connection, so every poll fails at once. */
+const refusingFetch = (() => Promise.reject(new Error('ECONNREFUSED'))) as unknown as typeof globalThis.fetch
+
+/** Drives `polls` polls, answering the ones `answers` names, and returns each wait. */
+async function backoffSchedule(
+  pollInterval: number,
+  polls: number,
+  answers: ReadonlySet<number> = new Set(),
+  jitter = 0.5,
+): Promise<number[]> {
+  const realRandom = Math.random
+  Math.random = () => jitter
+  const timers = captureTimers()
+  try {
+    let attempts = 0
+    const fetchImpl = ((url: string | URL | Request, init?: RequestInit) => {
+      attempts += 1
+      return answers.has(attempts)
+        ? Promise.resolve(new Response(JSON.stringify({ receivables: [] })))
+        : refusingFetch(url as string, init)
+    }) as unknown as typeof globalThis.fetch
+
+    const node = new HttpNode({ url: RPC, pollInterval, requestTimeout: 30_000, fetch: fetchImpl })
+    const stop = node.subscribe('kei_1', () => {})
+    await timers.flush()
+    const waits: number[] = []
+    // The first poll runs on subscribe; stepping from here fires the wait it
+    // scheduled, which is the first number under test.
+    for (let i = 0; i < polls; i += 1) waits.push(await timers.step())
+    stop()
+    return waits
+  } finally {
+    timers.restore()
+    Math.random = realRandom
+  }
+}
+
+describe('HttpNode backoff between failed polls', () => {
+  test('doubles, is capped, and starts over after a poll that works', async () => {
+    // Jitter pinned mid-window: every number below is the whole formula, not a
+    // bound on it. The fifth failure is the cap — 30s, halved and jittered.
+    const waits = await backoffSchedule(2_000, 7, new Set([6]))
+    expect(waits.slice(0, 5)).toEqual([3_000, 6_000, 12_000, 22_500, 22_500])
+    // Poll six is answered, so poll seven is due one plain interval later...
+    expect(waits[5]).toBe(2_000)
+    // ...and poll seven's failure is a first failure again, not a sixth.
+    expect(waits[6]).toBe(3_000)
+  })
+
+  test('a poll interval longer than the cap is a floor, not something to shorten to', async () => {
+    // Jitter at its lowest, which is where a retry lands soonest. A wallet that
+    // asked to be polled every 45s is not moved to every 30s by the node
+    // failing: the cap bounds the doubling, it does not overrule the interval.
+    const waits = await backoffSchedule(45_000, 5, new Set(), 0)
+    expect(waits).toEqual([45_000, 45_000, 45_000, 45_000, 45_000])
+  })
+
+  test('the first retry is never sooner than the interval, at any jitter', async () => {
+    for (const jitter of [0, 0.25, 0.999]) {
+      const [first] = await backoffSchedule(2_000, 1, new Set(), jitter)
+      expect(first).toBeGreaterThanOrEqual(2_000)
+    }
+  })
+})
+
+/**
+ * A node URL is somewhere people keep credentials, and a timeout message is
+ * something people paste into an issue.
+ */
+describe('HttpNode error messages and the node URL', () => {
+  const timeoutFor = async (url: string): Promise<string> => {
+    const node = new HttpNode({ url, requestTimeout: 10, fetch: deafFetch().fetch })
+    const error = await refused(node.accountInfo('kei_1'))
+    expect(error.code).toBe('node-timeout')
+    return error.message
+  }
+
+  test('userinfo, query and fragment never reach the message', async () => {
+    const message = await timeoutFor(
+      'https://operator:hunter2-correct-horse@node.example:8443/rpc?apiKey=sk-live-9f8e7d6c5b4a3210&v=2#staging',
+    )
+
+    expect(message).toContain('https://node.example:8443/rpc')
+    expect(message).not.toContain('operator')
+    expect(message).not.toContain('hunter2-correct-horse')
+    expect(message).not.toContain('apiKey')
+    expect(message).not.toContain('sk-live-9f8e7d6c5b4a3210')
+    expect(message).not.toContain('staging')
+  })
+
+  test('a token carried as a path segment is redacted, and the host survives', async () => {
+    const message = await timeoutFor('https://node.example/v3/0123456789abcdef0123456789abcdef')
+    expect(message).toContain('https://node.example/v3/[redacted]')
+    expect(message).not.toContain('0123456789abcdef')
+  })
+
+  test('an endpoint with no scheme keeps its secrets too', async () => {
+    // `new URL` refuses this outright, so it is cut back as text instead.
+    const message = await timeoutFor('node.example/rpc?apiKey=sk-live-9f8e7d6c5b4a3210#tail')
+    expect(message).toContain('node.example/rpc')
+    expect(message).not.toContain('sk-live-9f8e7d6c5b4a3210')
+    expect(message).not.toContain('apiKey')
+    expect(message).not.toContain('tail')
+  })
+
+  test('userinfo inside a host-less URL is not a hiding place', async () => {
+    // This one does parse — as a scheme and one opaque path with the password
+    // sitting in the middle of it, which the structural route would have kept.
+    const message = await timeoutFor('operator:hunter2-correct-horse@node.example/rpc')
+    expect(message).toContain('node.example/rpc')
+    expect(message).not.toContain('hunter2-correct-horse')
+    expect(message).not.toContain('operator')
+  })
+
+  test('the same endpoint is what an unreachable node is named by', async () => {
+    const fetchImpl = (async () => {
+      throw new Error('ECONNREFUSED')
+    }) as unknown as typeof globalThis.fetch
+    const node = new HttpNode({ url: 'https://operator:hunter2@node.example/rpc', fetch: fetchImpl })
+    const error = await refused(node.accountInfo('kei_1'))
+    expect(error.code).toBe('node-unreachable')
+    expect(error.message).toContain('https://node.example/rpc')
+    expect(error.message).not.toContain('hunter2')
   })
 })
