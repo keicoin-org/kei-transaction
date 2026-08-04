@@ -15,6 +15,7 @@ import {
   Kei,
   KeiError,
   buildCommit,
+  checkDropBinding,
   defineDropTable,
   isDropTable,
   randomSeed,
@@ -429,5 +430,45 @@ describe('what a player can check before claiming', () => {
     expect(
       await asyncCodeOf(() => stranger.economy.verifyDrop(drop.awardFor(alice.address) as DropAward)),
     ).toBe('no-such-drop-table')
+  })
+
+  /**
+   * The batch below is honestly built and every proof in it folds. What makes it
+   * worthless is the one thing proofs cannot say: which account's GOLD it pays.
+   * A table that does not name its issuer leaves that to whoever published the
+   * root, and the attacker is exactly the party who published it.
+   */
+  test('a table that names no issuer cannot be verified against a symbol, however well its proofs fold', async () => {
+    const attacker = await Kei.server({ seed: 'D'.repeat(64), node })
+    await attacker.faucet(20_000)
+    await attacker.token.issue({ name: 'Gold', symbol: 'GOLD', decimals: 0, transfer: 'open' })
+
+    const unanchored = defineDropTable({
+      id: 'unanchored-hoard',
+      drops: [{ asset: { symbol: 'GOLD' }, amount: 50, weight: 60 }],
+      nothing: 40,
+    })
+    // Published by the attacker, from the attacker's own lookalike GOLD.
+    const drop = await attacker.economy.drop(unanchored, [alice.address], { random: () => 0.1 })
+    const award = drop.awardFor(alice.address) as DropAward
+
+    // The binding itself is intact — this is not a forged proof.
+    expect(() => checkDropBinding(award, unanchored, alice.address)).not.toThrow()
+    expect(await asyncCodeOf(() => alice.economy.verifyDrop(award, unanchored))).toBe(
+      'unanchored-table',
+    )
+  })
+
+  test('naming the assets by id needs no issuer, because an id already is one', async () => {
+    const gold = await game.token('GOLD', game.address)
+    const byId = defineDropTable({
+      id: 'hoard-by-id',
+      drops: [{ asset: { id: gold.id }, amount: 50, weight: 60 }],
+      nothing: 40,
+    })
+    const drop = await game.economy.drop(byId, [alice.address], { random: () => 0.1 })
+    const verified = await alice.economy.verifyDrop(drop.awardFor(alice.address) as DropAward, byId)
+    expect(verified.symbol).toBe('GOLD')
+    expect(verified.quantity).toBe(50)
   })
 })

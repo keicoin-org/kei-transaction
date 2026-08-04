@@ -17,7 +17,7 @@ import type { AssetId, KeiClient } from '@keicoin/core'
 import { KeiError, assertAddress, fail, formatRaw, fromRaw } from '@keicoin/core'
 import { buildCommit } from '@keicoin/claims'
 
-import { isResolved, resolveStack, type ResolvedStack } from './assets.js'
+import { isResolved, needsAnIssuer, resolveStack, type ResolvedStack } from './assets.js'
 import {
   assertAwardShape,
   checkDropBinding,
@@ -265,7 +265,24 @@ export async function verifyAward(
 
   checkDropBinding(award, table, account)
 
-  const rows = await resolveRows(client, table, table.issuer ?? commit.issuer)
+  // The table's issuer, and never the batch's. A symbol names an asset only
+  // together with the account that issued it, so taking that account from the
+  // commit would let whoever published the batch decide what "GOLD" meant: they
+  // issue their own GOLD, publish a root whose salt is this table's, and every
+  // check below passes while the player claims something worthless. The table is
+  // the half the player controls, so it is the half that gets to say.
+  const anchor = table.issuer ?? null
+  if (anchor === null) {
+    const bare = table.drops.filter((drop) => needsAnIssuer(drop.asset))
+    if (bare.length > 0) {
+      fail(
+        'unanchored-table',
+        `Drop table "${table.id}" names ${bare.length === 1 ? 'an asset' : 'assets'} by symbol and does not say who issues ${bare.length === 1 ? 'it' : 'them'}, so there is nothing here to check a batch against — anybody can issue a token by the same symbol and publish a batch that satisfies every proof. Add issuer to the table in the file both halves import (defineDropTable({ issuer: gameAddress, ... })), or name the assets by id. Nothing of yours has moved; do not claim this award until the table names its issuer.`,
+      )
+    }
+  }
+
+  const rows = await resolveRows(client, table, anchor)
   const match = rows.find((row) => row.asset === award.asset && row.raw === BigInt(award.amount))
   if (!match) {
     const listed = rows

@@ -76,6 +76,37 @@ The README and the module header both say the boundary in plain words. SPEC
 cannot ask a follow-up question, and would ship the overstatement into somebody's
 game.
 
+### 2a. The table names the issuer, because the batch must not
+
+Found in review of this branch, with a working exploit, before it merged.
+
+The four checks above fold hashes, and hashes say nothing about *which* asset a
+symbol meant. `{ symbol: 'GOLD' }` identifies a token only together with an
+account (SPEC §5.6.1), and the first draft took that account from
+`table.issuer ?? commit.issuer` — falling back to whoever published the batch.
+
+That fallback hands the decision to the attacker. Anyone can read the digest out
+of the shared table file, issue their own token called GOLD for 1 Kei, publish a
+root whose salt is `dropSalt(digest, theirNonce)` with a leaf for the victim, and
+hand over the award. Every one of the four checks passes, because every one of
+them is true: the root exists, the salt is this table's, the leaf is the player's,
+and the pair is declared. `verifyDrop()` returned `{ symbol: 'GOLD', quantity: 50,
+chance: 0.6 }` and the player claimed a worthless lookalike — with the SDK's own
+verification vouching for it.
+
+The fix is one line of policy: **at verification the anchor is `table.issuer`
+alone.** A table with a bare symbol in it and no issuer is refused
+(`unanchored-table`) instead of resolved against a stranger. Publishing keeps its
+convenience default — `options.issuer ?? table.issuer ?? client.address` — because
+there the fallback is the caller's own key, which is not a party anyone needs
+protecting from.
+
+Naming rows by id needs no issuer and keeps working, since an id already is one.
+
+The general shape, worth carrying to the next primitive: a proof is only as
+meaningful as the thing it is anchored to, and an anchor taken from the same
+message as the proof is not an anchor.
+
 ## 3. One roll per address per batch, refused rather than merged
 
 A root commits to at most one entitlement per account (SPEC §5.5), and

@@ -75,6 +75,19 @@ const KEI_FACTS = {
  * shape a shared recipe file wants and the shape that cannot be spoofed by
  * somebody else issuing a token called GEM.
  */
+/**
+ * Whether this reference is a bare symbol — one that identifies nothing until
+ * some account is named alongside it.
+ *
+ * Worth asking before resolving rather than after, wherever the fallback issuer
+ * would otherwise be taken from something the reader does not control. Ids and
+ * `KEI` answer false; `'GEM'` and `{ symbol: 'GEM' }` answer true.
+ */
+export function needsAnIssuer(ref: AssetRef): boolean {
+  const target = describeRef(ref, null, 'this asset')
+  return target instanceof ResolveFailure && target.code === 'no-issuer'
+}
+
 export async function resolveStack(
   client: KeiClient,
   stack: Stack,

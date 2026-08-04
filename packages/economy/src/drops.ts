@@ -82,7 +82,14 @@ export interface DropTableSpec {
   name?: string
   /**
    * The account that publishes this table's batches and issues what it drops.
-   * Defaults to whoever calls `economy.drop()`.
+   *
+   * Optional only when every row names its asset by id. For publishing it
+   * defaults to whoever calls `economy.drop()`, which is convenient and harmless
+   * — but a player checking an award has no such account to fall back on except
+   * the one that published the batch, and letting the batch name its own issuer
+   * is letting a stranger decide what `{ symbol: 'GOLD' }` meant. So a table with
+   * a bare symbol in it and no issuer is refused at verification
+   * (`unanchored-table`) rather than verified against whatever turned up.
    */
   issuer?: string
   drops: readonly DropSpec[]
