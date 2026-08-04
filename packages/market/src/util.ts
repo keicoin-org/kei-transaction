@@ -24,6 +24,7 @@ const UNIT_MS: Record<string, number> = {
 
 /** `'7d'`, `'90m'`, or a plain number of milliseconds. */
 export function durationMs(value: Duration, label = 'A duration'): number {
+  let milliseconds: number
   if (typeof value === 'number') {
     if (!Number.isFinite(value) || value <= 0) {
       fail(
@@ -31,14 +32,26 @@ export function durationMs(value: Duration, label = 'A duration'): number {
         `${label} is a positive number of milliseconds, or a string like '7d' — got ${String(value)}.`,
       )
     }
-    return Math.floor(value)
+    milliseconds = Math.floor(value)
+  } else {
+    const match = DURATION.exec(String(value).trim())
+    if (!match) {
+      fail(
+        'bad-duration',
+        `${label} looks like '7d', '12h', '90m', '30s', or a number of milliseconds — got "${String(value)}".`,
+      )
+    }
+    milliseconds = Math.floor(Number(match[1]) * (UNIT_MS[String(match[2]).toLowerCase()] as number))
   }
-  const match = DURATION.exec(String(value).trim())
-  if (!match) {
+
+  // Validate the value the caller will actually get, not only the positive
+  // decimal that produced it. Sub-millisecond inputs floor to zero, and a long
+  // digit string can overflow while it is multiplied by the unit.
+  if (!Number.isSafeInteger(milliseconds) || milliseconds <= 0) {
     fail(
       'bad-duration',
-      `${label} looks like '7d', '12h', '90m', '30s', or a number of milliseconds — got "${String(value)}".`,
+      `${label} must resolve to a positive safe whole number of milliseconds — got ${String(value)}. Use at least 1ms and keep the result at or below ${Number.MAX_SAFE_INTEGER}.`,
     )
   }
-  return Math.floor(Number(match[1]) * (UNIT_MS[String(match[2]).toLowerCase()] as number))
+  return milliseconds
 }

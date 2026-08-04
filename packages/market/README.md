@@ -215,6 +215,10 @@ If a background sweep cannot read the node, it retries after 30,000 ms. The
 from 1 through 2,147,483,647. Invalid, fractional, or timer-overflow values throw
 `KeiError('bad-sweep-interval')` when the market is created, before a sweep or
 network read can start; omit the option to keep the 30-second default.
+Offer expiries may be farther away than that timer ceiling. The market reaches a
+long deadline through bounded, read-free timer checkpoints; it does not poll the
+node at each checkpoint, and never passes an overflowing delay to the runtime.
+Durations must resolve to at least one safe whole millisecond.
 
 Before signing, check the chain against what you rendered:
 

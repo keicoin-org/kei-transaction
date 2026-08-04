@@ -87,7 +87,7 @@ export interface Cancellation {
   returned: OfferLeg
 }
 
-/** A duration in milliseconds, or a string like `'7d'`, `'90m'`, `'12h'`. */
+/** A duration resolving to at least 1 safe integer millisecond, or a string like `'7d'`, `'90m'`, `'12h'`. */
 export type Duration = number | string
 
 export interface ExpiryOptions {
