@@ -16,13 +16,14 @@
 import { KeiError } from '@keicoin/core'
 
 /**
- * Every `code` originated by the `@keicoin/market` layer.
+ * Every code that `@keicoin/market` defines and `isMarketError()` recognizes.
  *
  * Listed rather than derived, because a caller switching on it wants the set to
  * be a promise rather than a description of today's implementation. Codes are
- * added over time; none is removed or repurposed. A market call can also surface
- * downstream core, node, or transport errors; `isMarketError` intentionally
- * returns false for those codes.
+ * added over time; none is removed or repurposed. This is code membership, not
+ * provenance: a `KeiError` created elsewhere with one of these same codes also
+ * matches. Market calls can also surface downstream core, node, or transport
+ * errors whose codes are not in this set.
  */
 export type MarketErrorCode =
   /** The `asset` given is not an id and is not an object with one. */
@@ -96,7 +97,9 @@ const CODES = new Set<string>([
 ])
 
 /**
- * Narrow an unknown catch to a market refusal, optionally to specific ones.
+ * Narrow an unknown catch to a market-defined code, optionally to specific ones.
+ * This checks the error class and code string; JavaScript errors do not retain
+ * enough provenance for the guard to prove which package constructed them.
  *
  * ```js
  * if (isMarketError(error, 'offer-taken', 'offer-cancelled')) showNextListing()

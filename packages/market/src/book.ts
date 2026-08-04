@@ -77,7 +77,7 @@ export interface BookOptions extends ReadOptions {
   asset?: AssetId | { id: AssetId }
   /** What it is priced in. Default Kei. */
   quote?: AssetId | { id: AssetId }
-  /** Offers read per account. Default 100. */
+  /** Offers read per account. Positive safe integer; default 100. Invalid values throw `bad-limit`. */
   limit?: number
   /** Include offers whose advisory expiry has passed (SPEC §9.3). Default false. */
   includeExpired?: boolean

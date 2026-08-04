@@ -131,6 +131,22 @@ describe('walkAccounts — the answer is not a race', () => {
     expect(await mapConcurrent([], async () => 0, { concurrency: MAX_CONCURRENCY })).toEqual([])
   })
 
+  test('invalid concurrency is refused before an asynchronous directory is called', async () => {
+    let calls = 0
+    const directory = {
+      accounts: () => {
+        calls += 1
+        return new Promise<readonly string[]>(() => {})
+      },
+    }
+
+    const failure = await walkAccounts(directory, rows(), { concurrency: Number.NaN }).catch(
+      (error: unknown) => error,
+    )
+    expect(isMarketError(failure, 'bad-concurrency')).toBe(true)
+    expect(calls).toBe(0)
+  })
+
   test('per-account limits are positive safe integers, not timer-style coercions', () => {
     expect(accountLimitOf(undefined)).toBe(DEFAULT_ACCOUNT_LIMIT)
     expect(accountLimitOf(1)).toBe(1)
@@ -394,8 +410,9 @@ describe('coverage rides along without changing the rows', () => {
     }
   })
 
-  test('downstream KeiError codes are not claimed as market errors', () => {
+  test('the guard is exact code membership, not error provenance', () => {
     expect(isMarketError(new KeiError('bad-address', 'not a market refusal'))).toBe(false)
+    expect(isMarketError(new KeiError('bad-amount', 'constructed by another layer'))).toBe(true)
   })
 
   test('a transform drops it, which is why coverageOf is read off the market value', () => {

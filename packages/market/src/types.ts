@@ -152,13 +152,14 @@ export interface ListOptions extends ReadOptions {
   state?: OfferState | null
   /** Show listings whose advisory expiry has passed. Default false. */
   includeExpired?: boolean
-  /** Offers read per account. Default 100. */
+  /** Offers read per account. Positive safe integer; default 100. Invalid values throw `bad-limit`. */
   limit?: number
 }
 
 export interface MineOptions extends ReadOptions {
   state?: OfferState | null
   includeExpired?: boolean
+  /** Offers read from this account. Positive safe integer; default 100. */
   limit?: number
 }
 
@@ -173,6 +174,7 @@ export interface TradeOptions extends ReadOptions {
   window?: Duration
   /** Keep only the most recent n. */
   last?: number
+  /** History rows read per account. Positive safe integer; default 100. */
   limit?: number
 }
 
