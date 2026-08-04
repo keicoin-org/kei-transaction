@@ -178,8 +178,18 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
       if (!info) {
         fail('no-such-asset', `No asset with id ${String(asset)} exists on ${client.node.network}.`)
       }
+      const received = String(info.id ?? '').toUpperCase()
+      if (received !== id) {
+        fail(
+          'asset-info-mismatch',
+          `The node answered metadata requested for asset ${id} with asset ${received}. Retry against a synced node; this response was not cached.`,
+        )
+      }
       const found: LegMeta = {
-        asset: info.id,
+        // The request is authoritative. Metadata can describe an asset, but a
+        // stale or hostile node response cannot rename the leg that is read,
+        // balanced, signed, or submitted.
+        asset: id,
         symbol: info.symbol,
         name: info.name,
         decimals: info.decimals,
