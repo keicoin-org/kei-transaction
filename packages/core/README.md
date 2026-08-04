@@ -22,6 +22,13 @@ bun add @keicoin/core     # or npm / pnpm / yarn
 
 `@keicoin/core` depends on nothing else in the tree.
 
+## Atomic mock-ledger rejections
+
+`MockLedger.process()` validates a complete transition before committing it.
+When a block is rejected, account state, receivables, asset supply and holdings,
+claim status, indexes, and notifications all remain unchanged, so a corrected
+same-instance retry observes the same authority as a fresh process would.
+
 ## Bounded node requests
 
 `HttpNode` bounds the complete request, including reading the response body, to
