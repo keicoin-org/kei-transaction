@@ -72,6 +72,12 @@ export interface WorkServerOptions {
   fallback?: WorkProvider
 }
 
+const MAX_PRECOMPUTED_WORK = 8
+
+function workCacheKey(root: string, tier: WorkTier): string {
+  return `${root.toUpperCase()}:${tier}`
+}
+
 /**
  * Asks a work server for precomputed work, which is what the Nano and Banano
  * ecosystems already do and what keeps a claim from stalling a frame.
@@ -81,6 +87,7 @@ export class WorkServerProvider implements WorkProvider {
   private readonly headers: Record<string, string>
   private readonly fetchImpl: typeof globalThis.fetch
   private readonly fallback: WorkProvider | undefined
+  private readonly precomputed = new Map<string, Promise<string>>()
 
   constructor(options: WorkServerOptions) {
     if (!options?.url) fail('no-work-server', 'A work server needs a URL, for example https://work.kei.dev.')
@@ -95,6 +102,48 @@ export class WorkServerProvider implements WorkProvider {
   }
 
   async generate(root: string, tier: WorkTier): Promise<string> {
+    const key = workCacheKey(root, tier)
+    const ready = this.precomputed.get(key)
+    if (ready) {
+      // Work is single-use. Delete before awaiting so a later request cannot
+      // consume the same speculative nonce while this caller is suspended.
+      this.precomputed.delete(key)
+      return ready
+    }
+
+    return this.requestWork(root, tier)
+  }
+
+  precompute(root: string, tier: WorkTier): void {
+    const key = workCacheKey(root, tier)
+    if (this.precomputed.has(key)) return
+
+    // Install the promise before starting fetch. Besides making duplicate
+    // calls coalesce, this keeps the cache authoritative even for a custom
+    // fetch implementation that synchronously calls back into the provider.
+    let resolveWork!: (work: string) => void
+    let rejectWork!: (cause: unknown) => void
+    const pending = new Promise<string>((resolve, reject) => {
+      resolveWork = resolve
+      rejectWork = reject
+    })
+    this.precomputed.set(key, pending)
+
+    // A failed speculative request must not poison the key, and precompute's
+    // fire-and-forget API must never surface an unhandled rejection.
+    void pending.catch(() => {
+      if (this.precomputed.get(key) === pending) this.precomputed.delete(key)
+    })
+
+    if (this.precomputed.size > MAX_PRECOMPUTED_WORK) {
+      const oldest = this.precomputed.keys().next().value
+      if (oldest !== undefined) this.precomputed.delete(oldest)
+    }
+
+    void this.requestWork(root, tier).then(resolveWork, rejectWork)
+  }
+
+  private async requestWork(root: string, tier: WorkTier): Promise<string> {
     try {
       const response = await this.fetchImpl(this.url, {
         method: 'POST',
@@ -112,10 +161,6 @@ export class WorkServerProvider implements WorkProvider {
         `The work server at ${this.url} did not return work. Pass { fallback: new LocalWorkProvider(node) } to generate locally instead.`,
       )
     }
-  }
-
-  precompute(root: string, tier: WorkTier): void {
-    void this.generate(root, tier).catch(() => undefined)
   }
 }
 
