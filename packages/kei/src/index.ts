@@ -139,6 +139,7 @@ export type {
   AccountSource,
   BidOptions,
   Book,
+  BookLevel,
   BookOptions,
   Cancellation,
   Candle,

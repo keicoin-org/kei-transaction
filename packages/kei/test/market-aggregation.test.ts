@@ -130,8 +130,8 @@ describe('the book — one walk per chain (SPEC §9.1)', () => {
 
     const book = await carol.market.book({ from: [alice.address] })
     expect(book.asset).toBeNull()
-    // A stall wants the currency, so from the currency's side these are its bids.
-    expect(book.bids).toHaveLength(2)
+    // Every shelf row keeps the non-currency asset as its base, so stalls are asks.
+    expect(book.asks).toHaveLength(2)
     // There is no spread across two different things, and saying null beats
     // subtracting two unrelated numbers.
     expect(book.spread).toBeNull()

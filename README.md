@@ -308,7 +308,8 @@ const directory = createDirectory()         // or your own { accounts() }
 directory.watch(sellerAddress)
 
 const book = await kei.market.book({ from: directory, asset: sword })
-book.asks[0]        // cheapest per unit
+book.asks[0].unitPrice  // quote per sword; cheapest ask first
+book.bids[0].unitPrice  // the same units; highest bid first
 book.coverage       // { asked, read, failed, truncated, dropped, complete }
 
 const series = await kei.market.series({ asset: sword, from: directory })

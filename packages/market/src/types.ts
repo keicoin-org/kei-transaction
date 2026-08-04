@@ -32,7 +32,11 @@ export interface Offer {
   give: OfferLeg
   /** What the offerer wants for it. */
   want: OfferLeg
-  /** `want.amount` per one unit of `give` — the asking price. */
+  /**
+   * `want.amount` per one unit of `give` — directional offer terms.
+   * For a consistently oriented display price, use `BookLevel.unitPrice` from
+   * `market.book()`; a bare offer has no base/quote point of view.
+   */
   price: number
   /** Only this address may accept, or null for an open listing. */
   to: string | null

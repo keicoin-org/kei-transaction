@@ -46,18 +46,33 @@ export const DEFAULT_BOOK_LIMIT = DEFAULT_ACCOUNT_LIMIT
 
 export type { Coverage }
 
+/**
+ * An offer oriented as one row of a book.
+ *
+ * A bare `Offer` only says what its author gives and wants. The book supplies
+ * the missing point of view: `unitPrice` is always quote units per base unit,
+ * and `side` says which leg the author gives in that orientation.
+ */
+export interface BookLevel extends Offer {
+  side: 'ask' | 'bid'
+  base: AssetId
+  quote: AssetId
+  /** `quote` units per one unit of `base`. */
+  unitPrice: number
+}
+
 export interface Book {
   /** What the book is about, or null when it is every asset against `quote`. */
   asset: AssetId | null
   /** What it is priced in. Kei unless told otherwise. */
   quote: AssetId
   /** Open offers giving `asset` for `quote`. Cheapest per unit first. */
-  asks: Offer[]
+  asks: BookLevel[]
   /** Open offers giving `quote` for `asset`. Best price for the seller first. */
-  bids: Offer[]
-  bestAsk: Offer | null
-  bestBid: Offer | null
-  /** `bestAsk.price - bestBid.price`, or null when either side is empty. */
+  bids: BookLevel[]
+  bestAsk: BookLevel | null
+  bestBid: BookLevel | null
+  /** `bestAsk.unitPrice - bestBid.unitPrice`, or null when either side is empty. */
   spread: number | null
   /** Open offers on the walked chains that are neither, e.g. sword-for-shield. */
   other: Offer[]
@@ -120,8 +135,15 @@ export async function readBook(context: MarketContext, options: BookOptions): Pr
   for (const raw of walk.rows) {
     if (seen.has(raw.hash)) continue
     seen.add(raw.hash)
-    const sells = asset === null ? raw.asset === quote : raw.asset === asset && raw.wantAsset === quote
-    const buys = asset === null ? raw.wantAsset === quote : raw.wantAsset === asset && raw.asset === quote
+    // A whole-shelf row is still oriented as a book of the non-quote asset.
+    // That keeps `side` and `unitPrice` identical whether the caller names one
+    // base asset or asks for every base asset against the same quote.
+    const sells = asset === null
+      ? raw.wantAsset === quote && raw.asset !== quote
+      : raw.asset === asset && raw.wantAsset === quote
+    const buys = asset === null
+      ? raw.asset === quote && raw.wantAsset !== quote
+      : raw.wantAsset === asset && raw.asset === quote
     if (!sells && !buys && asset !== null && raw.asset !== asset && raw.wantAsset !== asset) continue
     if (!sells && !buys && asset === null) continue
     sorted.push({ raw, side: sells ? 'ask' : buys ? 'bid' : 'other' })
@@ -133,27 +155,29 @@ export async function readBook(context: MarketContext, options: BookOptions): Pr
     { signal: options.signal, concurrency: options.concurrency, what: 'Reading the book' },
   )
 
-  const asks: Offer[] = []
-  const bids: Offer[] = []
+  const asks: BookLevel[] = []
+  const bids: BookLevel[] = []
   const other: Offer[] = []
   for (const { side, offer } of converted) {
     if (offer.expired && !includeExpired) continue
     if (offer.mine && !includeMine) continue
-    if (side === 'ask') asks.push(offer)
-    else if (side === 'bid') bids.push(offer)
-    else other.push(offer)
+    if (side === 'ask' || side === 'bid') {
+      const base = asset ?? (side === 'ask' ? offer.give.asset : offer.want.asset)
+      const level = toBookLevel(offer, side, base, quote)
+      if (side === 'ask') asks.push(level)
+      else bids.push(level)
+    } else other.push(offer)
   }
 
   // Cheapest per unit first, which is the order a buyer wants and the one
   // nothing else is going to impose — there is no matching engine here and
   // there is not going to be one (SPEC §9.4).
   //
-  // Ascending on both sides, for two different reasons that happen to agree. An
-  // ask's `price` is quote per unit, so smallest is cheapest. A bid gives quote
-  // and wants the asset, so its `price` is asset units per quote unit, and the
-  // bid paying *most* is the one with the smallest number.
-  asks.sort((a, b) => a.price - b.price || a.hash.localeCompare(b.hash))
-  bids.sort((a, b) => a.price - b.price || a.hash.localeCompare(b.hash))
+  // Both sides use quote per base unit: asks are cheapest first and bids are
+  // highest-paying first. `Offer.price` keeps its directional meaning for
+  // compatibility and is deliberately not the comparator here.
+  asks.sort((a, b) => a.unitPrice - b.unitPrice || a.hash.localeCompare(b.hash))
+  bids.sort((a, b) => b.unitPrice - a.unitPrice || a.hash.localeCompare(b.hash))
   other.sort((a, b) => a.hash.localeCompare(b.hash))
 
   const bestAsk = asks[0] ?? null
@@ -169,13 +193,28 @@ export async function readBook(context: MarketContext, options: BookOptions): Pr
     // A spread compares two sides of one asset. A whole-shelf book has as many
     // assets as it has stalls, so there is nothing to subtract and saying so is
     // better than subtracting two unrelated numbers.
-    spread: asset !== null && bestAsk && bestBid ? bestAsk.price - bidPrice(bestBid) : null,
+    spread: asset !== null && bestAsk && bestBid ? bestAsk.unitPrice - bestBid.unitPrice : null,
     other,
     coverage: walk.coverage,
   }
 }
 
 type Side = 'ask' | 'bid' | 'other'
+
+function toBookLevel(
+  offer: Offer,
+  side: BookLevel['side'],
+  base: AssetId,
+  quote: AssetId,
+): BookLevel {
+  return {
+    ...offer,
+    side,
+    base,
+    quote,
+    unitPrice: side === 'ask' ? offer.price : bidPrice(offer),
+  }
+}
 
 /**
  * What a bid is worth per unit of the asset, in quote units.
