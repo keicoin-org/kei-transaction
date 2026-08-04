@@ -237,6 +237,20 @@ out of order. Aborting rejects with the typed `read-aborted` market error, stops
 new chain reads from starting, and does not claim to cancel a node request
 already in flight.
 
+For chart/history workflows, you can also default the trade scope once:
+
+```js
+const market = createMarket(client, {
+  from: directory,
+})
+
+const candles = await market.chart({ asset, every: '1h' })
+// ... or chart/series/candles/history/price/prices/trades without repeating `from`
+```
+
+The explicit `from` on a call still wins over this default. `offers()` and
+`mine()` remain explicitly scoped as they were.
+
 Peak concurrency and total work are separate bounds. A plain array or custom
 directory may provide at most `MAX_ACCOUNTS_PER_WALK` (256) entries to one walk,
 including duplicates and invalid addresses; a larger source throws the typed
@@ -303,7 +317,27 @@ try {
 ```js
 const series  = await market.series({ asset: sword, from: directory })
 const candles = await market.candles({ asset: sword, from: directory, every: '1h' })
+// `interval` is also accepted, when that wording matches your chart builder.
+const candlesByInterval = await market.candles({ asset: sword, from: directory, interval: '1h' })
 const prices  = await market.prices({ from: directory })   // every asset, one walk
+
+// One pass, both series and candles when you need both views:
+const chart = await market.chart({
+  asset: sword,
+  from: directory,
+  every: '1h',
+  window: '30d',
+})
+```
+
+`market.chart()` also accepts the same query as `series(...)`/`history(...)`; if
+`every` is omitted it uses `1h` by default.
+
+For shorter chart-oriented naming, the same calls are available as:
+
+```js
+const seriesAlias = await market.history({ asset: sword, from: directory })
+const candlesAlias = await market.ohlc({ asset: sword, from: directory, interval: '1h' })
 ```
 
 **Read this before shipping a chart.** The prices, units, medians, ranges and

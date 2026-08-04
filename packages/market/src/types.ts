@@ -242,4 +242,12 @@ export interface MarketOptions {
    * own bound. Integer 1–32; default 8 — see `DEFAULT_CONCURRENCY`.
    */
   concurrency?: number
+  /**
+   * Default account source for trade-history reads when `from` is omitted.
+   *
+   * This affects `trades`, `price`, `prices`, `series`, `history`,
+   * `candles`, `ohlc`, and `chart`. Offers and books still require explicit
+   * scope.
+   */
+  from?: AccountSource
 }
