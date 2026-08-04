@@ -9,15 +9,18 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { KEI_ASSET, keyPairFromSeed, randomSeed } from '@keicoin/core'
+import { KEI_ASSET, KeiError, keyPairFromSeed, randomSeed } from '@keicoin/core'
 import {
   DEFAULT_DIRECTORY_LIMIT,
+  DEFAULT_MAX_CANDLES,
+  MAX_CANDLES,
   bidPrice,
   classify,
   createDirectory,
   coverageOf,
   emptyCoverage,
   expectationFrom,
+  isMarketError,
   priceIndex,
   resolveAccounts,
   settleable,
@@ -26,6 +29,7 @@ import {
   verify,
   withCoverage,
   type Offer,
+  type Duration,
   type Trade,
 } from '@keicoin/market'
 
@@ -33,6 +37,17 @@ import {
 async function addresses(count: number): Promise<string[]> {
   const pairs = await Promise.all(Array.from({ length: count }, () => keyPairFromSeed(randomSeed(), 0)))
   return pairs.map((pair) => pair.address)
+}
+
+function caught(fn: () => unknown): unknown {
+  let error: unknown
+  try {
+    fn()
+  } catch (cause) {
+    error = cause
+  }
+  expect(error).toBeInstanceOf(KeiError)
+  return error
 }
 
 // ------------------------------------------------------------------ directory
@@ -205,6 +220,173 @@ describe('price series — consensus numbers, advisory order', () => {
     })
     expect(candles).toHaveLength(3)
     expect(candles[1]).toMatchObject({ at: hour * 2, open: 5, close: 5, volume: 0, trades: 0 })
+  })
+
+  test('fill preserves the coverage provenance of the sparse input', () => {
+    const coverage = {
+      ...emptyCoverage(),
+      asked: 2,
+      read: 1,
+      failed: [{ account: 'kei_missing', reason: 'node unreachable' }],
+      complete: false,
+    }
+    const candles = toCandles(
+      withCoverage<Trade>([sale('A', 1, 5, 0), sale('B', 1, 7, 2)], coverage),
+      { asset: 'SWORD', quote: KEI_ASSET, every: 1, fill: true },
+    )
+
+    expect(candles).toHaveLength(3)
+    expect(coverageOf(candles)).toEqual(coverage)
+  })
+
+  test('empty and single-bucket fills stay small', () => {
+    expect(toCandles([], { asset: 'SWORD', every: 1, fill: true })).toEqual([])
+    expect(toCandles([sale('A', 1, 5, 123)], { asset: 'SWORD', every: 1, fill: true })).toHaveLength(1)
+  })
+
+  test('fill accepts its output boundary and refuses boundary plus one', () => {
+    const candlesAt = (count: number) =>
+      toCandles([sale('A', 1, 5, 0), sale('B', 1, 7, count - 1)], {
+        asset: 'SWORD',
+        quote: KEI_ASSET,
+        every: 1,
+        fill: true,
+      })
+
+    expect(candlesAt(DEFAULT_MAX_CANDLES - 1)).toHaveLength(DEFAULT_MAX_CANDLES - 1)
+    expect(candlesAt(DEFAULT_MAX_CANDLES)).toHaveLength(DEFAULT_MAX_CANDLES)
+    expect(caught(() => candlesAt(DEFAULT_MAX_CANDLES + 1))).toMatchObject({ code: 'too-many-candles' })
+  })
+
+  test('an explicit dense budget remains finite and validates before reading input', () => {
+    const candlesAt = (count: number, maxCandles: number) =>
+      toCandles([sale('A', 1, 5, 0), sale('B', 1, 7, count - 1)], {
+        asset: 'SWORD',
+        quote: KEI_ASSET,
+        every: 1,
+        fill: true,
+        maxCandles,
+      })
+
+    expect(candlesAt(3, 3)).toHaveLength(3)
+    expect(caught(() => candlesAt(4, 3))).toMatchObject({ code: 'too-many-candles' })
+    expect(
+      toCandles([], { asset: 'SWORD', every: 1, fill: true, maxCandles: MAX_CANDLES }),
+    ).toEqual([])
+    for (const maxCandles of [0, 0.5, Number.POSITIVE_INFINITY, MAX_CANDLES + 1]) {
+      expect(caught(() => toCandles([], { asset: 'SWORD', every: 1, maxCandles }))).toMatchObject({
+        code: 'bad-max-candles',
+      })
+    }
+  })
+
+  test('the former 60,001-object probe is projected and refused before dense filling', () => {
+    const error = caught(() =>
+      toCandles([sale('A', 1, 5, 0), sale('B', 1, 7, 60_000)], {
+        asset: 'SWORD',
+        quote: KEI_ASSET,
+        every: 1,
+        fill: true,
+      }),
+    )
+
+    expect(error).toMatchObject({ code: 'too-many-candles' })
+    expect(isMarketError(error, 'too-many-candles')).toBe(true)
+    expect((error as Error).message).toContain('60001 candles')
+    expect((error as Error).message).toContain('fill: false')
+  })
+
+  test('extreme safe timestamps cannot overflow the dense projection', () => {
+    const error = caught(() =>
+      toCandles(
+        [sale('A', 1, 5, 0), sale('B', 1, 7, Number.MAX_SAFE_INTEGER)],
+        { asset: 'SWORD', quote: KEI_ASSET, every: 1, fill: true },
+      ),
+    )
+
+    expect(error).toMatchObject({ code: 'too-many-candles' })
+    expect((error as Error).message).toContain('9007199254740992 candles')
+  })
+
+  test('every non-null advisory time is valid before sparse or filled sorting and bucketing', () => {
+    const invalid = [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      -1,
+      0.5,
+      Number.MAX_SAFE_INTEGER + 1,
+      Number.MIN_SAFE_INTEGER - 1,
+    ]
+
+    for (const fill of [false, true]) {
+      for (const at of invalid) {
+        const error = caught(() =>
+          toCandles([sale('A', 1, 5, at)], {
+            asset: 'SWORD',
+            quote: KEI_ASSET,
+            every: 1,
+            fill,
+          }),
+        )
+        expect(error).toMatchObject({ code: 'bad-candle-time' })
+        expect(isMarketError(error, 'bad-candle-time')).toBe(true)
+        expect((error as Error).message).toContain('non-negative safe whole number')
+      }
+    }
+  })
+
+  test('an invalid interior time cannot hide a billion-bucket gap from endpoint projection', () => {
+    const error = caught(() =>
+      toCandles(
+        [sale('A', 1, 5, 0), sale('B', 1, 7, 1_000_000_000), sale('C', 1, 9, Number.NaN), sale('D', 1, 11, 1)],
+        { asset: 'SWORD', quote: KEI_ASSET, every: 1, fill: true },
+      ),
+    )
+
+    expect(error).toMatchObject({ code: 'bad-candle-time' })
+  })
+
+  test('a wholly missing advisory time is still dropped rather than drawn at the epoch', () => {
+    const timeless = trade({
+      hash: 'TIMELESS',
+      give: leg('SWORD', 1),
+      want: leg(KEI_ASSET, 5),
+      settledAt: null,
+      seenAt: null as unknown as number,
+    })
+    const candles = toCandles([timeless, sale('A', 1, 7, 1)], {
+      asset: 'SWORD',
+      quote: KEI_ASSET,
+      every: 1,
+      fill: true,
+    })
+
+    expect(candles).toHaveLength(1)
+    expect(candles[0]?.at).toBe(1)
+  })
+
+  test('fill false stays sparse across a multi-year gap', () => {
+    const decade = 10 * 365 * 24 * 60 * 60 * 1_000
+    const candles = toCandles([sale('A', 1, 5, 0), sale('B', 1, 7, decade)], {
+      asset: 'SWORD',
+      quote: KEI_ASSET,
+      every: 1,
+      fill: false,
+    })
+
+    expect(candles).toHaveLength(2)
+    expect(candles.map((candle) => candle.at)).toEqual([0, decade])
+  })
+
+  test('every must normalize to a positive safe integer before any input is bucketed', () => {
+    const invalid: Duration[] = [0.5, '0.1ms', Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, `${'9'.repeat(400)}w`]
+
+    for (const every of invalid) {
+      const error = caught(() => toCandles([], { asset: 'SWORD', every, fill: true }))
+      expect(error).toMatchObject({ code: 'bad-duration' })
+      expect((error as Error).message).toContain('every')
+    }
   })
 
   test('priceIndex summarises every asset out of one set of trades', () => {

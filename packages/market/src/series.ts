@@ -33,7 +33,7 @@
  * exact for the trades in that bucket; *which* trades are in it is advisory.
  */
 
-import type { AssetId } from '@keicoin/core'
+import { fail, type AssetId } from '@keicoin/core'
 
 import type { Duration, PriceSummary, Trade } from './types.js'
 import { assetIdOf, durationMs } from './util.js'
@@ -204,11 +204,121 @@ export interface Candle {
   trades: number
 }
 
+/**
+ * Candles `fill: true` may emit when the caller names no `maxCandles`.
+ *
+ * Dense filling is the one thing in this file whose output is not proportional
+ * to its input. It materialises every empty bucket between the first trade and
+ * the last, so the size is decided by two advisory timestamps and `every`
+ * rather than by how many trades were read: one millisecond across one day is
+ * 86,400,001 objects, and thirty days is two and a half billion. Two trades are
+ * enough to ask for either, and a browser or Worker that starts building them
+ * has already lost the frame.
+ *
+ * Ten thousand is past the pixel columns of any screen a chart is drawn on, so
+ * a request above it is asking for data rather than a picture — which is a
+ * decision worth making on purpose, through `maxCandles`, rather than by
+ * default. Sparse output is not subject to this at all: `fill: false` stays
+ * proportional to the buckets that actually traded.
+ */
+export const DEFAULT_MAX_CANDLES = 10_000
+
+/**
+ * The largest `maxCandles` a caller may ask for.
+ *
+ * A raised budget is still a budget. A hundred times the default is a large
+ * array that a Node or Worker caller can decide to hold, and it is still a
+ * finite number reached deliberately — which is the whole distance between
+ * this and the unbounded allocation the bound exists to refuse. Past it,
+ * bucket wider or page the window; the answer is not a longer array.
+ */
+export const MAX_CANDLES = 1_000_000
+
 export interface CandleOptions extends SeriesOptions {
   /** Bucket width: `'1h'`, `'15m'`, `'7d'`, or a number of milliseconds. */
   every: Duration
   /** Emit empty buckets between trades, so the x-axis is even. Default false. */
   fill?: boolean
+  /**
+   * Most candles `fill: true` may emit. Whole number from 1 through
+   * `MAX_CANDLES`; `DEFAULT_MAX_CANDLES` by default. A dense request projected
+   * past it throws `too-many-candles` before anything is allocated.
+   *
+   * This bounds *generated* output. `limit` bounds the rows read from each
+   * account, and no read limit bounds this: two trades already carry the two
+   * timestamps that decide the span.
+   */
+  maxCandles?: number
+}
+
+/** `every` as a bucket width the arithmetic below can actually count in. */
+function candleWidthOf(value: Duration): number {
+  const every = durationMs(value, 'every')
+  // `durationMs` floors, so a positive fraction — `0.5`, or `'0.1ms'` — arrives
+  // here as zero, and a unit multiplication can leave safe integer range
+  // outright. Both used to reach the bucket arithmetic and draw `at: NaN`.
+  if (!Number.isSafeInteger(every) || every < 1) {
+    fail(
+      'bad-duration',
+      `every is a bucket width, so it has to be a whole number of milliseconds a bucket can be counted in — at least 1ms, and no wider than ${Number.MAX_SAFE_INTEGER}ms. Got ${String(value)}, which normalises to ${String(every)}ms.`,
+    )
+  }
+  return every
+}
+
+/** Resolve the dense-fill budget without letting an option make it unbounded. */
+function candleBudgetOf(requested: number | undefined): number {
+  if (requested === undefined) return DEFAULT_MAX_CANDLES
+  if (!Number.isSafeInteger(requested) || requested < 1 || requested > MAX_CANDLES) {
+    fail(
+      'bad-max-candles',
+      `maxCandles is how many candles fill: true may emit — a whole number from 1 through ${MAX_CANDLES}, and ${DEFAULT_MAX_CANDLES} by default. Got ${String(requested)}.`,
+    )
+  }
+  return requested
+}
+
+/** A safe, non-negative whole-millisecond bucket start. */
+function candleStartOf(at: number, every: number): number {
+  if (!Number.isSafeInteger(at) || at < 0) {
+    fail(
+      'bad-candle-time',
+      `A candle's advisory time must be a non-negative safe whole number of milliseconds — got ${String(at)}. Use a timestamp from 0 through ${Number.MAX_SAFE_INTEGER}.`,
+    )
+  }
+  const time = BigInt(at)
+  const width = BigInt(every)
+  const start = (time / width) * width
+  return Number(start)
+}
+
+/** Refuse every non-null advisory time before `toSeries` makes a sort decision. */
+function validateCandleTimes(trades: readonly Trade[], every: number): void {
+  for (const trade of trades) {
+    const at = trade.settledAt ?? trade.seenAt
+    if (at !== null) candleStartOf(at, every)
+  }
+}
+
+/**
+ * How many candles a dense fill would emit, exactly.
+ *
+ * `BigInt` because the count is the number being trusted: the span between two
+ * advisory times can be the whole safe integer range, and `lastAt - firstAt` in
+ * doubles stops being exact well before the fill loop would stop running — so a
+ * projection computed the obvious way could under-report the very allocation it
+ * is there to refuse. Both bounds are already exact multiples of `every`, so
+ * the division loses nothing and truncation never rounds a bucket away.
+ */
+function projectedCandles(firstAt: number, lastAt: number, every: number): bigint {
+  if (!Number.isSafeInteger(firstAt) || !Number.isSafeInteger(lastAt)) {
+    fail(
+      'too-many-candles',
+      `Cannot safely project filled candles across advisory bucket times ${String(firstAt)}..${String(lastAt)} at ${every}ms: the span and projected count are outside safe integer time. Use fill: false, a wider interval, or a smaller window/last.`,
+    )
+  }
+  const width = BigInt(every)
+  return BigInt(lastAt) / width - BigInt(firstAt) / width + 1n
 }
 
 /**
@@ -219,10 +329,15 @@ export interface CandleOptions extends SeriesOptions {
  * summary of what the node saw rather than a market data feed. `fill` exists
  * because an uneven x-axis reads as missing data; empty buckets carry the
  * previous close on all four prices and zero volume, which is what "nothing
- * traded" actually looks like.
+ * traded" actually looks like — and it is bounded, for the reason on
+ * `DEFAULT_MAX_CANDLES`.
  */
 export function toCandles(trades: readonly Trade[], options: CandleOptions): Candle[] {
-  const every = durationMs(options.every, 'every')
+  // Both options are checked before a trade is read, so a malformed width or
+  // budget is a refusal about the call rather than about the data behind it.
+  const every = candleWidthOf(options.every)
+  const budget = candleBudgetOf(options.maxCandles)
+  validateCandleTimes(trades, every)
   const series = toSeries(trades, options)
   const carried = coverageOf(trades)
   if (series.points.length === 0) {
@@ -235,7 +350,7 @@ export function toCandles(trades: readonly Trade[], options: CandleOptions): Can
     // A point with no time at all cannot be bucketed, and putting it at the
     // epoch would draw a candle in 1970. Dropping it is the honest loss.
     if (point.at === null) continue
-    const at = Math.floor(point.at / every) * every
+    const at = candleStartOf(point.at, every)
     const bucket = buckets.get(at)
     if (!bucket) {
       buckets.set(at, {
@@ -260,6 +375,17 @@ export function toCandles(trades: readonly Trade[], options: CandleOptions): Can
   const filled = [...buckets.values()].sort((a, b) => a.at - b.at)
   if (options.fill !== true || filled.length < 2) {
     return carried === null ? filled : withCoverage(filled, carried)
+  }
+
+  const firstAt = (filled[0] as Candle).at
+  const lastAt = (filled[filled.length - 1] as Candle).at
+  const projected = projectedCandles(firstAt, lastAt, every)
+  if (projected > BigInt(budget)) {
+    const span = BigInt(lastAt) - BigInt(firstAt)
+    fail(
+      'too-many-candles',
+      `Filling the ${span}ms span at ${every}ms would emit ${projected} candles, above maxCandles (${budget}). Use fill: false, a wider interval, a smaller read window/last, or explicitly raise maxCandles no higher than MAX_CANDLES (${MAX_CANDLES}).`,
+    )
   }
 
   const even: Candle[] = []

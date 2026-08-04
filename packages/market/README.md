@@ -188,6 +188,20 @@ series.ordering   // { by: 'advisory-time', exact: false, estimated: 2, note: 'â
 A candle's OHLC is exact for the trades in its bucket; *which* trades are in it is
 advisory.
 
+`fill: false` (the default) stays sparse: memory and output are proportional to
+the observed buckets, even when two trades are years apart. `fill: true`
+materializes the empty buckets between observations, so the SDK projects that
+output before allocating it and refuses more than the exported
+`DEFAULT_MAX_CANDLES` (10,000) with `KeiError('too-many-candles')`. Use sparse
+output, a wider `every`, or a smaller read window/`last` when the projection is
+larger. A deliberate `maxCandles` may raise the budget no higher than the
+exported `MAX_CANDLES` (1,000,000); invalid budgets throw
+`KeiError('bad-max-candles')`. A market read's `limit` bounds input trades per
+account; it does **not** raise this generated-output cap.
+Every non-null advisory trade time must also be a non-negative safe whole
+millisecond on both sparse and filled paths; an invalid time throws
+`KeiError('bad-candle-time')` before a candle is emitted.
+
 ### Lifecycle, reconciliation, and not trusting an index
 
 ```js
