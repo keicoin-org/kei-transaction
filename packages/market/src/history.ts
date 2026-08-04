@@ -25,8 +25,7 @@
  * `price()` and chart views can label a partial read instead of stating it flat.
  */
 
-import type { AssetId, KeiClient, SwapOffer } from '@keicoin/core'
-import { fromRaw } from '@keicoin/core'
+import { fail, type AssetId, type KeiClient, type SwapOffer } from '@keicoin/core'
 
 import type { Offer, PriceSummary, Trade, TradeOptions } from './types.js'
 import { assetIdOf, durationMs } from './util.js'
@@ -63,6 +62,12 @@ export async function readTrades(context: MarketContext, options: TradeOptions =
   const limit = accountLimitOf(options.limit, 'trade history limit')
   const asset = options.asset === undefined ? undefined : assetIdOf(options.asset)
   const quote = options.quote === undefined ? undefined : assetIdOf(options.quote)
+  // Anchor the requested interval before touching a directory or the network.
+  // A slow page must not move either edge of the range, and rows observed after
+  // the caller's advertised `asOf` do not belong in that response.
+  const asOf = tradeTime(options.asOf, () => context.now())
+  const window = options.window === undefined ? undefined : durationMs(options.window, 'window')
+  const since = window === undefined ? undefined : subtractTime(asOf, window)
   const read = {
     signal: options.signal,
     concurrency: options.concurrency,
@@ -89,51 +94,72 @@ export async function readTrades(context: MarketContext, options: TradeOptions =
   for (const raw of bought?.rows ?? []) found.set(raw.hash, raw)
   const coverage = mergeCoverage(walk.coverage, bought?.coverage)
 
-  const since =
-    options.window === undefined ? undefined : context.now() - durationMs(options.window, 'window')
-
   const matched: SwapOffer[] = []
   for (const raw of found.values()) {
     if (raw.state !== 'accepted') continue
     if (asset !== undefined && raw.asset !== asset && raw.wantAsset !== asset) continue
     if (quote !== undefined && raw.asset !== quote && raw.wantAsset !== quote) continue
-    if (since !== undefined && (raw.settledAt === null || raw.settledAt < since)) continue
+    const at = advisoryTimeOf(raw)
+    // `settledAt` is preferable, but older or degraded nodes may only retain
+    // the first-seen observation. A row with neither usable advisory time is
+    // still an observed trade: keep it so callers can report the temporal gap
+    // instead of turning partial knowledge into an apparently empty window.
+    if (at !== null && (at > asOf || (since !== undefined && at < since))) continue
     matched.push(raw)
   }
 
   // Newest first, by the node's local clock — the only ordering available across
   // two chains. The hash breaks ties so the answer is at least stable.
-  matched.sort((a, b) => (b.settledAt ?? 0) - (a.settledAt ?? 0) || a.hash.localeCompare(b.hash))
+  matched.sort((a, b) => (advisoryTimeOf(b) ?? Number.MIN_SAFE_INTEGER)
+    - (advisoryTimeOf(a) ?? Number.MIN_SAFE_INTEGER) || a.hash.localeCompare(b.hash))
   const trimmed = options.last === undefined ? matched : matched.slice(0, Math.max(0, options.last))
 
   const trades = await mapConcurrent(
     trimmed,
     async (raw): Promise<Trade> => {
-      const [give, want] = await Promise.all([context.meta(raw.asset), context.meta(raw.wantAsset)])
-      const giveAmount = fromRaw(BigInt(raw.amount), give.decimals)
-      const wantAmount = fromRaw(BigInt(raw.wantAmount), want.decimals)
+      const offer = await context.toOffer(raw)
       return {
-        hash: raw.hash,
-        from: raw.from,
+        ...offer,
         seller: raw.from,
         buyer: String(raw.acceptedBy),
-        give: { ...give, amount: giveAmount },
-        want: { ...want, amount: wantAmount },
-        price: giveAmount === 0 ? 0 : wantAmount / giveAmount,
-        to: raw.counterparty,
-        expiresAt: raw.expiresAt,
-        expired: raw.expiresAt !== null && raw.expiresAt <= context.now(),
         state: 'accepted',
-        mine: raw.from === client.address || raw.acceptedBy === client.address,
-        acceptedBy: raw.acceptedBy,
-        settledBy: raw.settledBy,
-        seenAt: raw.seenAt,
-        settledAt: raw.settledAt,
+        mine: offer.mine || raw.acceptedBy === client.address,
       }
     },
     read,
   )
   return withCoverage(trades, coverage)
+}
+
+function tradeTime(requested: number | undefined, now: () => number): number {
+  let at: number
+  try {
+    at = requested ?? now()
+  } catch (error) {
+    fail(
+      'bad-market-time',
+      `The market clock threw instead of returning a safe whole-number millisecond time: ${error instanceof Error ? error.message : String(error)}.`,
+    )
+  }
+  if (!Number.isSafeInteger(at)) {
+    fail('bad-market-time', `Trade history asOf must be a safe whole-number millisecond time; got ${String(at)}.`)
+  }
+  return at
+}
+
+function subtractTime(at: number, duration: number): number {
+  const answer = at - duration
+  if (!Number.isSafeInteger(answer)) {
+    fail('bad-duration', 'The requested trade window reaches outside safe whole-number millisecond time.')
+  }
+  return answer
+}
+
+/** Best usable node-local observation for windowing and advisory ordering. */
+function advisoryTimeOf(raw: Pick<SwapOffer, 'settledAt' | 'seenAt'>): number | null {
+  if (Number.isSafeInteger(raw.settledAt)) return raw.settledAt as number
+  if (Number.isSafeInteger(raw.seenAt)) return raw.seenAt
+  return null
 }
 
 /**

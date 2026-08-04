@@ -5,6 +5,46 @@ export type { LegMeta, MarketContext } from './history.js'
 export { assetIdOf, durationMs } from './util.js'
 
 export {
+  DEFAULT_SUBSCRIPTION_READ_TIMEOUT,
+  createAccountChainSource,
+  toUnixCandles,
+  toUnixLine,
+} from './instrument.js'
+export type {
+  AccountChainSourceOptions,
+  DataCompleteness,
+  DataState,
+  ExactPriceRatio,
+  HistoryRangeOptions,
+  InstrumentApi,
+  InstrumentBook,
+  InstrumentBookLevel,
+  InstrumentHistory,
+  InstrumentHistoryOptions,
+  InstrumentIdentity,
+  InstrumentOptions,
+  InstrumentOrderOptions,
+  InstrumentPricePoint,
+  InstrumentSnapshot,
+  InstrumentSnapshotOptions,
+  InstrumentSubscribeOptions,
+  InstrumentTicker,
+  InstrumentUpdate,
+  MarketDataSource,
+  MarketReadError,
+  ObservedRange,
+  PaginationLimitation,
+  RequestedRange,
+  SnapshotCoverage,
+  SourceProvenance,
+  StopSubscription,
+  SubscriptionStatus,
+  TimeQuality,
+  UnixCandle,
+  UnixLinePoint,
+} from './instrument.js'
+
+export {
   DEFAULT_DIRECTORY_LIMIT,
   MAX_DIRECTORY_LIMIT,
   createDirectory,
