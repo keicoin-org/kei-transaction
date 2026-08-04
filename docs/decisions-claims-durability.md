@@ -7,9 +7,9 @@ not change consensus, RPC, blocks, proofs, seed custody, or issuer custody.
 
 ## 1. The boundary is root-addressable and caller-owned
 
-`ClaimStore` has five deliberately small operations: list roots, read one raw
-record, write one raw record, atomically compare-and-set one record, and remove
-one raw record. Every operation receives
+`ClaimStore` keeps its legacy list/read/write/remove surface and adds two
+optional capability methods: atomically retain-and-admit exact bytes, and read
+only bytes carrying that adapter-level admission authority. Every operation receives
 `{ network, address }`; the root is the logical record key. The browser adapter
 stores one versioned, bounded namespace value at
 `kei:claim-store:v1:<network>:<address>`, while a database adapter can map the
@@ -24,9 +24,9 @@ The SDK never uploads proofs or takes custody on an issuer's behalf.
 ## 2. Retention is established before signing
 
 Every signing entry point, including direct `claims.claim(bundle)`, validates
-and bounds a bundle, writes a non-signable candidate, then reads its exact bytes
-back. The candidate is admitted only by an atomic compare-and-set. A refusal or
-mismatch is a typed `KeiError` and no claim is signed. A successful claim is
+and bounds a bundle, then asks the adapter to atomically retain and admit its
+exact bytes. The SDK reads those bytes back through the separate admitted-only
+surface before signing. A refusal or mismatch is a typed `KeiError` and no claim is signed. A successful claim is
 confirmed by the node before the stored record is removed, and removal is read
 back too.
 
@@ -38,14 +38,14 @@ idempotency and later reconciliation remain the authority for submissions.
 
 ## 3. Stored input is versioned, bounded, and fail-closed
 
-Each value is JSON `{ version: 3, state, bundle, integrity }`, where `state` is
-`candidate` or `admitted` and `integrity` is a domain-separated BLAKE2b-256
-digest of both the state and normalised bundle. Hydration signs only `admitted`
-records. On a candidate read-back mismatch, cleanup can replace only the exact
-candidate bytes with a quarantine tombstone; it cannot remove or overwrite a
-value another instance has admitted. A cleanup refusal is typed and remains
-fail-closed because candidate and quarantine records are never signed. The
-public finite limits are:
+Each value is JSON `{ version: 3, state, bundle, integrity }`. The
+domain-separated BLAKE2b-256 digest detects accidental corruption; it is not a
+keyed authenticator and does not grant admission. Hydration reads only values
+the adapter reports through `readAdmitted`. A rejected or mismatched raw value
+therefore remains non-signable even if it is internally valid and recomputes
+its own digest. The SDK does not delete such a value during failure cleanup,
+because another wallet instance may have admitted the same root concurrently.
+The public finite limits are:
 
 | Limit | Value |
 |---|---:|
@@ -66,17 +66,25 @@ values, seeds, keys, signatures, or adapter exception text.
 `claims.storageStatus()` is the honest typed report. It includes the adapter's
 `'persistent' | 'session'` declaration, the active namespace, and diagnostics.
 A custom store is trusted code about whether its backing service really
-survives a restart and whether compare-and-set is atomic; the SDK can verify
-immediate read-back, not a future disk.
+survives a restart and whether its optional admission capability is atomic.
+Persistent custom adapters without both capability methods fail closed before
+mutation with `claim-store-admission-unsupported`. The SDK does not claim
+protection from an adapter that violates the capability contract.
 
 The browser adapter encodes all records for one wallet/network in a single
-localStorage value and serialises every read, write, compare-and-set, and removal for that
-namespace through the origin-wide Web Locks API. A mutation therefore reloads
+localStorage value and serialises every read, write, admission, and removal for
+that namespace through the origin-wide Web Locks API. Admission reloads
 the latest snapshot while holding the exclusive lock: at 127 records, two tabs
 adding different roots cannot both report success and later lose one. One write
 reaches 128; the other receives a typed refusal with capacity/concurrency
 guidance. A later writer cannot publish a stale namespace over an acknowledged
 proof.
+
+Browser namespace schema v2 stores the admission marker separately from the
+envelope bytes. Schema-v1 records and claim-envelope v1/v2 records have no such
+authority and are never signed automatically. Their raw bytes remain available
+for an explicit re-add of the original bundle, which rewrites and admits the v3
+record safely.
 
 `createBrowserClaimStore(localStorage)` discovers `navigator.locks`. Browsers
 without Web Locks fail closed: records are not hydrated or signed, writes are

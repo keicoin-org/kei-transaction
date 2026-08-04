@@ -32,6 +32,13 @@ function claimEnvelope(
   return JSON.stringify({ version: 3, state, bundle, integrity })
 }
 
+function claimEnvelopeV2(bundle: { root: string; asset: string; amount: string; proof: string[] }): string {
+  const integrity = bytesToHex(
+    blake2b(utf8(`kei-claim-envelope-v2\n${JSON.stringify(bundle)}`), 32),
+  )
+  return JSON.stringify({ version: 2, bundle, integrity })
+}
+
 class MemoryWebStorage implements ClaimWebStorage {
   private readonly values = new Map<string, string>()
 
@@ -81,16 +88,18 @@ class RefusingClaimLockManager implements ClaimWebLockManager {
 class InspectableClaimStore implements ClaimStore {
   readonly durability = 'persistent' as const
   readonly records = new Map<string, Map<string, string>>()
+  readonly admissions = new Map<string, Set<string>>()
   writeCount = 0
   removeCount = 0
   dropWrites = false
   throwWrites = false
   alterWrites = false
+  rewriteWrite: ((value: string) => string) | undefined
   dropRemoves = false
-  dropQuarantines = false
+  dropAdmissions = false
+  lieAdmissions = false
   throwRemoves = false
-  alterReads = 0
-  beforeRead: ((scope: ClaimStoreScope, root: string) => void) | undefined
+  beforeAdmittedRead: ((scope: ClaimStoreScope, root: string) => void) | undefined
   listedRoots: readonly string[] | undefined
 
   private key(scope: ClaimStoreScope): string {
@@ -103,15 +112,16 @@ class InspectableClaimStore implements ClaimStore {
   }
 
   read(scope: ClaimStoreScope, root: string): string | null {
-    const beforeRead = this.beforeRead
-    this.beforeRead = undefined
+    return this.records.get(this.key(scope))?.get(root) ?? null
+  }
+
+  readAdmitted(scope: ClaimStoreScope, root: string): string | null {
+    const beforeRead = this.beforeAdmittedRead
+    this.beforeAdmittedRead = undefined
     beforeRead?.(scope, root)
-    const value = this.records.get(this.key(scope))?.get(root) ?? null
-    if (value !== null && this.alterReads > 0) {
-      this.alterReads -= 1
-      return `${value} `
-    }
-    return value
+    const key = this.key(scope)
+    if (!this.admissions.get(key)?.has(root)) return null
+    return this.records.get(key)?.get(root) ?? null
   }
 
   write(scope: ClaimStoreScope, root: string, value: string): void {
@@ -120,49 +130,44 @@ class InspectableClaimStore implements ClaimStore {
     if (this.dropWrites) return
     const parsed = JSON.parse(value) as {
       bundle?: { amount: string }
-      quarantine?: unknown
     }
-    if (this.dropQuarantines && parsed.quarantine) return
     if (this.alterWrites) {
       if (parsed.bundle) parsed.bundle.amount = String(BigInt(parsed.bundle.amount) + 1n)
       value = JSON.stringify(parsed)
     }
+    if (this.rewriteWrite) value = this.rewriteWrite(value)
     const key = this.key(scope)
     const records = this.records.get(key) ?? new Map<string, string>()
     records.set(root, value)
     this.records.set(key, records)
+    this.admissions.get(key)?.delete(root)
   }
 
-  compareAndSet(
-    scope: ClaimStoreScope,
-    root: string,
-    expected: string | null,
-    replacement: string | null,
-  ): boolean {
+  admit(scope: ClaimStoreScope, root: string, value: string): boolean {
     const key = this.key(scope)
+    const expected = value
+    if (this.admissions.get(key)?.has(root)) {
+      return this.records.get(key)?.get(root) === value
+    }
+    this.writeCount += 1
+    if (this.throwWrites) throw new Error('quota details must not escape')
+    if (this.dropWrites) return false
+    const parsed = JSON.parse(value) as { bundle?: { amount: string } }
+    if (this.alterWrites && parsed.bundle) {
+      parsed.bundle.amount = String(BigInt(parsed.bundle.amount) + 1n)
+      value = JSON.stringify(parsed)
+    }
+    if (this.rewriteWrite) value = this.rewriteWrite(value)
     const records = this.records.get(key) ?? new Map<string, string>()
-    if ((records.get(root) ?? null) !== expected) return false
-    const parsed = replacement === null ? null : JSON.parse(replacement) as {
-      bundle?: { amount: string }
-      state?: unknown
-    }
-    const creatingCandidate = expected === null && parsed?.state === 'candidate'
-    if (creatingCandidate) {
-      this.writeCount += 1
-      if (this.throwWrites) throw new Error('quota details must not escape')
-      if (this.dropWrites) return true
-    }
-    if (parsed?.state === 'quarantined' && this.dropQuarantines) return false
-    if (replacement === null) records.delete(root)
-    else {
-      if (creatingCandidate && this.alterWrites && parsed?.bundle) {
-        parsed.bundle.amount = String(BigInt(parsed.bundle.amount) + 1n)
-        replacement = JSON.stringify(parsed)
-      }
-      records.set(root, replacement)
-    }
-    if (records.size === 0) this.records.delete(key)
-    else this.records.set(key, records)
+    records.set(root, value)
+    this.records.set(key, records)
+    this.admissions.get(key)?.delete(root)
+    if (this.dropAdmissions) return false
+    if (this.lieAdmissions) return true
+    if (value !== expected) return false
+    const admitted = this.admissions.get(key) ?? new Set<string>()
+    admitted.add(root)
+    this.admissions.set(key, admitted)
     return true
   }
 
@@ -170,14 +175,20 @@ class InspectableClaimStore implements ClaimStore {
     this.removeCount += 1
     if (this.throwRemoves) throw new Error('remove details must not escape')
     if (this.dropRemoves) return
-    this.records.get(this.key(scope))?.delete(root)
+    const key = this.key(scope)
+    this.records.get(key)?.delete(root)
+    this.admissions.get(key)?.delete(root)
   }
 
-  inject(scope: ClaimStoreScope, root: string, value: string): void {
+  inject(scope: ClaimStoreScope, root: string, value: string, admitted = false): void {
     const key = this.key(scope)
     const records = this.records.get(key) ?? new Map<string, string>()
     records.set(root, value)
     this.records.set(key, records)
+    const admissions = this.admissions.get(key) ?? new Set<string>()
+    if (admitted) admissions.add(root)
+    else admissions.delete(root)
+    this.admissions.set(key, admissions)
   }
 }
 
@@ -266,6 +277,75 @@ describe('durable claim bundles', () => {
     }))
     expect(await afterClaimReload.claims.pending()).toHaveLength(0)
     expect(storage.length).toBe(0)
+  })
+
+  test('browser namespace v1 records migrate only after the original bundle is re-admitted', async () => {
+    const storage = new MemoryWebStorage()
+    const lockManager = new SerializedClaimLockManager()
+    const setup = remember(await Kei.start({ node, seed: PLAYER_SEED, autoClaim: false }))
+    const drop = await gems.commit([{ to: setup.address, amount: 15 }])
+    const bundle = drop.proofFor(setup.address)
+    const namespaceKey = `kei:claim-store:v1:mock:${encodeURIComponent(setup.address)}`
+    storage.setItem(namespaceKey, JSON.stringify({
+      version: 1,
+      records: [[bundle.root, claimEnvelope(bundle)]],
+    }))
+    setup.close()
+
+    let claimSubmissions = 0
+    const originalProcess = node.process.bind(node)
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
+      return originalProcess(block)
+    }
+    const migrated = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: createBrowserClaimStore(storage, { lockManager }),
+    }))
+    expect(await migrated.claims.pending()).toHaveLength(0)
+    expect((await migrated.claims.storageStatus()).diagnostics.map(({ code }) => code))
+      .toEqual(['claim-store-quarantined'])
+    expect(claimSubmissions).toBe(0)
+
+    await migrated.claims.add(bundle)
+    expect(await migrated.claims.pending()).toHaveLength(1)
+    expect(JSON.parse(storage.getItem(namespaceKey) as string).version).toBe(2)
+    migrated.close()
+
+    const reopened = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: createBrowserClaimStore(storage, { lockManager }),
+    }))
+    expect(await reopened.claims.pending()).toHaveLength(1)
+    expect(claimSubmissions).toBe(0)
+  })
+
+  test('legacy v1 and v2 envelopes remain non-signable pending explicit re-add', async () => {
+    const store = new InspectableClaimStore()
+    const setup = remember(await Kei.start({ node, seed: PLAYER_SEED, autoClaim: false }))
+    const first = await gems.commit([{ to: setup.address, amount: 5 }])
+    const second = await gems.commit([{ to: setup.address, amount: 7 }])
+    const firstBundle = first.proofFor(setup.address)
+    const secondBundle = second.proofFor(setup.address)
+    const scope = { network: 'mock', address: setup.address }
+    store.inject(scope, firstBundle.root, JSON.stringify({ version: 1, bundle: firstBundle }), true)
+    store.inject(scope, secondBundle.root, claimEnvelopeV2(secondBundle), true)
+    setup.close()
+
+    let claimSubmissions = 0
+    const originalProcess = node.process.bind(node)
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
+      return originalProcess(block)
+    }
+    const reopened = remember(await Kei.start({ node, seed: PLAYER_SEED, claimStore: store }))
+    expect(claimSubmissions).toBe(0)
+    expect((await reopened.claims.storageStatus()).diagnostics.map(({ code }) => code))
+      .toEqual(['claim-store-version', 'claim-store-version'])
   })
 
   test('a transient automatic-claim failure survives recreation and retries once', async () => {
@@ -421,7 +501,9 @@ describe('durable claim bundles', () => {
       proof: [],
     })
     for (const root of roots.slice(0, MAX_PENDING_CLAIMS - 1)) {
-      await firstStore.write(scope, root, envelope(root))
+      const value = envelope(root)
+      await firstStore.write(scope, root, value)
+      expect(await firstStore.admit?.(scope, root, value)).toBe(true)
     }
 
     node.hasClaimed = async () => false
@@ -574,9 +656,9 @@ describe('durable claim bundles', () => {
     const corruptRoot = 'A'.repeat(64)
     const versionRoot = 'B'.repeat(64)
     const largeRoot = 'C'.repeat(64)
-    store.inject(scope, corruptRoot, '{not-json')
-    store.inject(scope, versionRoot, JSON.stringify({ version: 99, bundle: {} }))
-    store.inject(scope, largeRoot, 'X'.repeat(MAX_CLAIM_RECORD_BYTES + 1))
+    store.inject(scope, corruptRoot, '{not-json', true)
+    store.inject(scope, versionRoot, JSON.stringify({ version: 99, bundle: {} }), true)
+    store.inject(scope, largeRoot, 'X'.repeat(MAX_CLAIM_RECORD_BYTES + 1), true)
 
     const originalProcess = node.process.bind(node)
     let submissions = 0
@@ -645,7 +727,7 @@ describe('durable claim bundles', () => {
     }
 
     const error = await refused(player.claims.add(drop.proofFor(player.address)))
-    expect(error.code).toBe('claim-store-readback-mismatch')
+    expect(error.code).toBe('claim-store-write-refused')
     expect(error.message).not.toContain('quota details')
 
     mismatch.dropWrites = false
@@ -693,9 +775,9 @@ describe('durable claim bundles', () => {
     expect(await gems.balanceOf(claimant.address)).toBe(13)
   })
 
-  test('a mismatched candidate is atomically quarantined across recreation', async () => {
+  test('a rejected admission leaves its raw candidate non-signable across recreation', async () => {
     const store = new InspectableClaimStore()
-    store.alterReads = 1
+    store.dropAdmissions = true
     const player = remember(await Kei.start({
       node,
       seed: PLAYER_SEED,
@@ -703,6 +785,46 @@ describe('durable claim bundles', () => {
       claimStore: store,
     }))
     const drop = await gems.commit([{ to: player.address, amount: 19 }])
+    expect((await refused(player.claims.add(drop.proofFor(player.address)))).code)
+      .toBe('claim-store-write-refused')
+    expect((await player.claims.storageStatus()).diagnostics.map(({ code }) => code)).toEqual([
+      'claim-store-quarantined',
+      'claim-store-write-refused',
+    ])
+    player.close()
+
+    const originalProcess = node.process.bind(node)
+    let claimSubmissions = 0
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
+      return originalProcess(block)
+    }
+    const reopened = remember(await Kei.start({ node, seed: PLAYER_SEED, claimStore: store }))
+    expect(claimSubmissions).toBe(0)
+    expect((await reopened.claims.storageStatus()).diagnostics.map(({ code }) => code))
+      .toEqual(['claim-store-quarantined'])
+    expect(await store.list({ network: 'mock', address: reopened.address }, 2)).toEqual([drop.root])
+  })
+
+  test('a recomputed internally-valid admitted replacement stays non-signable across recreation', async () => {
+    const store = new InspectableClaimStore()
+    store.dropRemoves = true
+    store.rewriteWrite = (value) => {
+      const record = JSON.parse(value) as {
+        bundle: { root: string; asset: string; amount: string; proof: string[] }
+      }
+      return claimEnvelope({
+        ...record.bundle,
+        amount: String(BigInt(record.bundle.amount) + 1n),
+      })
+    }
+    const player = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: store,
+    }))
+    const drop = await gems.commit([{ to: player.address, amount: 29 }])
     expect((await refused(player.claims.add(drop.proofFor(player.address)))).code)
       .toBe('claim-store-readback-mismatch')
     expect((await player.claims.storageStatus()).diagnostics.map(({ code }) => code)).toEqual([
@@ -721,43 +843,12 @@ describe('durable claim bundles', () => {
     expect(claimSubmissions).toBe(0)
     expect((await reopened.claims.storageStatus()).diagnostics.map(({ code }) => code))
       .toEqual(['claim-store-quarantined'])
-    expect(await store.list({ network: 'mock', address: reopened.address }, 2)).toEqual([drop.root])
   })
 
-  test('an altered candidate stays non-signable across recreation', async () => {
+  test('an adapter that lies about admission is caught by the separate admitted read', async () => {
     const store = new InspectableClaimStore()
-    store.alterWrites = true
-    const player = remember(await Kei.start({
-      node,
-      seed: PLAYER_SEED,
-      autoClaim: false,
-      claimStore: store,
-    }))
-    const drop = await gems.commit([{ to: player.address, amount: 29 }])
-    expect((await refused(player.claims.add(drop.proofFor(player.address)))).code)
-      .toBe('claim-store-readback-mismatch')
-    expect((await player.claims.storageStatus()).diagnostics.map(({ code }) => code)).toEqual([
-      'claim-store-quarantine-failed',
-      'claim-store-readback-mismatch',
-    ])
-    player.close()
-
-    const originalProcess = node.process.bind(node)
-    let claimSubmissions = 0
-    node.process = async (block: Block) => {
-      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
-      return originalProcess(block)
-    }
-    const reopened = remember(await Kei.start({ node, seed: PLAYER_SEED, claimStore: store }))
-    expect(claimSubmissions).toBe(0)
-    expect((await reopened.claims.storageStatus()).diagnostics.map(({ code }) => code))
-      .toEqual(['claim-store-quarantined'])
-  })
-
-  test('cleanup refusal is typed and its candidate stays non-signable after restart', async () => {
-    const store = new InspectableClaimStore()
-    store.alterReads = 1
-    store.dropQuarantines = true
+    store.lieAdmissions = true
+    store.dropRemoves = true
     const player = remember(await Kei.start({
       node,
       seed: PLAYER_SEED,
@@ -768,7 +859,7 @@ describe('durable claim bundles', () => {
     expect((await refused(player.claims.add(drop.proofFor(player.address)))).code)
       .toBe('claim-store-readback-mismatch')
     expect((await player.claims.storageStatus()).diagnostics.map(({ code }) => code)).toEqual([
-      'claim-store-quarantine-failed',
+      'claim-store-quarantined',
       'claim-store-readback-mismatch',
     ])
     player.close()
@@ -785,8 +876,34 @@ describe('durable claim bundles', () => {
       .toEqual(['claim-store-quarantined'])
   })
 
-  test('failed cleanup never replaces a concurrently admitted same-root proof', async () => {
+  test('a persistent custom adapter without admission support fails before mutation', async () => {
+    let writes = 0
+    const legacyStore: ClaimStore = {
+      durability: 'persistent',
+      list: () => [],
+      read: () => null,
+      write: () => { writes += 1 },
+      remove: () => {},
+    }
+    const player = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: legacyStore,
+    }))
+    const drop = await gems.commit([{ to: player.address, amount: 43 }])
+
+    expect((await refused(player.claims.add(drop.proofFor(player.address)))).code)
+      .toBe('claim-store-admission-unsupported')
+    expect(writes).toBe(0)
+    expect((await player.claims.storageStatus()).diagnostics.map(({ code }) => code)).toContain(
+      'claim-store-admission-unsupported',
+    )
+  })
+
+  test('a rejected admission never deletes a concurrently admitted same-root proof', async () => {
     const store = new InspectableClaimStore()
+    store.dropAdmissions = true
     const player = remember(await Kei.start({
       node,
       seed: PLAYER_SEED,
@@ -797,13 +914,12 @@ describe('durable claim bundles', () => {
     const bundle = drop.proofFor(player.address)
     const scope = { network: 'mock', address: player.address }
     const admitted = claimEnvelope(bundle)
-    store.beforeRead = (readScope, root) => store.inject(readScope, root, admitted)
+    store.beforeAdmittedRead = (readScope, root) => store.inject(readScope, root, admitted, true)
 
-    await player.claims.add(bundle)
+    expect((await refused(player.claims.add(bundle))).code).toBe('claim-store-write-refused')
 
-    expect(await store.read(scope, bundle.root)).toBe(admitted)
+    expect(await store.readAdmitted(scope, bundle.root)).toBe(admitted)
     expect(store.removeCount).toBe(0)
-    expect(await player.claims.pending()).toHaveLength(1)
   })
 
   test('a confirmed claim with failed removal reconciles without signing again', async () => {

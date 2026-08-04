@@ -58,6 +58,7 @@ export type ClaimStoreDiagnosticCode =
   | 'claim-store-unreadable'
   | 'claim-store-corrupt'
   | 'claim-store-version'
+  | 'claim-store-admission-unsupported'
   | 'claim-store-overflow'
   | 'claim-store-write-refused'
   | 'claim-store-readback-mismatch'
@@ -160,6 +161,9 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
   const diagnostics: ClaimStoreDiagnostic[] = []
   let hydration: Promise<void> | undefined
   let startup: Promise<void> | undefined
+  const admissionStore = typeof store.admit === 'function' && typeof store.readAdmitted === 'function'
+    ? store as ClaimStore & Required<Pick<ClaimStore, 'admit' | 'readAdmitted'>>
+    : null
 
   const diagnose = (diagnostic: ClaimStoreDiagnostic): void => {
     if (diagnostics.length < MAX_CLAIM_DIAGNOSTICS) diagnostics.push(diagnostic)
@@ -282,6 +286,13 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
   const hydrate = (): Promise<void> => {
     if (hydration) return hydration
     hydration = (async () => {
+      if (!admissionStore) {
+        diagnose({
+          code: 'claim-store-admission-unsupported',
+          message: 'The claim store cannot prove durable admission. Upgrade the adapter before retaining or recovering claims; no stored proof was loaded.',
+        })
+        return
+      }
       let listed: readonly string[]
       try {
         listed = await store.list(namespace, MAX_PENDING_CLAIMS + 1)
@@ -329,7 +340,7 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
       for (const root of roots) {
         let value: string | null
         try {
-          value = await store.read(namespace, root)
+          value = await admissionStore.readAdmitted(namespace, root)
         } catch {
           diagnose({
             code: 'claim-store-unreadable',
@@ -339,10 +350,18 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
           continue
         }
         if (typeof value !== 'string') {
+          let candidate: string | null = null
+          try {
+            candidate = await store.read(namespace, root)
+          } catch {
+            // The typed diagnostic below deliberately omits adapter details.
+          }
           diagnose({
-            code: 'claim-store-corrupt',
+            code: candidate === null ? 'claim-store-corrupt' : 'claim-store-quarantined',
             root,
-            message: `The claim store listed ${root} but returned no record; repair or remove that entry.`,
+            message: candidate === null
+              ? `The claim store listed ${root} but returned no admitted record; repair or remove that entry.`
+              : `Stored claim ${root} has no durable admission marker and will not be signed. Add the original bundle again with an admission-capable adapter to migrate it safely.`,
           })
           continue
         }
@@ -358,29 +377,15 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
     fail(diagnostic.code, diagnostic.message)
   }
 
-  const quarantineCandidate = async (
-    bundle: ClaimBundle,
-    candidate: string,
-    admitted: string,
-  ): Promise<'admitted' | 'quarantined' | 'failed'> => {
-    const root = bundle.root
-    const tombstone = JSON.stringify({
-      version: CLAIM_ENVELOPE_VERSION,
-      state: 'quarantined',
-      root,
-      reason: 'unverified-persistence',
-    })
+  const quarantineUnverified = async (root: string): Promise<void> => {
     try {
-      const replaced = await store.compareAndSet(namespace, root, candidate, tombstone)
-      const current = await store.read(namespace, root)
-      if (current === admitted) return 'admitted'
-      if ((replaced || current === tombstone) && current === tombstone) {
+      if (admissionStore && (await admissionStore.readAdmitted(namespace, root)) === null) {
         diagnose({
           code: 'claim-store-quarantined',
           root,
-          message: `Claim ${root} did not read back exactly, so its non-signable candidate was atomically quarantined and read back. Repair or remove that record before adding it again.`,
+          message: `Claim ${root} has no durable admission marker after an unverified persistence result and will not be signed after restart. Repair or remove any leftover candidate before adding it again.`,
         })
-        return 'quarantined'
+        return
       }
     } catch {
       // The fixed diagnostic below deliberately excludes adapter details.
@@ -388,37 +393,55 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
     diagnose({
       code: 'claim-store-quarantine-failed',
       root,
-      message: `Claim ${root} was not read back exactly and its atomic quarantine could not be proven. Only atomically admitted records can be signed, so this candidate remains fail-closed; repair or remove it before retrying.`,
+      message: `Claim ${root} was not read back exactly and the adapter could not prove that durable admission is absent. No cleanup was attempted because another wallet instance may have admitted this root; repair or replace the adapter before retrying.`,
     })
-    return 'failed'
   }
 
-  const verifyAdmitted = async (bundle: ClaimBundle, admitted: string): Promise<void> => {
-    let readBack: string | null = null
-    try {
-      readBack = await store.read(namespace, bundle.root)
-    } catch {
+  const verifyAdmitted = async (bundle: ClaimBundle, value: string): Promise<void> => {
+    const capableStore = admissionStore
+    if (!capableStore) {
       persistenceFailure({
-        code: 'claim-store-readback-mismatch',
+        code: 'claim-store-admission-unsupported',
         root: bundle.root,
-        message: `The claim store would not read ${bundle.root} back; no claim was attempted because reload recovery was not established. Fix or replace the adapter, then add the bundle again.`,
+        message: `The claim store cannot prove durable admission for ${bundle.root}; no claim was attempted. Upgrade the adapter before retaining claims.`,
       })
     }
-    if (readBack !== admitted) {
+    const admittedStore = capableStore as NonNullable<typeof capableStore>
+    let readBack: string | null = null
+    try {
+      readBack = await admittedStore.readAdmitted(namespace, bundle.root)
+    } catch {
+      await quarantineUnverified(bundle.root)
       persistenceFailure({
         code: 'claim-store-readback-mismatch',
         root: bundle.root,
-        message: `The claim store did not return the exact bundle written for ${bundle.root}; no claim was attempted. Fix or replace the adapter, then add the bundle again.`,
+        message: `The claim store would not return admitted bytes for ${bundle.root}; no claim was attempted because reload recovery was not established. Fix or replace the adapter, then add the bundle again.`,
+      })
+    }
+    if (readBack !== value) {
+      await quarantineUnverified(bundle.root)
+      persistenceFailure({
+        code: 'claim-store-readback-mismatch',
+        root: bundle.root,
+        message: `The claim store did not return the exact admitted bundle for ${bundle.root}; no claim was attempted. Fix or replace the adapter, then add the bundle again.`,
       })
     }
   }
 
   const persist = async (bundle: ClaimBundle): Promise<void> => {
-    const candidate = envelopeFor(bundle, 'candidate')
-    const admitted = envelopeFor(bundle, 'admitted')
-    let created = false
+    const value = envelopeFor(bundle, 'admitted')
+    const capableStore = admissionStore
+    if (!capableStore) {
+      persistenceFailure({
+        code: 'claim-store-admission-unsupported',
+        root: bundle.root,
+        message: `The claim store cannot prove durable admission for ${bundle.root}; no claim was attempted and nothing was written. Upgrade the adapter before retaining claims.`,
+      })
+    }
+    const admittedStore = capableStore as NonNullable<typeof capableStore>
+    let admitted = false
     try {
-      created = await store.compareAndSet(namespace, bundle.root, null, candidate)
+      admitted = await admittedStore.admit(namespace, bundle.root, value)
     } catch (error) {
       if (isClaimStoreCapacityError(error)) {
         persistenceFailure({
@@ -433,53 +456,25 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
         message: `The claim store refused ${bundle.root}; no claim was attempted because reload recovery was not established. Free storage, retry after another wallet tab finishes, or replace the adapter, then add the bundle again.`,
       })
     }
-    if (!created) {
-      let current: string | null = null
+    if (!admitted) {
+      await quarantineUnverified(bundle.root)
+      let raw: string | null = null
       try {
-        current = await store.read(namespace, bundle.root)
+        raw = await store.read(namespace, bundle.root)
       } catch {
-        // The fixed failure below deliberately excludes adapter details.
+        // The typed failure below deliberately omits adapter details.
       }
-      if (current === admitted) return
       persistenceFailure({
-        code: 'claim-store-write-refused',
+        code: raw === null || raw === value
+          ? 'claim-store-write-refused'
+          : 'claim-store-readback-mismatch',
         root: bundle.root,
-        message: `Claim ${bundle.root} changed in another wallet instance before this candidate could be retained; no claim was attempted. Reconcile that instance or retry after it finishes.`,
+        message: raw === null || raw === value
+          ? `The claim store would not durably admit ${bundle.root}; no claim was attempted. Fix or replace the adapter, then add the bundle again.`
+          : `The claim store retained different bytes while rejecting ${bundle.root}; no claim was attempted and the replacement has no admission authority. Fix or replace the adapter, then add the original bundle again.`,
       })
     }
-
-    let readBack: string | null = null
-    try {
-      readBack = await store.read(namespace, bundle.root)
-    } catch {
-      // Quarantine below uses an exact compare-and-set and cannot erase a
-      // concurrently admitted proof.
-    }
-    if (readBack !== candidate) {
-      const cleanup = await quarantineCandidate(bundle, candidate, admitted)
-      if (cleanup === 'admitted') return
-      persistenceFailure({
-        code: 'claim-store-readback-mismatch',
-        root: bundle.root,
-        message: `The claim store did not return the exact non-signable candidate written for ${bundle.root}; no claim was attempted. Fix or replace the adapter, then add the bundle again.`,
-      })
-    }
-
-    let promoted = false
-    try {
-      promoted = await store.compareAndSet(namespace, bundle.root, candidate, admitted)
-    } catch {
-      // A conforming adapter leaves the candidate unchanged on rejection.
-    }
-    if (!promoted) {
-      const cleanup = await quarantineCandidate(bundle, candidate, admitted)
-      if (cleanup === 'admitted') return
-      persistenceFailure({
-        code: 'claim-store-write-refused',
-        root: bundle.root,
-        message: `The claim store would not atomically admit ${bundle.root}; no claim was attempted. Its candidate remains non-signable until the adapter is repaired or the record is removed.`,
-      })
-    }
+    await verifyAdmitted(bundle, value)
   }
 
   const retain = async (bundle: ClaimBundle): Promise<ClaimBundle> => {

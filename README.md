@@ -214,14 +214,15 @@ const kei = await Kei.start({
   claimStore: createBrowserClaimStore(localStorage),
 })
 
-await kei.claims.add(bundle)             // read back, then atomically admitted before signing
+await kei.claims.add(bundle)             // atomically admitted and read back before signing
 await kei.claims.storageStatus()         // durability plus typed diagnostics
 ```
 
 Records are isolated by network, wallet address, and root, removed only after
 confirmed claim/reconciliation, and bounded to 128 records, 16,384 bytes each,
-128 proof hashes, and 39 decimal amount digits. Only atomically admitted records
-can be signed; rejected candidates remain quarantined across restarts. They contain award metadata but no
+128 proof hashes, and 39 decimal amount digits. Only records returned by the
+adapter's separate admission authority can be signed; rejected candidates remain
+non-signable across restarts. They contain award metadata but no
 seed or private key; browser storage is recovery, not a backup. See
 [`docs/decisions-claims-durability.md`](docs/decisions-claims-durability.md).
 
