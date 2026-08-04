@@ -475,6 +475,7 @@ function reconcileOffer(
     firstObservedAt: _first,
     lastObservedAt: _last,
     state: _state,
+    seenAt: _seenAt,
     acceptedBy: _acceptedBy,
     settledBy: _settledBy,
     settledAt: _settledAt,
@@ -491,18 +492,22 @@ function reconcileOffer(
     if (
       previous.state !== observed.state ||
       previous.acceptedBy !== observed.acceptedBy ||
-      previous.settledBy !== observed.settledBy ||
-      previous.settledAt !== observed.settledAt
+      previous.settledBy !== observed.settledBy
     ) return null
   }
   const sources = [...new Set([...previous.sources, ...observed.sources])].sort(compareText)
   if (sources.length > 32) return { overflow: true }
+  const nextSeenAt = Math.max(previous.seenAt, observed.seenAt)
+  const nextSettledAt =
+    previous.settledAt === null ? observed.settledAt : (observed.settledAt === null ? previous.settledAt : Math.max(previous.settledAt, observed.settledAt))
   return {
-    changed,
+    changed: changed || sources.length !== previous.sources.length || previous.seenAt !== nextSeenAt || previous.settledAt !== nextSettledAt,
     overflow: false,
     row: {
       ...lifecycle,
       sources,
+      seenAt: nextSeenAt,
+      settledAt: nextSettledAt,
       firstObservedAt: Math.min(previous.firstObservedAt, observed.firstObservedAt),
       lastObservedAt: Math.max(previous.lastObservedAt, observed.lastObservedAt),
     },
@@ -604,8 +609,6 @@ function offerQueryScope(query: ReturnType<typeof offerQueryOf>, cursorRevision:
     base: query.base ?? null,
     quote: query.quote ?? null,
     state: query.state ?? null,
-    limit: query.limit,
-    maxResultBytes: query.maxResultBytes,
     cursorRevision,
   }))
 }

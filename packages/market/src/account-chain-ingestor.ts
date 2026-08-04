@@ -165,9 +165,17 @@ export function createAccountChainIngestor(options: AccountChainIngestorOptions)
         })
         pages += 1
         let pageFailed = false
+        const pageStartCursor = cursor
+        let resumeAfter = 0
+        const nextCursor = async (): Promise<string | undefined> => {
+          if (page.nextCursor !== null) return page.nextCursor
+          return catalogCursorAfter(options.catalog, pageStartCursor, network, instrument, resumeAfter, signal, now, deadlineAt)
+        }
 
-        for (const participant of page.rows) {
+        for (let index = 0; index < page.rows.length; index += 1) {
+          const participant = page.rows[index]!
           stopped(signal, now, deadlineAt)
+          resumeAfter = index
           if (accounts >= budget.maxAccounts) {
             budgetStop = 'account_limit'
             break
@@ -180,6 +188,7 @@ export function createAccountChainIngestor(options: AccountChainIngestorOptions)
           if (typeof account !== 'string' || account.length > 128 || !isAddress(account)) {
             failedAccounts.push({ account: typeof account === 'string' ? account.slice(0, 128) : '[invalid account]', reason: 'catalog returned an invalid address' })
             accounts += 1
+            resumeAfter = index + 1
             continue
           }
           const perRequestLimit = Math.min(budget.maxResultsPerRequest, budget.maxResultRows - resultRows)
@@ -218,6 +227,7 @@ export function createAccountChainIngestor(options: AccountChainIngestorOptions)
             }
             failedAccounts.push({ account, reason: messageOf(error) })
             pageFailed = true
+            resumeAfter = index + 1
             continue
           }
 
@@ -233,6 +243,7 @@ export function createAccountChainIngestor(options: AccountChainIngestorOptions)
           } catch (error) {
             failedAccounts.push({ account, reason: messageOf(error) })
             pageFailed = true
+            resumeAfter = index + 1
             continue
           }
           if (resultRows + converted.totalRows > budget.maxResultRows) {
@@ -243,6 +254,7 @@ export function createAccountChainIngestor(options: AccountChainIngestorOptions)
             budgetStop = 'byte_limit'
             break
           }
+          resumeAfter = index + 1
           resultRows += converted.totalRows
           resultBytes += converted.bytes
           const commit = await options.store.materialize({
@@ -271,9 +283,13 @@ export function createAccountChainIngestor(options: AccountChainIngestorOptions)
           quarantined += commit.quarantined
         }
 
-        if (budgetStop !== null) break
+        if (budgetStop !== null) {
+          cursor = await nextCursor()
+          break
+        }
         if (pageFailed) {
           budgetStop = 'provider_error'
+          cursor = await nextCursor()
           break
         }
         cursor = page.nextCursor ?? undefined
@@ -325,7 +341,9 @@ function providerRows(
   let bytes = 0
   for (let index = 0; index < (length as number); index += 1) {
     if (!Object.hasOwn(value, index)) {
-      rejected.push({ ...context, reason: `sparse provider row at index ${index}` })
+      const row = { ...context, reason: `sparse provider row at index ${index}` }
+      rejected.push(row)
+      bytes += rowBytes(row)
       continue
     }
     try {
@@ -333,7 +351,9 @@ function providerRows(
       offers.push(offer)
       bytes += offerBytes(offer)
     } catch (error) {
-      rejected.push({ ...context, reason: messageOf(error).slice(0, 512) })
+      const row = { ...context, reason: messageOf(error).slice(0, 512) }
+      rejected.push(row)
+      bytes += rowBytes(row)
     }
   }
   return { offers, rejected, totalRows: length as number, bytes }
@@ -505,8 +525,34 @@ function offerBytes(offer: StoredMarketOfferInput): number {
   ) * 2
 }
 
+function rowBytes(row: RejectedMarketRowInput): number {
+  return JSON.stringify(row).length * 2
+}
+
 function messageOf(error: unknown): string {
   return error instanceof Error && error.message !== '' ? error.message : String(error)
+}
+
+async function catalogCursorAfter(
+  catalog: Pick<MarketCatalog, 'participants'>,
+  cursor: string | undefined,
+  network: string,
+  instrument: MarketInstrumentIdentity | undefined,
+  resumeAfter: number,
+  signal: AbortSignal | undefined,
+  now: () => number,
+  deadlineAt: number,
+): Promise<string | undefined> {
+  if (resumeAfter <= 0) return cursor
+  const replay = await catalog.participants({
+    network,
+    ...(instrument === undefined ? {} : { instrument }),
+    limit: Math.min(resumeAfter, 256),
+    ...(cursor === undefined ? {} : { cursor }),
+    deadlineMs: Math.min(remainingMs(now, deadlineAt), 60_000),
+    ...(signal === undefined ? {} : { signal }),
+  })
+  return replay.nextCursor ?? undefined
 }
 
 function ownProviderValue(value: unknown, key: string): unknown {

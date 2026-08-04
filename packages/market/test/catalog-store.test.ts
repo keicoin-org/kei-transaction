@@ -152,6 +152,22 @@ describe('MarketCatalog', () => {
     await expect(catalog.participants({ network: 'testnet', instrument: { base: KEI, quote: SWORD }, limit: 1, cursor })).rejects.toMatchObject({ code: 'bad-market-cursor' })
   })
 
+  test('catalog cursors remain valid across budget changes for the same logical filter', async () => {
+    const catalog = createMarketCatalog({ storage: createMemoryMarketStorage() })
+    await catalog.announce(announcement(ALICE, '1', 1))
+    await catalog.announce(announcement(BOB, '2', 2))
+    await catalog.announce(announcement(CAROL, '3', 3))
+    const first = await catalog.participants({ network: 'testnet', instrument: { base: SWORD, quote: KEI }, limit: 1 })
+    const second = await catalog.participants({
+      network: 'testnet',
+      instrument: { base: SWORD, quote: KEI },
+      limit: 1,
+      cursor: first.nextCursor!,
+      maxResultBytes: 11_111,
+    })
+    expect(second.rows[0]?.address).toBe(BOB)
+  })
+
   test('a maximum revision is rejected before commit and leaves the prior snapshot readable', async () => {
     const snapshot: MarketStorageEnvelope = {
       schema: 'kei-market-storage', version: 1,
@@ -292,6 +308,20 @@ describe('MarketStore', () => {
     await expect(store.offers({ network: 'testnet', state: 'open', limit: 1, cursor: first.nextCursor! })).rejects.toMatchObject({ code: 'bad-market-cursor' })
   })
 
+  test('stored-offer cursors stay valid when only byte/account/page budgets change', async () => {
+    const store = createMarketStore({ storage: createMemoryMarketStorage() })
+    await store.materialize({ offers: [offer(), offer({ hash: 'E'.repeat(64) })], checkpoint: checkpoint() })
+    const first = await store.offers({ network: 'testnet', state: 'open', limit: 1 })
+    const second = await store.offers({
+      network: 'testnet',
+      state: 'open',
+      limit: 1,
+      cursor: first.nextCursor!,
+      maxResultBytes: 200_000,
+    })
+    expect(second.rows[0]?.hash).toBe('E'.repeat(64))
+  })
+
   test('quarantines provenance overfull offers as canonical provenance overflow', async () => {
     const storage = createMemoryMarketStorage()
     const store = createMarketStore({ storage })
@@ -312,7 +342,7 @@ describe('MarketStore', () => {
       conflicts += result.conflicts
       quarantinedRows += result.quarantined
     }
-    expect({ inserted, updated, unchanged, conflicts, quarantinedRows }).toEqual({ inserted: 1, updated: 0, unchanged: 31, conflicts: 1, quarantinedRows: 1 })
+    expect({ inserted, updated, unchanged, conflicts, quarantinedRows }).toEqual({ inserted: 1, updated: 31, unchanged: 0, conflicts: 1, quarantinedRows: 1 })
     const quarantined = await store.quarantine()
     expect(quarantined).toHaveLength(1)
     expect(quarantined[0]?.reason).toBe(`provenance-overflow:${'D'.repeat(64)}`)

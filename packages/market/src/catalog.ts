@@ -367,8 +367,6 @@ function queryScope(kind: 'participants' | 'instruments', query: ParsedParticipa
         kind,
         network: query.network ?? null,
         instrument: 'instrument' in query ? query.instrument ?? null : null,
-        limit: query.limit,
-        maxResultBytes: query.maxResultBytes,
         cursorRevision: revision,
       }
     : {
@@ -376,8 +374,6 @@ function queryScope(kind: 'participants' | 'instruments', query: ParsedParticipa
         network: query.network ?? null,
         base: 'base' in query ? query.base ?? null : null,
         quote: 'quote' in query ? query.quote ?? null : null,
-        limit: query.limit,
-        maxResultBytes: query.maxResultBytes,
         cursorRevision: revision,
       }
   return cursorIntegrity('public-query-scope', JSON.stringify(normalized))
