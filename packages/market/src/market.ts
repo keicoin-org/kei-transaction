@@ -351,7 +351,15 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     }
   }
 
-  const cancelOffer = async (target: string | Offer): Promise<Cancellation> => {
+  async function cancelOfferChecked(target: string | Offer): Promise<Cancellation>
+  async function cancelOfferChecked(
+    target: string | Offer,
+    shouldSubmit: () => boolean,
+  ): Promise<Cancellation | null>
+  async function cancelOfferChecked(
+    target: string | Offer,
+    shouldSubmit: () => boolean = () => true,
+  ): Promise<Cancellation | null> {
     const hash = hashOf(target, 'cancel')
     const raw = await client.node.swapOffer(hash)
     if (!raw) {
@@ -372,6 +380,11 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
           : `Offer ${hash} was already cancelled, and the ${offer.give.symbol} is back in this wallet.`,
       )
     }
+    // The background sweep can be closed while either swapOffer() or toOffer()
+    // is awaiting the node. Check again after those reads and immediately
+    // before starting the signing/submission path. Explicit cancel() calls use
+    // the default always-true guard and are unchanged.
+    if (!shouldSubmit()) return null
     // Return `raw`'s own amount, not a re-conversion of offer.give.amount —
     // that field round-tripped through a JS number for display, and a cancel
     // built from it states a balance the ledger refuses whenever the locked
@@ -384,13 +397,17 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     return { hash: block, offer: hash, returned: offer.give }
   }
 
+  const cancelOffer = (target: string | Offer): Promise<Cancellation> => cancelOfferChecked(target)
+
   const cancelExpired = async (shouldContinue: () => boolean = () => true): Promise<Cancellation[]> => {
     const out: Cancellation[] = []
     for (const offer of await mine({ state: 'open', includeExpired: true })) {
       if (!shouldContinue()) return out
       if (!offer.expired) continue
       try {
-        out.push(await cancelOffer(offer))
+        const cancelled = await cancelOfferChecked(offer, shouldContinue)
+        if (cancelled === null) return out
+        out.push(cancelled)
       } catch (error) {
         // Somebody accepted it between the read and the cancel. That is the race
         // §9.2 describes, and losing it is a sale, not a failure.
