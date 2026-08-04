@@ -148,10 +148,15 @@ const KEI_META: LegMeta = {
   decimals: KEI_DECIMALS,
 }
 
+const DEFAULT_SWEEP_INTERVAL = 30_000
+// Node, Bun, browsers, and Workers clamp larger delays instead of waiting for
+// them. Accepting one here would turn a failed sweep into an immediate retry.
+const MAX_SWEEP_INTERVAL = 2_147_483_647
+
 export function createMarket(client: KeiClient, options: MarketOptions = {}): MarketApi {
   const now = options.now ?? Date.now
   const autoCancelExpired = options.autoCancelExpired !== false
-  const sweepInterval = options.sweepInterval ?? 30_000
+  const sweepInterval = validSweepInterval(options.sweepInterval)
   const concurrency = options.concurrency
   const metaCache = new Map<AssetId, LegMeta>()
   // In flight as well as cached, because the walks below are concurrent now: a
@@ -640,6 +645,17 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
       armedFor = undefined
     },
   }
+}
+
+function validSweepInterval(value: number | undefined): number {
+  const interval = value ?? DEFAULT_SWEEP_INTERVAL
+  if (!Number.isSafeInteger(interval) || interval <= 0 || interval > MAX_SWEEP_INTERVAL) {
+    fail(
+      'bad-sweep-interval',
+      `sweepInterval must be a whole number of milliseconds from 1 through ${MAX_SWEEP_INTERVAL}; got ${String(value)}. Omit it for the ${DEFAULT_SWEEP_INTERVAL} ms default.`,
+    )
+  }
+  return interval
 }
 
 function hashOf(target: string | Offer, verb: string): string {

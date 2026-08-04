@@ -37,6 +37,8 @@ export type MarketErrorCode =
   | 'bad-duration'
   /** `concurrency` outside the supported integer range. */
   | 'bad-concurrency'
+  /** A background expiry retry interval that a JavaScript timer cannot represent safely. */
+  | 'bad-sweep-interval'
   /** A per-account read limit that is not a positive safe integer. */
   | 'bad-limit'
   /** `offer()` without both legs, or an offer argument with no hash in it. */
@@ -75,6 +77,7 @@ const CODES = new Set<string>([
   'bad-expiry',
   'bad-duration',
   'bad-concurrency',
+  'bad-sweep-interval',
   'bad-limit',
   'bad-offer',
   'insufficient-balance',

@@ -166,6 +166,12 @@ await market.reconcile(shown) // what became of a snapshot: live, stale, gone, c
 your choice, and the background cancel is what actually removes it. `taken` and
 `cancelled` stay separate because they are different sentences to a player.
 
+If a background sweep cannot read the node, it retries after 30,000 ms. The
+`sweepInterval` option can change that cadence to a whole number of milliseconds
+from 1 through 2,147,483,647. Invalid, fractional, or timer-overflow values throw
+`KeiError('bad-sweep-interval')` when the market is created, before a sweep or
+network read can start; omit the option to keep the 30-second default.
+
 Before signing, check the chain against what you rendered:
 
 ```js

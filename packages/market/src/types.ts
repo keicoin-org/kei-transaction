@@ -209,7 +209,11 @@ export interface MarketOptions {
    * listing from the ledger, so somebody has to write it. Default true.
    */
   autoCancelExpired?: boolean
-  /** How long after an expiry to sweep, in ms. Default 30 seconds. */
+  /**
+   * Retry cadence after a failed background expiry sweep, in milliseconds.
+   * A whole number from 1 through 2,147,483,647; default 30,000 (30 seconds).
+   * Other values throw `KeiError('bad-sweep-interval')` during market creation.
+   */
   sweepInterval?: number
   /** The wallet's clock, for expiry. Replaceable so a test needs no timers. */
   now?: () => number
