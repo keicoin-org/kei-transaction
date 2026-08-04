@@ -1,6 +1,6 @@
 {
   "name": "@keicoin/claims",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Merkle-rooted claims for Kei: root building, proofs, and player-signed claim blocks.",
   "license": "MIT",
   "author": "Sano",
