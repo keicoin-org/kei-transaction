@@ -133,6 +133,34 @@ describe('duplicate sources are one source (an offer hash is the offer id)', () 
   })
 })
 
+describe('advisory trade windows preserve time-quality evidence', () => {
+  test('seenAt is the fallback clock and a fully untimed accepted row is not erased', async () => {
+    const offer = await alice.market.sell({ asset: sword, amount: 1, price: 5 })
+    await bob.market.accept(offer)
+    const liar = new TwoFacedNode(world.node)
+    let seenAt: number | null = world.clock.at - 1_000
+    liar.lieAboutSwaps((_address, offers) => offers.map((row) => row.hash === offer.hash
+      ? { ...row, settledAt: null, seenAt: seenAt as number }
+      : row))
+    const reader = await world.actor('window-reader', { node: liar })
+    const read = () => reader.market.trades({ from: [alice.address], asset: sword, window: 1_000 })
+
+    expect((await read()).map(({ hash }) => hash)).toEqual([offer.hash])
+    seenAt = world.clock.at
+    expect((await read()).map(({ hash }) => hash)).toEqual([offer.hash])
+    seenAt = world.clock.at - 1_001
+    expect(await read()).toHaveLength(0)
+    seenAt = world.clock.at + 1
+    expect(await read()).toHaveLength(0)
+    seenAt = null
+    const untimed = await read()
+    expect(untimed.map(({ hash }) => hash)).toEqual([offer.hash])
+    expect(untimed[0]?.settledAt).toBeNull()
+    expect(untimed[0]?.seenAt).toBeNull()
+    expect(untimed.coverage.complete).toBe(true)
+  }, 30_000)
+})
+
 describe('a lying read model cannot move funds (SPEC §9.2, §9.4)', () => {
   test('a node that halves the asking price gets its accept refused by the ledger', async () => {
     const offer = await alice.market.sell({ asset: sword, amount: 1, price: 10 })

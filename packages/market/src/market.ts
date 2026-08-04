@@ -53,8 +53,13 @@ import {
   type Series,
   type SeriesOptions,
 } from './series.js'
-import { assetIdOf, durationMs } from './util.js'
+import { assetDecimalsOf, assetIdOf, durationMs, finiteMarketNumber, rawAmountOf } from './util.js'
 import type { AccountSource } from './directory.js'
+import {
+  createInstrumentFactory,
+  type InstrumentApi,
+  type InstrumentOptions,
+} from './instrument.js'
 import {
   accountLimitOf,
   coverageOf,
@@ -83,6 +88,8 @@ import type {
 } from './types.js'
 
 export interface MarketApi {
+  /** Bind one explicit base/quote/source once, then read and trade it coherently. */
+  instrument(options: InstrumentOptions): InstrumentApi
   /** List an asset for Kei. The common case, and the one §9.3 calls a sale offer. */
   sell(options: SellOptions): Promise<Offer>
   /** The mirror of `sell`: lock Kei, and take the asset from whoever fills it. */
@@ -168,6 +175,29 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
   // worth asking a rate-limited node the same question eight times.
   const metaInFlight = new Map<AssetId, Promise<LegMeta>>()
 
+  const fetchMeta = async (asset: AssetId, cacheResult: boolean): Promise<LegMeta> => {
+    const id = String(asset ?? '').toUpperCase()
+    if (id === '') fail('bad-asset', `A swap names an asset.`)
+    if (id === KEI_ASSET) return KEI_META
+    const info = await client.node.assetInfo(id)
+    if (!info) fail('no-such-asset', `No asset with id ${String(asset)} exists on ${client.node.network}.`)
+    const received = String(info.id ?? '').toUpperCase()
+    if (received !== id) {
+      fail(
+        'asset-info-mismatch',
+        `The node answered metadata requested for asset ${id} with asset ${received}. Retry against a synced node; this response was not cached.`,
+      )
+    }
+    const found: LegMeta = {
+      asset: id,
+      symbol: info.symbol,
+      name: info.name,
+      decimals: assetDecimalsOf(info.decimals, `Asset ${id} decimals`),
+    }
+    if (cacheResult) metaCache.set(id, found)
+    return found
+  }
+
   const meta = async (asset: AssetId): Promise<LegMeta> => {
     const id = String(asset ?? '').toUpperCase()
     if (id === '') fail('bad-asset', `A swap names an asset — Kei itself is ${KEI_ASSET}.`)
@@ -176,44 +206,28 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     if (cached) return cached
     const pending = metaInFlight.get(id)
     if (pending) return pending
-    const lookup = (async (): Promise<LegMeta> => {
-      const info = await client.node.assetInfo(id)
-      if (!info) {
-        fail('no-such-asset', `No asset with id ${String(asset)} exists on ${client.node.network}.`)
-      }
-      const received = String(info.id ?? '').toUpperCase()
-      if (received !== id) {
-        fail(
-          'asset-info-mismatch',
-          `The node answered metadata requested for asset ${id} with asset ${received}. Retry against a synced node; this response was not cached.`,
-        )
-      }
-      const found: LegMeta = {
-        // The request is authoritative. Metadata can describe an asset, but a
-        // stale or hostile node response cannot rename the leg that is read,
-        // balanced, signed, or submitted.
-        asset: id,
-        symbol: info.symbol,
-        name: info.name,
-        decimals: info.decimals,
-      }
-      metaCache.set(id, found)
-      return found
-    })().finally(() => metaInFlight.delete(id))
+    const lookup = fetchMeta(id, true).finally(() => metaInFlight.delete(id))
     metaInFlight.set(id, lookup)
     return lookup
   }
 
-  const toOffer = async (raw: SwapOffer, checkedNow?: number): Promise<Offer> => {
-    const [give, want] = await Promise.all([meta(raw.asset), meta(raw.wantAsset)])
-    const giveAmount = fromRaw(BigInt(raw.amount), give.decimals)
-    const wantAmount = fromRaw(BigInt(raw.wantAmount), want.decimals)
+  const offerFrom = (
+    raw: SwapOffer,
+    give: LegMeta,
+    want: LegMeta,
+    giveRaw: bigint,
+    wantRaw: bigint,
+    checkedNow?: number,
+  ): Offer => {
+    const giveAmount = finiteMarketNumber(fromRaw(giveRaw, give.decimals), `Offer ${raw.hash} give amount`)
+    const wantAmount = finiteMarketNumber(fromRaw(wantRaw, want.decimals), `Offer ${raw.hash} want amount`)
+    const price = finiteMarketNumber(wantAmount / giveAmount, `Offer ${raw.hash} price`)
     return {
       hash: raw.hash,
       from: raw.from,
-      give: { ...give, amount: giveAmount },
-      want: { ...want, amount: wantAmount },
-      price: giveAmount === 0 ? 0 : wantAmount / giveAmount,
+      give: { ...give, amount: giveAmount, raw: raw.amount },
+      want: { ...want, amount: wantAmount, raw: raw.wantAmount },
+      price,
       to: raw.counterparty,
       expiresAt: raw.expiresAt,
       expired: raw.expiresAt !== null && raw.expiresAt <= (checkedNow ?? now()),
@@ -224,6 +238,20 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
       seenAt: raw.seenAt,
       settledAt: raw.settledAt,
     }
+  }
+
+  const toOffer = async (raw: SwapOffer, checkedNow?: number): Promise<Offer> => {
+    const giveRaw = rawAmountOf(raw.amount, `Offer ${raw.hash} give quantity`)
+    const wantRaw = rawAmountOf(raw.wantAmount, `Offer ${raw.hash} want quantity`)
+    const [give, want] = await Promise.all([meta(raw.asset), meta(raw.wantAsset)])
+    return offerFrom(raw, give, want, giveRaw, wantRaw, checkedNow)
+  }
+
+  const toFreshOffer = async (raw: SwapOffer): Promise<Offer> => {
+    const giveRaw = rawAmountOf(raw.amount, `Offer ${raw.hash} give quantity`)
+    const wantRaw = rawAmountOf(raw.wantAmount, `Offer ${raw.hash} want quantity`)
+    const [give, want] = await Promise.all([fetchMeta(raw.asset, false), fetchMeta(raw.wantAsset, false)])
+    return offerFrom(raw, give, want, giveRaw, wantRaw)
   }
 
   const context: MarketContext = { client, meta, now, toOffer }
@@ -253,7 +281,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
   const lockedIn = async (asset: AssetId): Promise<bigint> => {
     let total = 0n
     for (const raw of await client.node.accountSwaps(client.address, { state: 'open' })) {
-      if (raw.asset === asset) total += BigInt(raw.amount)
+      if (raw.asset === asset) total += rawAmountOf(raw.amount, `Open offer ${raw.hash} locked quantity`)
     }
     return total
   }
@@ -400,7 +428,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
         `No offer with hash ${hash} exists on ${client.node.network}. An offer's hash is its id — read it from market.offers() rather than typing it.`,
       )
     }
-    const offer = await toOffer(raw)
+    const offer = acceptOptions.expect === undefined ? await toOffer(raw) : await toFreshOffer(raw)
     if (offer.from === client.address) {
       fail(
         'self-accept',
@@ -428,7 +456,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     // Sign `raw`'s own wantAsset/wantAmount, not offer.want.amount — that field
     // round-tripped through a JS number for display and loses precision above
     // Number.MAX_SAFE_INTEGER. The chain only ever sees the raw string.
-    const wantRaw = BigInt(raw.wantAmount)
+    const wantRaw = rawAmountOf(raw.wantAmount, `Offer ${raw.hash} want quantity`)
     await requireSpendable(offer.want, wantRaw, 'this offer asks for')
 
     const { hash: block } = await client.submitAsset(
@@ -491,7 +519,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     // sees the raw string.
     const { hash: block } = await client.submitAsset(
       { kind: 'swap_cancel', offer: hash },
-      raw.asset === KEI_ASSET ? BigInt(raw.amount) : 0n,
+      raw.asset === KEI_ASSET ? rawAmountOf(raw.amount, `Offer ${raw.hash} refund quantity`) : 0n,
     )
     return { hash: block, offer: hash, returned: offer.give }
   }
@@ -619,7 +647,27 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     return summarise(matched, id, quote)
   }
 
+  const offer = (offerOptions: OfferOptions): Promise<Offer> => {
+    if (!offerOptions?.give || !offerOptions?.want) {
+      fail(
+        'bad-offer',
+        'market.offer() takes { give: { asset, amount }, want: { asset, amount } }. For a plain sale use market.sell({ asset, price }).',
+      )
+    }
+    return publish(offerOptions.give, offerOptions.want, offerOptions.to, offerOptions)
+  }
+
+  const instrumentFactory = createInstrumentFactory({
+    network: client.node.network,
+    now,
+    readBook: (bookOptions) => readBook(context, { concurrency, ...bookOptions }),
+    readTrades: (tradeOptions) => readTrades(context, { concurrency, ...tradeOptions }),
+    offer,
+    accept,
+  })
+
   return {
+    instrument: instrumentFactory.instrument,
     sell: (sell) =>
       publish(
         { asset: sell.asset, amount: sell.amount ?? 1 },
@@ -634,15 +682,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
         bid.to,
         bid,
       ),
-    offer: (options) => {
-      if (!options?.give || !options?.want) {
-        fail(
-          'bad-offer',
-          'market.offer() takes { give: { asset, amount }, want: { asset, amount } }. For a plain sale use market.sell({ asset, price }).',
-        )
-      }
-      return publish(options.give, options.want, options.to, options)
-    },
+    offer,
     accept,
     cancel: cancelOffer,
     cancelExpired,
@@ -702,6 +742,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     lifeOf: (offer) => classify(offer, { viewer: client.address, now }),
 
     close() {
+      instrumentFactory.close()
       backgroundClosed = true
       sweepEpoch += 1
       if (timer !== undefined) clearTimeout(timer)

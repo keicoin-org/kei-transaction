@@ -32,6 +32,8 @@ export type MarketErrorCode =
   | 'no-such-asset'
   /** A node returned metadata for a different public asset id. Nothing was cached or signed. */
   | 'asset-info-mismatch'
+  /** Asset metadata carried an unsafe or unsupported decimal count. */
+  | 'bad-asset-metadata'
   /** An amount or a price that is not a positive number. */
   | 'bad-amount'
   /** `expiresIn` and `expiresAt` together, or an `expiresAt` that is not a time. */
@@ -44,6 +46,12 @@ export type MarketErrorCode =
   | 'bad-candle-time'
   /** A generated-candle budget that is not a positive safe integer within the public cap. */
   | 'bad-max-candles'
+  /** An instrument poll listener or timing option is not usable. */
+  | 'bad-subscription'
+  /** The market clock did not return a safe whole-number millisecond time. */
+  | 'bad-market-time'
+  /** A displayed level belongs to a different base/quote instrument. */
+  | 'wrong-instrument'
   /** `concurrency` outside the supported integer range. */
   | 'bad-concurrency'
   /** A built-in directory retention limit that is invalid or above its absolute cap. */
@@ -108,17 +116,23 @@ export type MarketErrorCode =
   | 'bad-market-clock'
   /** One indivisible catalog/store result cannot fit the caller's byte budget. */
   | 'market-result-too-large'
+  /** One bounded instrument refresh exceeded its configured deadline. */
+  | 'read-timeout'
 
 const CODES = new Set<string>([
   'bad-asset',
   'no-such-asset',
   'asset-info-mismatch',
+  'bad-asset-metadata',
   'bad-amount',
   'bad-expiry',
   'bad-duration',
   'too-many-candles',
   'bad-candle-time',
   'bad-max-candles',
+  'bad-subscription',
+  'bad-market-time',
+  'wrong-instrument',
   'bad-concurrency',
   'bad-directory-limit',
   'too-many-accounts',
@@ -152,6 +166,7 @@ const CODES = new Set<string>([
   'market-deadline',
   'bad-market-clock',
   'market-result-too-large',
+  'read-timeout',
 ])
 
 /**
