@@ -677,6 +677,28 @@ describe('update bursts are coalesced across every listener', () => {
     currentOff()
   })
 
+  test('registering the same callback twice still delivers once and either unsubscribe removes it', async () => {
+    const h = harness()
+    h.node.setHoldings(['A000'])
+    const seen: WalletSummary[] = []
+    const listener = (summary: WalletSummary): void => {
+      seen.push(summary)
+    }
+    const firstOff = h.wallet.on('change', listener)
+    const secondOff = h.wallet.on('change', listener)
+
+    h.update()
+    await drain(h.node)
+    expect(seen).toHaveLength(1)
+
+    secondOff()
+    h.update()
+    await flush()
+    expect(seen).toHaveLength(1)
+
+    firstOff()
+  })
+
   test('a throwing listener does not stop the others, or the next update', async () => {
     const h = harness()
     h.node.setHoldings(['A000'])
