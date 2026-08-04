@@ -654,6 +654,48 @@ published outside that range may as well not exist. The **npm** row above is
 that lesson learned the expensive way, and this section exists so the next
 release is read as a set rather than as nine independent publishes.
 
+### Unreleased — coordinated market-safety release (`0.8.0` candidate)
+
+This release candidate is not published. At its opening on 4 August 2026, the
+npm registry still reported the complete `0.7.0` graph below as latest. The
+candidate advances only packages whose public surface or dependency floor
+changed; the other graph members keep their existing registry versions and do
+not need replacement tarballs.
+
+| Package | Published | Candidate | Why |
+|---|---:|---:|---|
+| `@keicoin/core` | `0.5.0` | `0.5.0` | Unchanged; market's safety work does not change its core dependency |
+| `@keicoin/work` | `0.4.1` | `0.4.1` | Unchanged |
+| `@keicoin/claims` | `0.5.1` | `0.5.1` | Unchanged |
+| `@keicoin/tokens` | `0.5.2` | `0.5.2` | Unchanged |
+| `@keicoin/market` | `0.3.0` | **`0.4.0`** | Minor. Refuses asset-metadata identity mismatches; bounds long-expiry timers, generated candles, directories, and total account walks; validates custom account sources and matched candle times; preserves safe negative candle buckets; ranks book levels by exact cross-multiplied price ratios; and exports the new bounds and typed error codes |
+| `@keicoin/wallet` | `0.5.0` | `0.5.0` | Unchanged; it does not depend on market |
+| `@keicoin/economy` | `0.2.1` | **`0.2.2`** | Patch. Source and exports are unchanged; its market floor moves to `^0.4.0` so the coordinated install cannot retain an older market copy |
+| `@keicoin/player-economy` | `0.1.1` | **`0.1.2`** | Patch. Source and exports are unchanged; its market floor moves to `^0.4.0` for the same single-copy guarantee |
+| `kei-transaction` | `0.7.0` | **`0.8.0`** | Minor. Re-exports `DEFAULT_MAX_CANDLES`, `MAX_CANDLES`, `MAX_ACCOUNTS_PER_WALK`, and `MAX_DIRECTORY_LIMIT`, and moves its market/economy/player-economy ranges to the candidate graph |
+
+The market's new constants and `MarketErrorCode` members are additive public
+surface, and its defensive refusals deliberately tighten previously accepted
+runtime inputs. Under this repository's strict pre-1.0 policy that warrants a
+market minor rather than a patch. The umbrella also takes a minor because it
+re-exports that surface. Economy and player economy contain no source change,
+but `^0.3.0` cannot select market `0.4.0`, so their dependency-only releases are
+patches. Core, work, claims, tokens, and wallet neither changed nor depend on
+market and remain byte-for-byte registry dependencies.
+
+The release incorporates the corrective sequence in PRs
+[#76](https://github.com/keicoin-org/kei-transaction/pull/76),
+[#77](https://github.com/keicoin-org/kei-transaction/pull/77),
+[#78](https://github.com/keicoin-org/kei-transaction/pull/78),
+[#79](https://github.com/keicoin-org/kei-transaction/pull/79),
+[#81](https://github.com/keicoin-org/kei-transaction/pull/81),
+[#84](https://github.com/keicoin-org/kei-transaction/pull/84),
+[#88](https://github.com/keicoin-org/kei-transaction/pull/88), and
+[#91](https://github.com/keicoin-org/kei-transaction/pull/91). There is no wire,
+ledger, or consensus change. Publication remains market first, then the two
+dependency-only consumers, then the umbrella; the release script still checks
+the unchanged graph members' reviewed integrities before skipping them.
+
 ### `0.7.0` — published 4 August 2026
 
 This coordinated set is on npm. Fresh empty projects installed
