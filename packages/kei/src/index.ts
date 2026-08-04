@@ -69,6 +69,7 @@ export type {
   ClientEvents,
   CommitInfo,
   Holding,
+  HttpNodeOptions,
   KeiNode,
   KeyPair,
   MockRpcOptions,
