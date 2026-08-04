@@ -18,7 +18,7 @@ const packageDirectories = [
 
 // Bun 1.3.0 applies this file default to hooks; its runtime does not yet accept
 // the per-hook timeout argument described by the newer installed type package.
-// Each test below retains its tighter explicit 30-second budget.
+// Each test below also keeps an explicit 60-second bound.
 setDefaultTimeout(60_000)
 
 function shellPath(path: string): string {
