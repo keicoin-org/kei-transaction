@@ -279,6 +279,35 @@ describe('purchases', () => {
     expect(await gems.balanceOf(player.address)).toBe(150)
   })
 
+  test('acceptTopUps uses exact math for decimal payment amounts', async () => {
+    const shards = await game.token.issue({ name: 'Shards', symbol: 'SHARD', decimals: 0, swap: 'one-way' })
+    game.acceptTopUps({ token: shards, rate: 100 })
+
+    await player.faucet(2)
+    await player.pay({ to: game.address, amount: 0.29 })
+
+    await waitFor(async () => (await shards.balanceOf(player.address)) === 29)
+    await player.sync()
+    expect(await shards.balanceOf(player.address)).toBe(29)
+  })
+
+  test('acceptTopUps floors to the token decimals', async () => {
+    const gems = await game.token.issue({
+      name: 'Gem Fragments',
+      symbol: 'GF',
+      decimals: 2,
+      swap: 'one-way',
+    })
+    game.acceptTopUps({ token: gems, rate: 0.333 })
+
+    await player.faucet(2)
+    await player.pay({ to: game.address, amount: 1 })
+
+    await waitFor(async () => (await gems.balanceOf(player.address)) === 0.33)
+    await player.sync()
+    expect(await gems.balanceOf(player.address)).toBe(0.33)
+  })
+
   test('acceptTopUps refuses a token whose own policy says it cannot be bought', async () => {
     const earned = await game.token.issue({ name: 'Glory', symbol: 'GLORY', swap: 'off' })
     expect(() => game.acceptTopUps({ token: earned, rate: 10 })).toThrow(/swap: 'off'/)

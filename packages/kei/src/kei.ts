@@ -24,6 +24,7 @@ import {
   KEI_DECIMALS,
   KeiClient,
   MockNode,
+  formatRaw,
   fail,
   keyPairFromSeed,
   normalizeSeed,
@@ -452,9 +453,9 @@ export class Kei {
 
     return this.onPayment(async (payment) => {
       if (payment.amount < minimum || payment.amount <= 0) return
-      const units = floorTo(payment.amount * rate, token.decimals)
-      if (units <= 0) return
-      await token.mint(payment.from, units)
+      const units = multiplyFloor(payment.amount, rate, token.decimals)
+      if (units <= 0n) return
+      await token.mint(payment.from, formatRaw(units, token.decimals))
     })
   }
 
@@ -473,11 +474,56 @@ function issuerOnly(method: string): never {
 }
 
 /** Round down to what the token can actually represent. */
-function floorTo(value: number, decimals: number): number {
-  const scale = 10 ** decimals
-  return Math.floor(value * scale) / scale
+function multiplyFloor(value: number, multiplier: number, decimals: number): bigint {
+  const amount = toDecimal(value, 'Top-up payment')
+  const rate = toDecimal(multiplier, 'Top-up rate')
+  const numerator = amount.coefficient * rate.coefficient
+  const scaleDelta = amount.decimals + rate.decimals - decimals
+
+  if (scaleDelta <= 0) {
+    return numerator * 10n ** BigInt(-scaleDelta)
+  }
+  return numerator / 10n ** BigInt(scaleDelta)
 }
 
+/** Parse a decimal number into integer digits plus the number of scaled places. */
+function toDecimal(value: number, label: string): { coefficient: bigint; decimals: number } {
+  if (!Number.isFinite(value)) {
+    fail('bad-amount', `${label} must be a finite number - got ${String(value)}.`)
+  }
+  const text = decimalString(value)
+  if (text.startsWith('-')) {
+    fail('bad-amount', `${label} cannot be negative - got ${text}.`)
+  }
+  const match = /^\+?(\d*)(?:\.(\d*))?$/.exec(text)
+  if (!match || (match[1] === '' && (match[2] ?? '') === '')) {
+    fail('bad-amount', `${label} must be a decimal number like 1.5 - got "${text}".`)
+  }
+  const whole = match[1] === '' ? '0' : match[1]
+  const fraction = match[2] ?? ''
+  return { coefficient: BigInt(whole + fraction), decimals: fraction.length }
+}
+
+/** Expand a JS number into a plain decimal string, exponent notation included. */
+function decimalString(value: number): string {
+  const text = String(value)
+  if (!text.includes('e') && !text.includes('E')) return text
+
+  const [mantissa = '0', exponentText = '0'] = text.toLowerCase().split('e')
+  const exponent = Number(exponentText)
+  const negative = mantissa.startsWith('-')
+  const digits = mantissa.replace(/^[-+]/, '')
+  const [whole = '0', fraction = ''] = digits.split('.')
+  const flat = whole + fraction
+  const pointAt = whole.length + exponent
+
+  let out: string
+  if (pointAt <= 0) out = '0.' + '0'.repeat(-pointAt) + flat
+  else if (pointAt >= flat.length) out = flat + '0'.repeat(pointAt - flat.length)
+  else out = flat.slice(0, pointAt) + '.' + flat.slice(pointAt)
+
+  return (negative ? '-' : '') + out
+}
 /**
  * Testnet is the right place to build and the wrong place to ship. Its Kei is
  * not worth anything and its chain can be reset without notice, so a game that
@@ -556,3 +602,4 @@ async function resolvePlayerKeys(
 }
 
 export { KEI_DECIMALS }
+
