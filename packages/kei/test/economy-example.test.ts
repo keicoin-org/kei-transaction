@@ -15,7 +15,19 @@ const example = resolve(import.meta.dir, '../../../examples/economy/shop.js')
 
 describe('examples/economy', () => {
   test('runs end to end, with no arguments and no network', async () => {
-    const proc = Bun.spawn(['bun', example], { stdout: 'pipe', stderr: 'pipe' })
+    // Plain text, whatever the terminal running the suite prefers. The example
+    // prints balances as values rather than strings, and Bun colours an
+    // inspected value when the environment forces colour — so a developer with
+    // FORCE_COLOR set watches this fail on escape codes between "gold after"
+    // and "30", which says nothing about the example.
+    // `process.execPath` rather than 'bun': the child gets an explicit
+    // environment, and a spread of `process.env` on Windows does not
+    // necessarily carry a `PATH` the spawn can look a bare name up in.
+    const proc = Bun.spawn([process.execPath, example], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
+    })
     const [exitCode, stdout, stderr] = await Promise.all([
       proc.exited,
       new Response(proc.stdout).text(),
