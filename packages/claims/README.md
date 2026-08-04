@@ -32,6 +32,13 @@ A forged proof, a forged amount, or a second claim from the same account is reje
 by the ledger, not by the SDK. Roots are salted, so two identical batches are two
 distinct drops.
 
+The salt is a leaf like any other, and `drop.saltProof` is its path to the root.
+Nothing claims against it — a salt is not an entitlement — but it is space in the
+tree the root already commits to, and a caller that puts something meaningful in
+the salt can prove it is there afterwards. `@keicoin/economy` uses exactly that to
+bind a loot table's digest to the batch published for it. For a random salt the
+path proves only that the salt is this root's, which is true and uninteresting.
+
 ## Status
 
 **M3 of eleven.** The public API now uses a real node at

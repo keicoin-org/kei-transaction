@@ -47,7 +47,14 @@ import {
   type PlayerToken,
 } from '@keicoin/tokens'
 import { createMarket, type MarketApi } from '@keicoin/market'
-import { createEconomy, type EconomyApi, type Recipe, type RecipeSpec } from '@keicoin/economy'
+import {
+  createEconomy,
+  type DropTable,
+  type DropTableSpec,
+  type EconomyApi,
+  type Recipe,
+  type RecipeSpec,
+} from '@keicoin/economy'
 import { createWorkProvider } from '@keicoin/work'
 import { createWallet, type WalletApi } from '@keicoin/wallet'
 
@@ -93,6 +100,13 @@ export interface StartOptions {
    * `kei.economy`, and more can be added later with `economy.define()`.
    */
   recipes?: Iterable<Recipe | RecipeSpec>
+  /**
+   * The loot tables, from the same shared file (SPEC §5.5). The server rolls
+   * them and publishes one block per batch; the browser registers them so it can
+   * check that a batch really was published for the odds it was shown, before it
+   * claims anything.
+   */
+  tables?: Iterable<DropTable | DropTableSpec>
 }
 
 export interface ServerOptions extends StartOptions {
@@ -147,7 +161,10 @@ export class Kei {
   readonly wallet: WalletApi
   /** Offers, atomic settlement, and price history read from the chain (SPEC §9). */
   readonly market: MarketApi
-  /** Rewards, sinks, shops and crafts, declared as recipes and dry-run first. */
+  /**
+   * Rewards, sinks, shops and crafts, declared as recipes and dry-run first —
+   * and loot tables, rolled into one issuer block a whole party claims from.
+   */
   readonly economy: EconomyApi
 
   private constructor(
@@ -157,6 +174,7 @@ export class Kei {
       autoClaim?: boolean
       autoCancelExpired?: boolean
       recipes?: Iterable<Recipe | RecipeSpec>
+      tables?: Iterable<DropTable | DropTableSpec>
     },
   ) {
     this.client = client
@@ -174,6 +192,7 @@ export class Kei {
     this.economy = createEconomy(client, {
       market: this.market,
       ...(options.recipes === undefined ? {} : { recipes: options.recipes }),
+      ...(options.tables === undefined ? {} : { tables: options.tables }),
     })
 
     const get = (symbolOrId: string, issuer?: string): Promise<PlayerToken> =>
@@ -251,6 +270,7 @@ export class Kei {
       ...(options.autoClaim === undefined ? {} : { autoClaim: options.autoClaim }),
       ...(options.autoCancelExpired === undefined ? {} : { autoCancelExpired: options.autoCancelExpired }),
       ...(options.recipes === undefined ? {} : { recipes: options.recipes }),
+      ...(options.tables === undefined ? {} : { tables: options.tables }),
     })
     await client.start(options.autoReceive === false ? { autoReceive: false } : {})
     return kei

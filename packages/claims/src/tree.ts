@@ -43,6 +43,18 @@ export interface BuiltCommit {
   recipients: string[]
   /** What made this root unique. Worth logging; not worth hiding. */
   salt: string
+  /**
+   * The sibling path from the salt leaf to the root.
+   *
+   * Nothing claims against it — the salt is not an entitlement. It is here
+   * because a salt that means something is a salt somebody wants to check: a
+   * drop table hashes itself into the salt, and this path is what lets a player
+   * fold `saltLeaf(salt)` up to a root the ledger already accepted and see that
+   * the batch really was published for the table the game showed them
+   * (`@keicoin/economy`, SPEC §5.5). For a random salt it proves only that the
+   * salt is this root's, which is true and uninteresting.
+   */
+  saltProof: string[]
   /** The bundle for one recipient, ready to hand over or serialise. */
   proofFor(address: string): ClaimBundle
   amountFor(address: string): string
@@ -105,20 +117,24 @@ export function buildCommit(options: BuildCommitOptions): BuiltCommit {
   let total = 0n
   for (const amount of merged.values()) total += amount
 
+  const pathTo = (leafIndex: number): string[] => {
+    const path: string[] = []
+    let position = leafIndex
+    for (let level = 0; level < layers.length - 1; level++) {
+      const layer = layers[level] as string[]
+      const sibling = position % 2 === 0 ? layer[position + 1] ?? layer[position] : layer[position - 1]
+      path.push(sibling as string)
+      position = Math.floor(position / 2)
+    }
+    return path
+  }
+
   const proofFor = (address: string): ClaimBundle => {
     const index = indexOf.get(address)
     if (index === undefined) {
       fail('not-in-commit', `${address} is not in this drop, so there is no proof to give them.`)
     }
-    const proof: string[] = []
-    let position = index
-    for (let level = 0; level < layers.length - 1; level++) {
-      const layer = layers[level] as string[]
-      const sibling = position % 2 === 0 ? layer[position + 1] ?? layer[position] : layer[position - 1]
-      proof.push(sibling as string)
-      position = Math.floor(position / 2)
-    }
-    return { root, asset, amount: (merged.get(address) as bigint).toString(), proof }
+    return { root, asset, amount: (merged.get(address) as bigint).toString(), proof: pathTo(index) }
   }
 
   return {
@@ -130,6 +146,8 @@ export function buildCommit(options: BuildCommitOptions): BuiltCommit {
     total: total.toString(),
     recipients,
     salt,
+    // The salt is the last leaf, always: it is appended after the recipients.
+    saltProof: pathTo(leaves.length - 1),
     proofFor,
     amountFor: (address) => (merged.get(address) ?? 0n).toString(),
   }

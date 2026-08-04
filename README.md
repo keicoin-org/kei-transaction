@@ -206,6 +206,54 @@ When a batch is old, close it: `await gems.close(drop.root)`. Closed roots take
 no further claims and become prunable. Nothing expires on a timer — this chain
 has no clock, deliberately.
 
+## Loot tables: the odds, published before the fight
+
+`commit()` is the mechanism. A **drop table** is what a game designer actually
+writes — declared in a file both halves of the game import, like a recipe.
+
+```js
+// loot.js — the server and the browser import this same file
+export const dragonHoard = defineDropTable({
+  id: 'dragon-hoard',
+  drops: [
+    { asset: { symbol: 'GOLD' }, amount: 50, weight: 60 },
+    { asset: { symbol: 'SWORD' },            weight: 10 },
+  ],
+  nothing: 30,              // …and the rest of the time, nothing
+  issuer: GAME_ADDRESS,
+})
+
+dragonHoard.odds   // [{ drop, chance: 0.6 }, { drop, chance: 0.1 }, { drop: null, chance: 0.3 }]
+```
+
+```js
+// Game server: one roll per player, one block per asset, however big the party
+const drop = await game.economy.drop(dragonHoard, party)
+send(playerA, drop.awardFor(playerA))    // plain JSON; null if they rolled nothing
+
+// Player: check it, then claim it
+const { symbol, quantity, chance } = await kei.economy.verifyDrop(award)
+await kei.claims.add(award)
+```
+
+The table hashes to a digest, and the digest is bound into the salt of the root
+the issuer publishes. `verifyDrop()` folds two paths up to that root — the one
+the ledger already accepted — and gets two facts out of one block: **the batch
+was published for the table you were shown**, and **it owes you this**.
+
+**Be exact about what that is not: it is not verifiable randomness.** The roll
+happens on the game's server, and nothing here proves the weights were honoured.
+A game that publishes a 1% sword and never rolls one is not caught by this. What
+is caught is duller and far more common — a table quietly rewritten between the
+announcement and the drop, an award for something the table never listed, an
+amount nobody was promised, and an award drawn for one player and handed to
+another. Each of those is a sentence out of `verifyDrop()` before anything is
+claimed.
+
+`drop.close()` closes every root in the batch, and refuses while anybody still
+has an unclaimed entitlement in it — closing over one is not housekeeping, it is
+taking their loot back. Pass `{ force: true }` when you mean it.
+
 ## The market
 
 An auction house is usually weeks of work: listings, bids, settlement, price
@@ -382,7 +430,7 @@ M6 of eleven. What exists:
 | **The demo** | [Button](../button) — playable single-player, every number on the chain and none in a database |
 | **The market** | `@keicoin/market@0.1.0` — offers, atomic settlement, price history, all read from the chain. Published; `0.1.0` rather than `0.3.0` because it is the newest package here and has the least mileage |
 | **The wallet panel** | `WalletPanel.mount()` is real and tested end to end, with the SPEC §6.6 seed-reveal friction |
-| **Recipes** | `@keicoin/economy@0.1.0` — declare a reward, a sink, or a shop once, dry-run it, and run only the half this key may sign. It adds no consensus rules: every block it writes is one the SDK could already write by hand. Unpublished as of this commit |
+| **Recipes and loot tables** | `@keicoin/economy@0.1.0` — declare a reward, a sink, or a shop once, dry-run it, and run only the half this key may sign; declare a drop table once, roll a party into one issuer block, and let the browser check the batch was published for the odds it was shown. It adds no consensus rules: every block it writes is one the SDK could already write by hand. Unpublished as of this commit |
 | **npm** | `kei-transaction@0.3.0` and every `@keicoin/*` package are published, carrying M5 and M6; `@keicoin/market` at `0.1.0`. `create-kei-game@0.2.0` was released before the package moved to its standalone repository; future harness releases are owned there |
 | **The harness** | [`create-kei-game`](https://github.com/keicoin-org/create-kei-game) owns `npm create kei-game`; its M9 transition into an ongoing game-creation harness is tracked in [PR #1](https://github.com/keicoin-org/create-kei-game/pull/1) |
 | **The work server** | `@keicoin/work@0.2.0` exports the bounded handler/server integration and the `kei-work-server` CLI; operating a public instance is separate deployment work |
@@ -427,7 +475,7 @@ for people who care about bundle size, not as a puzzle everyone must solve.
 | `@keicoin/work` | proof-of-work tiers, local generation, work-server client |
 | `@keicoin/wallet` | in-game wallet: balances, inventory, pending claims |
 | `@keicoin/market` | offers, atomic swap settlement, price history — depends on `@keicoin/core` alone |
-| `@keicoin/economy` | recipes: rewards, sinks, shops and crafts, with a dry run before anything signs |
+| `@keicoin/economy` | recipes — rewards, sinks, shops and crafts, with a dry run before anything signs — and drop tables, published as commitments |
 
 `@keicoin/core` depends on nothing else in the tree.
 
@@ -455,6 +503,8 @@ Documentation worth reading before changing anything:
   process boundary changed, including the two bugs the test suite could not see
 - [`docs/decisions-m5.md`](docs/decisions-m5.md) — the swap wire layout proposal,
   and what the mock's accept-vs-cancel race does and does not prove
+- [`docs/decisions-drop-tables.md`](docs/decisions-drop-tables.md) — how a loot
+  table binds to a published root, and the boundary of what that proves
 - [`docs/rpc.md`](docs/rpc.md) — the node contract the fork has to serve
 
 ## Credit
