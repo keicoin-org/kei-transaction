@@ -65,6 +65,7 @@ export type ClaimStoreDiagnosticCode =
   | 'claim-store-quarantined'
   | 'claim-store-quarantine-failed'
   | 'claim-store-remove-refused'
+  | 'claim-store-commit-unknown'
   | 'claim-retry-failed'
 
 export interface ClaimStoreDiagnostic {
@@ -517,6 +518,13 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
     return bundle
   }
 
+  // Every call site here runs after the ledger has already decided: the claim
+  // landed, or the node proved this account claimed it, or proved the root is
+  // closed. What is left in the store is a leftover, not a live entitlement, so
+  // an adapter that refuses to drop it is worth reporting and never worth
+  // throwing over — raising here would discard a block hash the caller has
+  // already earned, and would fail `pending()` (and the wallet summary behind
+  // it) over a claim that is finished.
   const removePersisted = async (root: string): Promise<void> => {
     try {
       await store.remove(namespace, root)
@@ -524,7 +532,7 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
     } catch {
       // The fixed diagnostic below is intentionally free of adapter details.
     }
-    persistenceFailure({
+    diagnose({
       code: 'claim-store-remove-refused',
       root,
       message: `Claim ${root} is settled or no longer claimable, but its stored proof could not be removed. Fix or replace the adapter; reconciliation will retry without signing it again.`,
@@ -567,9 +575,26 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
         continue
       }
       const commit = await client.node.commitInfo(bundle.root)
-      if (!commit || commit.closed) {
+      if (commit?.closed) {
         // Closed roots accept no further claims, so the bundle is dead weight.
         await removePersisted(bundle.root)
+        held.delete(bundle.root)
+        continue
+      }
+      if (!commit) {
+        // The node answered and knew of no commit for this root. That is not
+        // proof the root is gone — a node that has not yet applied the issuer's
+        // commit block, and a gateway that replies without one, look exactly
+        // like a pruned root from here. Transport failures throw rather than
+        // land here, but "answered, and had nothing" still covers too much to
+        // delete on. Stop signing against it for this session and keep the
+        // durable proof: a root alone cannot reconstruct the bundle, so
+        // removing it here is the permanent loss this store exists to prevent.
+        diagnose({
+          code: 'claim-store-commit-unknown',
+          root: bundle.root,
+          message: `The node reported no commit for claim ${bundle.root}, which is not proof that the root is closed. The stored proof was kept and will be reconciled again on the next start; check that the node has caught up with the issuer's commit before treating this claim as lost.`,
+        })
         held.delete(bundle.root)
         continue
       }
