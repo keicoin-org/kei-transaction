@@ -14,17 +14,18 @@ const kei = await Kei.start()          // wallet created, persisted, funded
 await kei.send('kei_3abc...', 0.001)   // sub-cent, instant, feeless
 ```
 
-> **Status: M6 in progress.** `Kei.start()` uses the real node at
+> **Status: public testnet, no mainnet.** `Kei.start()` uses the real node at
 > `https://testnet.keicoin.org/rpc`; `Kei.mock()` remains available for tests.
 > `@keicoin/market` provides swap offers, atomic settlement, and price history —
 > the native swap blocks it reads have since merged into the node — and
 > `WalletPanel.mount()` gives games a drop-in balance/inventory/claims UI. Both
-> ship in `0.3.0`, so installing the SDK gets them.
-> The public testnet is one best-effort node with weak consensus, no uptime promise, and no
+> ship in the published `0.4.0` SDK set, so installing the SDK gets them.
+> The public endpoint answers `version` with `store_version 24`, which is the
+> build that accepts both claim and swap blocks, so this is measured rather than
+> inferred from CI. It is still one best-effort node with weak consensus, no
+> uptime promise, and no
 > monetary value: a dev-network chain whose keys are published, so anyone can
-> fund or reset it and it may be rebuilt without notice. The 0.3.0 SDK and the
-> native node's pinned M4 CI gate cover commit, claim, commit-close, and the work
-> server; that does not by itself prove which build the public endpoint runs. See
+> fund or reset it and it may be rebuilt without notice. See
 > [Where this is](#where-this-is).
 
 ---
@@ -440,10 +441,10 @@ Refusals name the account that has to act. `"only its author can cancel it"`,
 `"is not the trade that was shown to you"` are all telling you that the fix is a
 different signer or a re-read, not a retry.
 
-The ongoing M9 harness work lives in the standalone
-[`create-kei-game`](https://github.com/keicoin-org/create-kei-game) repository;
-its current implementation is tracked in
-[PR #1](https://github.com/keicoin-org/create-kei-game/pull/1).
+Create Kei MMO, the creation harness, lives in the standalone
+[`create-kei-game`](https://github.com/keicoin-org/create-kei-game) repository —
+still that name pending the rename. Its current implementation is an unmerged
+draft, [PR #1](https://github.com/keicoin-org/create-kei-game/pull/1).
 
 ## Shipping
 
@@ -472,20 +473,22 @@ commit, because that is where the decision is actually made.
 
 ## Where this is
 
-M6 of eleven. What exists:
+The M0–M10 ladder was retired on 3 August 2026 for four concurrent tracks
+(SPEC §13), so this is no longer a position on a count. What exists:
 
 | | |
 |---|---|
 | **The §6.7 API** | Complete, running end to end, types published |
-| **The chain** | A real Kei node enforcing the SPEC §5.6 / §7 ledger rules, including native M4 commit/claim/commit-close in its pinned CI gate. Native `swap_offer`/`swap_accept`/`swap_cancel` are merged too; the reference mock remains for hermetic tests |
+| **The chain** | A real Kei node enforcing the SPEC §5.6 / §7 ledger rules, including native `commit`/`claim`/`commit_close` in its pinned CI gate. Native `swap_offer`/`swap_accept`/`swap_cancel` are merged too; the reference mock remains for hermetic tests |
 | **The network** | One public, rate-limited, best-effort Hetzner testnet node. `Kei.start()` selects it by default; `Kei.mock()` is explicit |
 | **The demo** | [Button](../button) — playable single-player, every number on the chain and none in a database |
-| **The market** | `@keicoin/market@0.1.0` — offers, atomic settlement, price history, all read from the chain. Published; `0.1.0` rather than `0.3.0` because it is the newest package here and has the least mileage |
+| **The market** | `@keicoin/market@0.1.1` — offers, atomic settlement, price history, all read from the chain. Published, and on its own version line rather than the SDK set's because it is the newest package here and has the least mileage |
 | **The wallet panel** | `WalletPanel.mount()` is real and tested end to end, with the SPEC §6.6 seed-reveal friction |
 | **Recipes** | `@keicoin/economy@0.1.0` — declare a reward, a sink, or a shop once, dry-run it, and run only the half this key may sign. It adds no consensus rules: every block it writes is one the SDK could already write by hand. Unpublished as of this commit |
-| **npm** | `kei-transaction@0.3.0` and every `@keicoin/*` package are published, carrying M5 and M6; `@keicoin/market` at `0.1.0`. `create-kei-game@0.2.0` was released before the package moved to its standalone repository; future harness releases are owned there |
-| **The harness** | [`create-kei-game`](https://github.com/keicoin-org/create-kei-game) owns `npm create kei-game`; its M9 transition into an ongoing game-creation harness is tracked in [PR #1](https://github.com/keicoin-org/create-kei-game/pull/1) |
-| **The work server** | `@keicoin/work@0.2.0` exports the bounded handler/server integration and the `kei-work-server` CLI; operating a public instance is separate deployment work |
+| **Player shops** | `@keicoin/player-economy@0.1.0` — `kei.shop`, the player's half of the same idea: list, browse, buy, cancel and gift from the player's own key, with nothing stocked or approved by the game. Unpublished as of this commit |
+| **npm** | `kei-transaction@0.4.0` is published, with `@keicoin/core`, `tokens`, `claims`, `wallet` and `work` at the same version and `@keicoin/market` at `0.1.1`. **This commit is ahead of that** — `kei-transaction` and `@keicoin/tokens` at `0.5.0`, `@keicoin/wallet` at `0.4.1`, `@keicoin/economy` and `@keicoin/player-economy` at `0.1.0` — and publishing is a separate approval, so install what npm serves rather than what this tree says. `create-kei-game@0.2.0` was released before the package moved to its standalone repository; future harness releases are owned there |
+| **The harness** | Create Kei MMO owns its own releases. Its repository is still named [`create-kei-game`](https://github.com/keicoin-org/create-kei-game) pending the rename, and its default branch still carries the retired scaffolder that `create-kei-game@0.2.0` was published from; the transition into an ongoing MMO creation harness is an unmerged draft, [PR #1](https://github.com/keicoin-org/create-kei-game/pull/1) |
+| **The work server** | `@keicoin/work@0.4.0` exports the bounded handler/server integration and the `kei-work-server` CLI; operating a public instance is separate deployment work |
 
 The mock is not a stub of the API: it enforces one chain per account, derived
 asset ids, receivable arrivals, work tiers, the issuance burn, circulating-supply
@@ -506,10 +509,13 @@ the public node with `KEI_NODE_URL` as the only switch, and `npm run test:m3-liv
 runs SPEC §6.2's no-argument `Kei.start()` against it, faucet to payment.
 
 Read that precisely. Issue, top-up, mint, transfer and item run through the
-public M3 endpoint. Native `commit`, `claim`, and `commit_close` are merged and
-run through the exact pinned M4 SDK contract against a clean node in CI. That is
-implementation evidence, not a claim that the public node has been redeployed
-with M4; deployment remains separately observable work.
+public endpoint. Native `commit`, `claim`, and `commit_close` run through the
+exact pinned SDK contract against a clean node in CI — and, since the public node
+was rebuilt onto `master` on 3 August 2026, over the public URL as well: it
+answers `version` with `store_version 24`, a rooted claim lands, a second claim
+from the same account is refused, an offer locks its units, and one accept moves
+both legs. What CI proves and what the deployment proves are still two different
+things, and both have now been checked.
 
 Nothing here holds value, and until the validator set is meaningfully
 distributed, nothing should.
