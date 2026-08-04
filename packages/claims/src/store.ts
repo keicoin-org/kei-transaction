@@ -9,6 +9,7 @@
 
 import {
   claimStoreAdmissionHash,
+  hexToBytes,
   isHex,
   publicKeyFromAddress,
   verifyHash,
@@ -147,13 +148,45 @@ export interface BrowserClaimStoreOptions {
 const BROWSER_PREFIX = 'kei:claim-store:v1:'
 const BROWSER_NAMESPACE_VERSION = 4
 
+// RFC 8032 section 5.1.7 requires the encoded scalar S to be smaller than the
+// subgroup order L. Canonical compressed Edwards points also encode y < p;
+// the top bit carries x's sign and is not part of y. bananojs accepts some
+// alternate encodings, so persistent wallet authority must reject them before
+// verification or storage could turn a failed admission into a valid restart.
+const ED25519_SUBGROUP_ORDER =
+  0x1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3edn
+const ED25519_FIELD_PRIME =
+  0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffedn
+
+function littleEndianInteger(bytes: Uint8Array): bigint {
+  let value = 0n
+  for (let index = bytes.length - 1; index >= 0; index -= 1) {
+    value = (value << 8n) | BigInt(bytes[index] as number)
+  }
+  return value
+}
+
+function isCanonicalEd25519Signature(signature: string | null | undefined): signature is string {
+  if (!isHex(signature, 64)) return false
+  const bytes = hexToBytes(signature)
+  const xSign = ((bytes[31] as number) & 0x80) !== 0
+  const encodedR = bytes.slice(0, 32)
+  encodedR[31] = (encodedR[31] as number) & 0x7f
+  const y = littleEndianInteger(encodedR)
+  // RFC 8032 decoding rejects the non-canonical "negative zero" encoding:
+  // x = 0 has no sign, and occurs only at y = +/-1 on Edwards25519.
+  if (xSign && (y === 1n || y === ED25519_FIELD_PRIME - 1n)) return false
+  return y < ED25519_FIELD_PRIME &&
+    littleEndianInteger(bytes.slice(32)) < ED25519_SUBGROUP_ORDER
+}
+
 async function hasWalletAuthority(
   scope: ClaimStoreScope,
   root: string,
   value: string,
   authority: string | null | undefined,
 ): Promise<boolean> {
-  if (!isHex(authority, 64)) return false
+  if (!isCanonicalEd25519Signature(authority)) return false
   try {
     return await verifyHash(
       claimStoreAdmissionHash(scope.network, scope.address, root, value),

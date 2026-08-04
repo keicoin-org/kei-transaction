@@ -67,6 +67,9 @@ same small `ClaimStore` interface without making the game or issuer a custodian.
 Persistent custom adapters should implement `admit` and `readAdmitted`; older
 adapters fail closed before mutation until upgraded. Browser namespace v4 binds
 a domain-separated wallet signature to the exact stored envelope and namespace.
+The adapter rejects non-canonical Ed25519 signatures (including equivalent
+`S + L` encodings) before verification, so failed admission cannot become valid
+after a restart. The signed wallet scope also prevents cross-account replay.
 Legacy browser namespace v1-v3 records (including v2 boolean markers and v3
 public digests) and claim-envelope v1/v2 records have no current admission
 authority: they are not signed and require explicit re-add, which writes a v3

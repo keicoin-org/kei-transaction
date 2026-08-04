@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { blake2b, bytesToHex, utf8 } from '@keicoin/core'
+import {
+  blake2b,
+  bytesToHex,
+  claimStoreAdmissionHash,
+  hexToBytes,
+  publicKeyFromAddress,
+  utf8,
+  verifyHash,
+} from '@keicoin/core'
 import {
   Kei,
   KeiError,
@@ -22,9 +30,26 @@ const PLAYER_SEED = 'D'.repeat(64)
 const OTHER_SEED = 'E'.repeat(64)
 const CLAIM_ENVELOPE_DOMAIN = 'kei-claim-envelope-v3\n'
 const LEGACY_BROWSER_ADMISSION_DOMAIN = 'kei-claim-store-admission-v1\n'
+const ED25519_SUBGROUP_ORDER =
+  0x1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3edn
 
 function legacyBrowserAdmission(value: string): string {
   return bytesToHex(blake2b(utf8(`${LEGACY_BROWSER_ADMISSION_DOMAIN}${value}`), 32))
+}
+
+function addEd25519GroupOrder(signature: string): string {
+  const bytes = hexToBytes(signature)
+  let scalar = 0n
+  for (let index = 63; index >= 32; index -= 1) {
+    scalar = (scalar << 8n) | BigInt(bytes[index] as number)
+  }
+  scalar += ED25519_SUBGROUP_ORDER
+  for (let index = 32; index < 64; index += 1) {
+    bytes[index] = Number(scalar & 0xffn)
+    scalar >>= 8n
+  }
+  if (scalar !== 0n) throw new Error('test signature scalar overflowed its encoding')
+  return bytesToHex(bytes)
 }
 
 function claimEnvelope(
@@ -297,6 +322,187 @@ describe('durable claim bundles', () => {
     }))
     expect(await afterClaimReload.claims.pending()).toHaveLength(0)
     expect(storage.length).toBe(0)
+  })
+
+  test('browser authority is canonical and bound to wallet, network, root, and value', async () => {
+    const lockManager = new SerializedClaimLockManager()
+    const player = remember(await Kei.start({ node, seed: PLAYER_SEED, autoClaim: false }))
+    const other = remember(await Kei.start({ node, seed: OTHER_SEED, autoClaim: false }))
+    const drop = await gems.commit([{ to: player.address, amount: 11 }])
+    const bundle = drop.proofFor(player.address)
+    const value = claimEnvelope(bundle)
+    const scope = { network: 'mock', address: player.address }
+    const authority = await player.client.authorizeClaimStore(bundle.root, value)
+
+    const canonicalStorage = new MemoryWebStorage()
+    const canonical = createBrowserClaimStore(canonicalStorage, { lockManager })
+    expect(await canonical.admit?.(scope, bundle.root, value, authority)).toBe(true)
+    expect(await canonical.readAdmitted?.(scope, bundle.root)).toBe(value)
+    expect(await createBrowserClaimStore(canonicalStorage, { lockManager })
+      .readAdmitted?.(scope, bundle.root)).toBe(value)
+
+    const otherAuthority = await other.client.authorizeClaimStore(bundle.root, value)
+    const otherRoot = `${bundle.root[0] === 'F' ? 'E' : 'F'}${bundle.root.slice(1)}`
+    const nonCanonicalR = `ED${'FF'.repeat(30)}7F${authority.slice(64)}`
+    const negativeZeroR = `01${'00'.repeat(30)}80${authority.slice(64)}`
+    const rejected = [
+      { name: 'wallet', scope, root: bundle.root, value, authority: otherAuthority },
+      { name: 'network', scope: { ...scope, network: 'testnet' }, root: bundle.root, value, authority },
+      { name: 'root', scope, root: otherRoot, value, authority },
+      { name: 'value', scope, root: bundle.root, value: `${value}\n`, authority },
+      { name: 'non-canonical R', scope, root: bundle.root, value, authority: nonCanonicalR },
+      { name: 'negative-zero R', scope, root: bundle.root, value, authority: negativeZeroR },
+    ]
+    for (const candidate of rejected) {
+      const store = createBrowserClaimStore(new MemoryWebStorage(), { lockManager })
+      expect(await store.admit?.(
+        candidate.scope,
+        candidate.root,
+        candidate.value,
+        candidate.authority,
+      ), candidate.name).toBe(false)
+      expect(await store.readAdmitted?.(candidate.scope, candidate.root), candidate.name).toBeNull()
+      expect(await store.list(candidate.scope, 1), candidate.name).toEqual([])
+    }
+  })
+
+  test('an authority-phase S+L rewrite cannot survive false browser admission or restart', async () => {
+    const storage = new MemoryWebStorage()
+    const lockManager = new SerializedClaimLockManager()
+    const setup = remember(await Kei.start({ node, seed: PLAYER_SEED, autoClaim: false }))
+    const drop = await gems.commit([{ to: setup.address, amount: 13 }])
+    const bundle = drop.proofFor(setup.address)
+    const value = claimEnvelope(bundle)
+    const scope = { network: 'mock', address: setup.address }
+    const authority = await setup.client.authorizeClaimStore(bundle.root, value)
+    const malleatedAuthority = addEd25519GroupOrder(authority)
+    const store = createBrowserClaimStore(storage, { lockManager })
+
+    storage.rewriteNextSet = (_key, candidate) => {
+      storage.rewriteNextSet = (_authorityKey, admitted) => {
+        const namespace = JSON.parse(admitted) as {
+          records: [string, string, string | null][]
+        }
+        const record = namespace.records.find(([root]) => root === bundle.root)
+        if (!record || record[2] !== authority) {
+          throw new Error('test authority phase did not retain the canonical signature')
+        }
+        record[2] = malleatedAuthority
+        return JSON.stringify(namespace)
+      }
+      return candidate
+    }
+
+    expect(await store.admit?.(scope, bundle.root, value, authority)).toBe(false)
+    expect(malleatedAuthority).not.toBe(authority)
+    // bananojs accepts S + L as equivalent. The explicit canonical-encoding
+    // guard, rather than the cryptographic verifier, must fail this authority.
+    expect(await verifyHash(
+      claimStoreAdmissionHash(scope.network, scope.address, bundle.root, value),
+      malleatedAuthority,
+      publicKeyFromAddress(scope.address),
+    )).toBe(true)
+    expect(await store.read(scope, bundle.root)).toBe(value)
+    expect(await store.readAdmitted?.(scope, bundle.root)).toBeNull()
+    const recreated = createBrowserClaimStore(storage, { lockManager })
+    expect(await recreated.readAdmitted?.(scope, bundle.root)).toBeNull()
+
+    let claimSubmissions = 0
+    const originalProcess = node.process.bind(node)
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
+      return originalProcess(block)
+    }
+    setup.close()
+    const reopened = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      claimStore: recreated,
+    }))
+    expect(await reopened.claims.pending()).toEqual([])
+    expect((await reopened.claims.storageStatus()).diagnostics.map(({ code }) => code))
+      .toEqual(['claim-store-quarantined'])
+    expect(claimSubmissions).toBe(0)
+    reopened.close()
+
+    const restarted = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      claimStore: createBrowserClaimStore(storage, { lockManager }),
+    }))
+    expect(await restarted.claims.pending()).toEqual([])
+    expect(claimSubmissions).toBe(0)
+  })
+
+  test('a wallet-authorised namespace cannot replay into another account', async () => {
+    const storage = new MemoryWebStorage()
+    const lockManager = new SerializedClaimLockManager()
+    const first = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: createBrowserClaimStore(storage, { lockManager }),
+    }))
+    const drop = await gems.commit([{ to: first.address, amount: 17 }])
+    await first.claims.add(drop.proofFor(first.address))
+    const firstKey = `kei:claim-store:v1:mock:${encodeURIComponent(first.address)}`
+    const signedNamespace = storage.getItem(firstKey) as string
+    first.close()
+
+    const otherSetup = remember(await Kei.start({ node, seed: OTHER_SEED, autoClaim: false }))
+    const otherKey = `kei:claim-store:v1:mock:${encodeURIComponent(otherSetup.address)}`
+    storage.setItem(otherKey, signedNamespace)
+    otherSetup.close()
+
+    let claimSubmissions = 0
+    const originalProcess = node.process.bind(node)
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
+      return originalProcess(block)
+    }
+    const other = remember(await Kei.start({
+      node,
+      seed: OTHER_SEED,
+      claimStore: createBrowserClaimStore(storage, { lockManager }),
+    }))
+    expect(await other.claims.pending()).toEqual([])
+    expect((await other.claims.storageStatus()).diagnostics.map(({ code }) => code))
+      .toEqual(['claim-store-quarantined'])
+    expect(claimSubmissions).toBe(0)
+  })
+
+  test('a restored wallet-authorised settled record reconciles without resubmission', async () => {
+    const storage = new MemoryWebStorage()
+    const lockManager = new SerializedClaimLockManager()
+    const first = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: createBrowserClaimStore(storage, { lockManager }),
+    }))
+    const drop = await gems.commit([{ to: first.address, amount: 19 }])
+    await first.claims.add(drop.proofFor(first.address))
+    const namespaceKey = `kei:claim-store:v1:mock:${encodeURIComponent(first.address)}`
+    const signedNamespace = storage.getItem(namespaceKey) as string
+    await first.claims.claimAll()
+    expect(storage.getItem(namespaceKey)).toBeNull()
+    first.close()
+
+    storage.setItem(namespaceKey, signedNamespace)
+    let claimSubmissions = 0
+    const originalProcess = node.process.bind(node)
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
+      return originalProcess(block)
+    }
+    const reopened = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      claimStore: createBrowserClaimStore(storage, { lockManager }),
+    }))
+    expect(await reopened.claims.pending()).toEqual([])
+    expect(claimSubmissions).toBe(0)
+    expect(storage.getItem(namespaceKey)).toBeNull()
   })
 
   test('browser namespace v1 records migrate only after the original bundle is re-admitted', async () => {

@@ -222,9 +222,10 @@ Records are isolated by network, wallet address, and root, removed only after
 confirmed claim/reconciliation, and bounded to 128 records, 16,384 bytes each,
 128 proof hashes, and 39 decimal amount digits. Browser admission is a wallet
 signature over the network, address, root, and exact stored bytes, so storage
-cannot authorise a rewritten record by recomputing public digests. Rejected
-candidates remain
-non-signable across restarts. They contain award metadata but no
+cannot authorise a rewritten record by recomputing public digests. Non-canonical
+Ed25519 signatures, including equivalent `S + L` encodings, are rejected before
+verification, and the signed wallet scope prevents cross-account replay.
+Rejected candidates remain non-signable across restarts. They contain award metadata but no
 seed or private key; browser storage is recovery, not a backup. See
 [`docs/decisions-claims-durability.md`](docs/decisions-claims-durability.md).
 

@@ -90,11 +90,21 @@ Browser namespace schema v4 stores a domain-separated wallet signature beside
 each envelope. The signed hash binds network, wallet address, root, and exact
 stored envelope bytes. Storage can recompute the envelope's public integrity
 digest, but it cannot sign altered bytes without the wallet's private key.
+The adapter rejects non-canonical Ed25519 encodings before verification,
+including `S >= L`, non-canonical compressed `R`, and the negative-zero point
+encoding. This is required because the inherited verifier accepts an equivalent
+`S + L` encoding, which otherwise could make a failed exact read-back valid
+after restart.
 Namespace v3 used an unkeyed digest and v2 used a boolean marker; neither grants
 current authority. Namespace schemas v1 through v3 and claim-envelope schemas
 v1 and v2 are never signed automatically. Their raw bytes remain available for
 an explicit re-add of the original bundle, which rewrites the namespace as v4,
 the envelope as v3, and admits the exact bytes safely.
+Copying a v4 namespace to another wallet does not transfer authority because
+the account address is part of the signed hash. Restoring an older, validly
+signed record can restore only bytes that account previously admitted; startup
+still reconciles it against the ledger, so an already-settled claim is removed
+without a second submission.
 
 `createBrowserClaimStore(localStorage)` discovers `navigator.locks`. Browsers
 without Web Locks fail closed: records are not hydrated or signed, writes are
