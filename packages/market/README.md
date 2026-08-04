@@ -43,6 +43,95 @@ background by default.
 you name. There is no network-wide listing index (SPEC §9.4): Kei moves and
 records assets, and does not run a matching engine.
 
+## The headless pieces above that
+
+Everything below reads chains and does arithmetic. None of it holds a balance,
+caches anything, or depends on a framework.
+
+### A directory: which chains to read
+
+An offer lives on its author's chain, so somebody has to remember which accounts
+are worth asking. That is a list of addresses, and it is bounded because `watch`
+is usually reachable from an unauthenticated route.
+
+```js
+const directory = createDirectory({ limit: 128 })   // LRU; evictions are counted
+directory.watch(playerAddress)
+
+// Or implement the interface over your own player table. It is one method:
+const remote = { accounts: () => fetch('/players').then(r => r.json()) }
+```
+
+Anywhere a `from` is taken, an address, a list, or a directory all work. **Nothing
+read through one is trusted** — every offer it leads to is re-read from the chain
+before anything is signed.
+
+### A book, and an honest account of what it could not see
+
+```js
+const book = await market.book({ from: directory, asset: sword })
+book.asks        // cheapest per unit first
+book.bids
+book.spread
+book.coverage    // { asked, read, failed, truncated, dropped, skipped, complete }
+```
+
+One `account_swaps` per chain, not two: the asks and the bids are a local
+partition of one read. A chain whose read fails is a **gap** — the book returns
+what it has and names what it lost, because a page that blanks on one timeout
+reads as "the market closed".
+
+`coverage` is the part worth using. A book over a roster is a *floor*, never a
+census, and `complete: false` says which of the four reasons applies. Leave
+`asset` out for the whole shelf against one currency.
+
+### Price history a chart can draw
+
+```js
+const series  = await market.series({ asset: sword, from: directory })
+const candles = await market.candles({ asset: sword, from: directory, every: '1h' })
+const prices  = await market.prices({ from: directory })   // every asset, one walk
+```
+
+**Read this before shipping a chart.** The prices, units, medians, ranges and
+volumes are consensus — every node computes the same ones. The *order* is not:
+the block-lattice has no clock (SPEC §5.5), so `settledAt` is the node's own
+first-seen time, two nodes will disagree, and a restarted node forgets. The
+series says so in the value rather than in a comment:
+
+```js
+series.ordering   // { by: 'advisory-time', exact: false, estimated: 2, note: '…not consensus…' }
+```
+
+A candle's OHLC is exact for the trades in its bucket; *which* trades are in it is
+advisory.
+
+### Lifecycle, reconciliation, and not trusting an index
+
+```js
+market.lifeOf(offer)          // 'live' | 'reserved' | 'stale' | 'taken' | 'cancelled'
+await market.reconcile(shown) // what became of a snapshot: live, stale, gone, changed, unknown
+```
+
+`stale` is open, past its advisory expiry, and **still settleable** — hiding it is
+your choice, and the background cancel is what actually removes it. `taken` and
+`cancelled` stay separate because they are different sentences to a player.
+
+Before signing, check the chain against what you rendered:
+
+```js
+await market.accept(offer, {
+  expect: { hash, seller, give: { asset: sword.id, amount: 1 }, want: { asset: KEI_ASSET, amount: 5 } },
+})
+```
+
+Matching the price and quantity alone is **not enough**: an index could attach
+the hash of a different item at the same price. Every field you give is checked,
+against the chain's copy, immediately before the block is signed.
+
+Player-facing shops built on all of this are
+[`@keicoin/player-economy`](https://www.npmjs.com/package/@keicoin/player-economy).
+
 ## Status
 
 **M5 of eleven.** The API is real and runs end to end against the mock ledger,
@@ -50,7 +139,10 @@ which enforces the self-locking rule and the accept-vs-cancel race the same way
 the real node will. See
 [`docs/decisions-m5.md`](https://github.com/keicoin-org/kei-transaction/blob/master/docs/decisions-m5.md)
 for the wire layout this package proposes and what the mock can and cannot
-prove about the race.
+prove about the race, and
+[`docs/decisions-player-economy.md`](https://github.com/keicoin-org/kei-transaction/blob/master/docs/decisions-player-economy.md)
+for why the aggregation layer above exists, what it refuses, and the gaps it
+still has.
 
 There is no testnet yet and **nothing here holds value.**
 
