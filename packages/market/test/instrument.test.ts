@@ -268,7 +268,9 @@ describe('instrument market product surface', () => {
     const updates: InstrumentUpdate[] = []
     const stop = instrument.subscribe({ every: 5, staleAfter: 5 }, (update) => updates.push(update))
     await until(() => updates.some((update) => update.status === 'live'))
-    const lastGood = updates.find((update) => update.status === 'live')?.snapshot
+    const live = updates.find((update) => update.status === 'live')!
+    expect(live.snapshot).not.toBeNull()
+    const lastGood = live.snapshot
     broken = true
     world.clock.tick(10)
     await until(() => updates.some((update) => update.status === 'stale'))
