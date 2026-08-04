@@ -44,6 +44,18 @@ burn. A bounded table of rolls is cheap; a random roll per drop is not. A roll i
 as plentiful as the item it varies, and `create` defaults to a supply of 1, so
 give the base a supply if many players are meant to hold rolls of it.
 
+A sink is one block, signed by whoever holds the units — the ledger checks the
+holder, not the issuer, so a repair fee or a consumable needs no server round
+trip:
+
+```js
+const gold = await kei.token('GOLD', gameAddress)
+await gold.burn(40)     // player-signed; circulating supply falls by 40
+```
+
+Burning is also the only thing a soulbound token can do, and the only way a
+capped supply gets its headroom back (SPEC §5.4, §5.6.6).
+
 `transfer` is immutable and protocol-enforced: it is the only real mechanism for a
 closed economy. Issuing burns n Kei for an account's nth asset — 1 for its first —
 because an asset record is permanent state on every node forever, and because the

@@ -28,7 +28,7 @@ cd "$(dirname "$0")/.."
 
 # Dependency order: nothing is published before the thing it imports, so the
 # registry never holds a version whose dependencies it cannot serve.
-PACKAGES="core work claims tokens market wallet kei"
+PACKAGES="core work claims tokens market economy wallet kei"
 
 echo "==> Building"
 npm run build

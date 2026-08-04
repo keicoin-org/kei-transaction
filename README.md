@@ -234,6 +234,74 @@ actually clears them off the ledger.
 the chains you name — there is no network-wide listing index, on purpose
 (the chain moves and records assets; it does not run a matching engine).
 
+## Recipes: the systems around the money
+
+Rewards, sinks, shops and crafts are the same four shapes in every game, and
+hand-wiring them is where an economy quietly grows a server that holds
+balances. A recipe is a declaration instead — frozen, chain-free, and imported
+by both halves of the game.
+
+```js
+// economy.js — the server and the browser import this same file
+export const forgeSword = defineRecipe({
+  id: 'forge-sword',
+  costs:  [{ asset: { symbol: 'SCRAP' }, amount: 30 }],
+  grants: [{ asset: { symbol: 'SWORD' } }],
+  issuer: GAME_ADDRESS,
+})
+```
+
+`costs` and `grants` decide what it becomes, and nothing else does:
+
+| | | signs | settles |
+|---|---|---|---|
+| **grant** — a reward, a bonus, a quest payout | grants, costs nothing | issuer | one `mint` each |
+| **sink** — a repair fee, a re-roll, a ticket | costs, grants nothing | the holder | one `burn` each |
+| **exchange** — a shop, a craft, an upgrade | one in, one out | both, separately | **one block, both legs or neither** |
+
+```js
+// Game server
+await game.economy.stock('forge-sword', { count: 20, mint: true })
+await game.economy.run('daily-bonus', { player: playerAddress })
+
+// Player
+await kei.economy.run('repair')        // burns 40 gold, one signed block
+await kei.economy.run('forge-sword')   // accepts a matching offer, atomically
+```
+
+**Nothing runs before you can see what it would do.** `plan()` reads the chain,
+writes nothing, and answers as data — which is what a disabled button needs:
+
+```js
+const plan = await kei.economy.plan(forgeSword)
+plan.ok        // false
+plan.atomic    // true — one block settles it
+plan.steps     // [{ signer: 'issuer', action: 'offer' }, { signer: 'player', action: 'accept' }]
+plan.problems  // [{ code: 'insufficient-balance', message: 'Not enough SCRAP — …' }]
+console.log(plan.explain())   // the whole thing, copyable
+```
+
+Every step names the account that signs it, because a key signs only for its
+own account. A plan with an issuer step in it is one the player **cannot**
+finish alone, and `run()` refuses the other half by name rather than silently
+skipping it.
+
+**A shop is blocks on the issuer's chain, and the recipe is the player's
+receipt in advance.** Before accepting, the SDK compares the on-chain offer to
+the player's own copy of the recipe, raw unit for raw unit. A shop that relists
+a sword at ten times the price does not sell it to anybody running this code —
+it just stops matching.
+
+**One asset each way, and the refusal is at import.** A swap moves one asset
+per side, so "three iron and two wood for a sword" has no block that could
+settle it, and every way of splitting it leaves somebody who paid and did not
+receive. `defineRecipe` refuses that shape and names the two ways round it —
+price it in one currency, or split it into a sink and a reward and say plainly
+that they are two steps.
+
+There is a runnable version of all of this in
+[`examples/economy`](examples/economy).
+
 ## The wallet
 
 ```js
@@ -314,6 +382,7 @@ M6 of eleven. What exists:
 | **The demo** | [Button](../button) — playable single-player, every number on the chain and none in a database |
 | **The market** | `@keicoin/market@0.1.0` — offers, atomic settlement, price history, all read from the chain. Published; `0.1.0` rather than `0.3.0` because it is the newest package here and has the least mileage |
 | **The wallet panel** | `WalletPanel.mount()` is real and tested end to end, with the SPEC §6.6 seed-reveal friction |
+| **Recipes** | `@keicoin/economy@0.1.0` — declare a reward, a sink, or a shop once, dry-run it, and run only the half this key may sign. It adds no consensus rules: every block it writes is one the SDK could already write by hand. Unpublished as of this commit |
 | **npm** | `kei-transaction@0.3.0` and every `@keicoin/*` package are published, carrying M5 and M6; `@keicoin/market` at `0.1.0`. `create-kei-game@0.2.0` was released before the package moved to its standalone repository; future harness releases are owned there |
 | **The harness** | [`create-kei-game`](https://github.com/keicoin-org/create-kei-game) owns `npm create kei-game`; its M9 transition into an ongoing game-creation harness is tracked in [PR #1](https://github.com/keicoin-org/create-kei-game/pull/1) |
 | **The work server** | `@keicoin/work@0.2.0` exports the bounded handler/server integration and the `kei-work-server` CLI; operating a public instance is separate deployment work |
@@ -358,6 +427,7 @@ for people who care about bundle size, not as a puzzle everyone must solve.
 | `@keicoin/work` | proof-of-work tiers, local generation, work-server client |
 | `@keicoin/wallet` | in-game wallet: balances, inventory, pending claims |
 | `@keicoin/market` | offers, atomic swap settlement, price history — depends on `@keicoin/core` alone |
+| `@keicoin/economy` | recipes: rewards, sinks, shops and crafts, with a dry run before anything signs |
 
 `@keicoin/core` depends on nothing else in the tree.
 

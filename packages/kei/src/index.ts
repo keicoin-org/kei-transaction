@@ -112,6 +112,40 @@ export type {
   TradeOptions,
 } from '@keicoin/market'
 
+export {
+  acceptableBy,
+  assertRunnable,
+  createEconomy,
+  defineRecipe,
+  defineRecipes,
+  isResolved,
+  matchingOffers,
+  termsMatch,
+} from '@keicoin/economy'
+export type {
+  AssetRef,
+  EconomyApi,
+  EconomyOptions,
+  ListingOptions,
+  MatchTerms,
+  PlanContext,
+  Plan,
+  PlanAction,
+  PlanOptions,
+  PlanStep,
+  Problem,
+  Recipe,
+  RecipeSpec,
+  RecipeStrategy,
+  ResolvedStack,
+  RunBlock,
+  RunOptions,
+  RunResult,
+  SinkPolicy,
+  Stack,
+  StockOptions,
+} from '@keicoin/economy'
+
 export { LocalWorkProvider, WorkServerProvider, createWorkProvider } from '@keicoin/work'
 export { WalletPanel, createWallet } from '@keicoin/wallet'
 export type {

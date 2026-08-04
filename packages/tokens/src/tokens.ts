@@ -84,6 +84,16 @@ export interface PlayerToken extends TokenFacts {
   balance(): Promise<number>
   balanceOf(address: string): Promise<number>
   transfer(to: string, amount: number | string): Promise<{ hash: string; to: string; amount: number }>
+  /**
+   * Destroy units this wallet holds.
+   *
+   * Burning is the holder's own block, not the issuer's — the ledger checks who
+   * holds the units, not who issued them (SPEC §5.6.6) — so a repair fee, a
+   * re-roll, or a consumable is one signed block from the player and needs no
+   * issuer round trip. It is also the only thing a soulbound token can do
+   * (SPEC §5.4), and the only way a capped supply gets its headroom back.
+   */
+  burn(amount: number | string): Promise<{ hash: string; amount: number }>
   on(event: 'transfer', listener: (transfer: TokenTransfer) => void): () => void
 }
 
@@ -294,6 +304,16 @@ export async function readToken(
         amount: raw.toString(),
       })
       return { hash, to, amount: fromRaw(raw, facts.decimals) }
+    },
+    async burn(amount) {
+      const raw = toRaw(amount, facts.decimals, 'Burn amount')
+      if (raw <= 0n) fail('bad-amount', 'Burn amount must be greater than zero.')
+      const { hash } = await client.submitAsset({
+        kind: 'burn',
+        asset: facts.id,
+        amount: raw.toString(),
+      })
+      return { hash, amount: fromRaw(raw, facts.decimals) }
     },
     on(event, listener) {
       if (event !== 'transfer') fail('no-such-event', `A token emits "transfer", not "${String(event)}".`)

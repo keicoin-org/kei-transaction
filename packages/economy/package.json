@@ -1,31 +1,27 @@
 {
-  "name": "kei-transaction",
-  "version": "0.4.0",
-  "description": "Real currencies and items for browser games. One install, no payment infrastructure.",
+  "name": "@keicoin/economy",
+  "version": "0.1.0",
+  "description": "Declarative game-economy recipes for Kei: rewards, sinks, and atomic shop/craft exchanges, with a dry run before anything is signed.",
   "license": "MIT",
   "author": "Sano",
-  "homepage": "https://keicoin.org",
+  "homepage": "https://keicoin.org#economy",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/keicoin-org/kei-transaction.git",
-    "directory": "packages/kei"
+    "directory": "packages/economy"
   },
   "bugs": {
     "url": "https://github.com/keicoin-org/kei-transaction/issues"
   },
   "keywords": [
     "kei",
-    "blockchain",
-    "game",
-    "gamedev",
-    "currency",
-    "items",
-    "nft",
-    "micropayments",
-    "feeless",
-    "wallet",
-    "browser-game",
-    "web3"
+    "game-economy",
+    "recipes",
+    "crafting",
+    "shop",
+    "loot",
+    "sink",
+    "faucet"
   ],
   "type": "module",
   "exports": {
@@ -43,13 +39,11 @@
   "engines": {
     "node": ">=20"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
-    "@keicoin/claims": "^0.4.0",
     "@keicoin/core": "^0.4.0",
-    "@keicoin/economy": "^0.1.0",
-    "@keicoin/market": "^0.1.1",
-    "@keicoin/tokens": "^0.4.0",
-    "@keicoin/wallet": "^0.4.0",
-    "@keicoin/work": "^0.4.0"
+    "@keicoin/market": "^0.1.1"
   }
 }

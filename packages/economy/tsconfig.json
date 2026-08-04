@@ -12,22 +12,7 @@
       "path": "../core"
     },
     {
-      "path": "../work"
-    },
-    {
-      "path": "../claims"
-    },
-    {
-      "path": "../tokens"
-    },
-    {
       "path": "../market"
-    },
-    {
-      "path": "../economy"
-    },
-    {
-      "path": "../wallet"
     }
   ]
 }
