@@ -43,9 +43,20 @@ export type WalletPanelThemeVars = Record<string, string>
 export type WalletPanelTheme = string | WalletPanelThemeVars
 
 /**
+ * The durability half of `kei.custody` (SPEC §6.4). Declared structurally
+ * rather than imported, because `@keicoin/wallet` depends on `@keicoin/core`
+ * and not on the umbrella package that owns `SeedCustody` — a real
+ * `Kei.start()` result satisfies it exactly.
+ */
+export interface WalletPanelCustody {
+  readonly durability: 'persistent' | 'session' | 'supplied'
+}
+
+/**
  * What `WalletPanel.mount` needs from a `Kei` instance. This matches the
  * public shape of the real `Kei` class exactly (`address`, `seed`, `client`,
- * `wallet`), so a real `Kei.start()` result satisfies it with no adapter.
+ * `wallet`, `custody`), so a real `Kei.start()` result satisfies it with no
+ * adapter.
  */
 export interface WalletPanelKei {
   readonly address: string
@@ -53,6 +64,12 @@ export interface WalletPanelKei {
   readonly seed: string
   readonly client: { readonly reveal: RevealPolicy }
   readonly wallet: WalletApi
+  /**
+   * Optional only so an object assembled by hand still mounts; `Kei.start()`
+   * always supplies it, and without it the panel has no way to know whether a
+   * reload keeps this wallet and so says nothing.
+   */
+  readonly custody?: WalletPanelCustody
 }
 
 export interface WalletPanelOptions {
@@ -116,12 +133,18 @@ function mountPanel(target: string | Element, options: WalletPanelOptions): Wall
   applyTheme(panelEl, options.theme)
   root.appendChild(panelEl)
 
+  // First, above every number, and with no way to dismiss it: a wallet a reload
+  // loses has to say so before it is used (SPEC §6.4).
+  const durabilityNotice = buildDurabilityNotice(doc, panelEl, kei)
+
   const summaryEls: Partial<Record<Section, HTMLElement>> = {}
   for (const name of ['balance', 'tokens', 'items', 'claims'] as const) {
     if (sections.has(name)) summaryEls[name] = buildSection(doc, panelEl, name)
   }
 
-  const seed = buildSeedSection(doc, panelEl, kei)
+  // The backup path lives inside the warning when there is one, so the sentence
+  // that names the risk and the control that answers it are one thing.
+  const seed = buildSeedSection(doc, durabilityNotice ?? panelEl, kei)
   streamerAwarePanels.add(seed)
   seed.applyStreamerMode()
 
@@ -192,6 +215,50 @@ function applyTheme(panelEl: HTMLElement, theme: WalletPanelTheme | undefined): 
   for (const [name, value] of Object.entries(theme)) {
     panelEl.style.setProperty(name.startsWith('--') ? name : `--${name}`, value)
   }
+}
+
+/**
+ * The session-only warning (SPEC §6.4), or nothing when the wallet is kept.
+ *
+ * Rendered first, marked as an alert, and with no dismiss control — a player
+ * whose wallet disappears on reload has to have been told before they were
+ * shown a balance, not after they funded it. `data-durability` on the panel is
+ * the same fact for a game styling around it, or gating its own "buy" button.
+ */
+function buildDurabilityNotice(doc: Document, panelEl: HTMLElement, kei: WalletPanelKei): HTMLElement | null {
+  const durability = kei.custody?.durability
+  if (durability) panelEl.dataset.durability = durability
+  if (durability !== 'session') return null
+
+  const notice = doc.createElement('div')
+  notice.className = 'kei-wallet-panel__section kei-wallet-panel__durability'
+  notice.setAttribute('role', 'alert')
+
+  const title = doc.createElement('strong')
+  title.className = 'kei-wallet-panel__durability-title'
+  title.textContent = 'This wallet is not saved.'
+
+  const body = doc.createElement('p')
+  body.className = 'kei-wallet-panel__durability-body'
+  // Precise about the loss and about the way out of it: the seed is the only
+  // copy of this wallet, and a player who writes it down keeps everything. No
+  // sentence here claims a loss is beyond recovery, because a backed-up seed
+  // restores the wallet in any Kei wallet.
+  body.textContent =
+    'It lasts until this page reloads. A reload starts a different wallet, so anything sent to this address is lost with the old one unless you have saved its hex seed. Back the seed up now if you are going to put anything here you would miss.'
+
+  notice.append(title, body)
+
+  if (kei.client.reveal === 'never') {
+    const blocked = doc.createElement('p')
+    blocked.className = 'kei-wallet-panel__durability-blocked'
+    blocked.textContent =
+      'This game switched seed backup off, so this panel cannot show you the hex seed to save. Keep this wallet empty until the game turns backup on.'
+    notice.appendChild(blocked)
+  }
+
+  panelEl.appendChild(notice)
+  return notice
 }
 
 function buildSection(doc: Document, parent: HTMLElement, name: Section): HTMLElement {
@@ -356,12 +423,14 @@ function buildOnRequestSeed(doc: Document, section: HTMLElement, kei: WalletPane
   const revealButton = doc.createElement('button')
   revealButton.type = 'button'
   revealButton.className = 'kei-wallet-panel__seed-reveal'
-  revealButton.textContent = 'Back up seed phrase'
+  // A Kei seed is 64 hexadecimal characters, not a word list. Calling it a
+  // phrase sends a player looking for twelve words that do not exist.
+  revealButton.textContent = 'Back up hex seed'
 
   const warning = doc.createElement('p')
   warning.className = 'kei-wallet-panel__seed-warning'
   warning.textContent =
-    'Anyone who sees this can take everything in this wallet. Make sure nobody is watching or recording your screen.'
+    'This is the 64-character hex seed for this wallet. Anyone who sees it can take everything in it. Make sure nobody is watching or recording your screen.'
 
   const holdButton = doc.createElement('button')
   holdButton.type = 'button'

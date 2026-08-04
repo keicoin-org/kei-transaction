@@ -300,6 +300,58 @@ screenshots, streams, and shoulder-surfing. It does not defend against an
 attacker: the seed is in browser storage, and any XSS on your page reads it
 whatever the UI does.
 
+### Whether the wallet survives a reload
+
+Browser storage is not always there. Private browsing, a switched-off store, a
+full quota, and browser policy all make `localStorage.setItem()` throw, and some
+of them make `getItem()` throw too. A generated seed that nothing kept is a
+wallet that a reload replaces — leaving the old address accessible only with a
+separately backed-up seed —
+so `Kei.start()` says which one you have rather than looking identical either
+way:
+
+```js
+const kei = await Kei.start()
+
+kei.custody.durability   // 'persistent' | 'session' | 'supplied'
+kei.custody.origin       // 'generated' | 'restored' | 'supplied' | 'environment'
+kei.custody.reason       // why it is session-only: 'storage-write-refused', …
+kei.custody.message      // one sentence, safe to render or log — never the seed
+```
+
+`persistent` means the seed was written **and read back**, so a reload finds the
+same wallet. `session` means memory only, and a reload is a different wallet.
+`supplied` means you passed the seed (or `KEI_PLAYER_SEED`), so keeping it is
+yours to do and nothing was written anywhere.
+
+Two things follow from a `session` wallet, and both are handled rather than
+warned about:
+
+- **The address holds still for the rest of the session.** A seed browser
+  storage refused is kept in memory, so a second `Kei.start()` on the same page
+  is the same wallet rather than a second one that abandons the first's balance.
+- **`WalletPanel` says so, first and undismissably**, and puts the seed-backup
+  control inside the warning. A game drawing its own UI should read
+  `kei.custody` and do the same before it lets a wallet hold anything;
+  `panel.element.dataset.durability` carries the same fact for styling or for
+  disabling a buy button.
+
+If the wallet is meant to hold something and a session-only one is not
+acceptable, refuse at the door instead:
+
+```js
+const kei = await Kei.start({ requireDurableSeed: true })
+// KeiError seed-not-durable: "…browser storage refused to keep it — private
+// browsing, storage switched off, or a full quota. …"
+```
+
+A custom `storage` store keeps working unchanged. If it cannot survive a reload,
+say so — return `{ durability: 'session' }` from `write()`, or implement
+`status()` — and it will be reported as session rather than assumed durable. A
+claimed persistent write is always verified by reading the seed back. The store
+itself remains trusted code: only its implementation can know whether its
+backing service truly survives a process restart.
+
 ## For agents
 
 No signup, no API key, no dashboard, no OAuth, no interactive prompt anywhere.
