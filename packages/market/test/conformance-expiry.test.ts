@@ -18,6 +18,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { type AssetId } from '@keicoin/core'
+import { createMarket, isMarketError } from '@keicoin/market'
 
 import { CountingNode, FaultNode, GateNode } from './harness/net.js'
 import { World, evidence, until, type Actor } from './harness/world.js'
@@ -34,6 +35,84 @@ beforeEach(async () => {
 
 afterEach(() => {
   world.close()
+})
+
+describe('sweepInterval is validated at the public boundary', () => {
+  const invalid = [
+    ['zero', 0],
+    ['negative', -1],
+    ['NaN', Number.NaN],
+    ['infinite', Number.POSITIVE_INFINITY],
+    ['fractional', 1.5],
+    ['past the timer range', 2_147_483_648],
+    ['past the safe-integer range', Number.MAX_SAFE_INTEGER + 1],
+  ] as const
+
+  for (const [label, interval] of invalid) {
+    test(`rejects ${label} before a sweep, retry, or node read can start`, async () => {
+      const counting = new CountingNode(world.node)
+      const actor = await world.actor(`invalid-${label}`, { node: counting })
+      counting.reset()
+
+      let failure: unknown
+      try {
+        createMarket(actor.client, {
+          autoCancelExpired: true,
+          sweepInterval: interval,
+          now: world.clock.now,
+        })
+      } catch (error) {
+        failure = error
+      }
+
+      expect(isMarketError(failure, 'bad-sweep-interval')).toBe(true)
+      expect((failure as Error).message).toBe(
+        `sweepInterval must be a whole number of milliseconds from 1 through 2147483647; got ${String(interval)}. Omit it for the 30000 ms default.`,
+      )
+      expect(counting.report(), evidence('calls', counting.report())).toEqual({
+        accountInfo: 0,
+        accountHistory: 0,
+        receivables: 0,
+        process: 0,
+        assetInfo: 0,
+        holderBalance: 0,
+        swapOffer: 0,
+        accountSwaps: 0,
+      })
+    })
+  }
+
+  test('the default and both supported integer boundaries remain valid', async () => {
+    const counting = new CountingNode(world.node)
+    const actor = await world.actor('valid-intervals', { node: counting })
+    counting.reset()
+
+    const defaults = createMarket(actor.client, { autoCancelExpired: true, now: world.clock.now })
+    const minimum = createMarket(actor.client, {
+      autoCancelExpired: true,
+      sweepInterval: 1,
+      now: world.clock.now,
+    })
+    const maximum = createMarket(actor.client, {
+      autoCancelExpired: true,
+      sweepInterval: 2_147_483_647,
+      now: world.clock.now,
+    })
+    defaults.close()
+    minimum.close()
+    maximum.close()
+
+    expect(counting.report(), evidence('calls', counting.report())).toEqual({
+      accountInfo: 0,
+      accountHistory: 0,
+      receivables: 0,
+      process: 0,
+      assetInfo: 0,
+      holderBalance: 0,
+      swapOffer: 0,
+      accountSwaps: 0,
+    })
+  })
 })
 
 describe('the sweep cancels what expired, and only that', () => {
@@ -196,8 +275,9 @@ describe('close() means closed', () => {
 describe('a failed sweep retries on sweepInterval', () => {
   test('one unreachable round does not orphan an expired listing', async () => {
     const fault = new FaultNode(world.node)
+    const counting = new CountingNode(fault)
     const seller = await world.actor('seller', {
-      node: fault,
+      node: counting,
       market: { autoCancelExpired: true, sweepInterval: 40 },
     })
     await world.mint(sword, seller, 1)
@@ -223,6 +303,7 @@ describe('a failed sweep retries on sweepInterval', () => {
       timeout: 3_000,
       label: 'the sweep to retry after the faulted round',
     })
+    expect(counting.calls.accountSwaps, evidence('calls', counting.report())).toBeGreaterThanOrEqual(2)
     expect(await world.node.holderBalance(sword, seller.address)).toBe('1')
   })
 
