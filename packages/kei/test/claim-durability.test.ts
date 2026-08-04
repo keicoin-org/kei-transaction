@@ -41,6 +41,7 @@ function claimEnvelopeV2(bundle: { root: string; asset: string; amount: string; 
 
 class MemoryWebStorage implements ClaimWebStorage {
   private readonly values = new Map<string, string>()
+  rewriteNextSet: ((key: string, value: string) => string) | undefined
 
   get length(): number {
     return this.values.size
@@ -55,6 +56,9 @@ class MemoryWebStorage implements ClaimWebStorage {
   }
 
   setItem(key: string, value: string): void {
+    const rewrite = this.rewriteNextSet
+    this.rewriteNextSet = undefined
+    if (rewrite) value = rewrite(key, value)
     this.values.set(key, value)
   }
 
@@ -65,6 +69,7 @@ class MemoryWebStorage implements ClaimWebStorage {
 
 class SerializedClaimLockManager implements ClaimWebLockManager {
   private readonly tails = new Map<string, Promise<void>>()
+  afterNextRelease: (() => void | Promise<void>) | undefined
 
   request<T>(name: string, callback: () => T | PromiseLike<T>): Promise<T> {
     const previous = this.tails.get(name) ?? Promise.resolve()
@@ -72,9 +77,19 @@ class SerializedClaimLockManager implements ClaimWebLockManager {
     const current = new Promise<void>((resolve) => { release = resolve })
     const tail = previous.then(() => current)
     this.tails.set(name, tail)
-    return previous.then(callback).finally(() => {
+    const finish = (): void => {
       release()
       if (this.tails.get(name) === tail) this.tails.delete(name)
+    }
+    return previous.then(callback).then(async (value) => {
+      finish()
+      const afterRelease = this.afterNextRelease
+      this.afterNextRelease = undefined
+      await afterRelease?.()
+      return value
+    }, (error: unknown) => {
+      finish()
+      throw error
     })
   }
 }
@@ -311,7 +326,7 @@ describe('durable claim bundles', () => {
 
     await migrated.claims.add(bundle)
     expect(await migrated.claims.pending()).toHaveLength(1)
-    expect(JSON.parse(storage.getItem(namespaceKey) as string).version).toBe(2)
+    expect(JSON.parse(storage.getItem(namespaceKey) as string).version).toBe(3)
     migrated.close()
 
     const reopened = remember(await Kei.start({
@@ -322,6 +337,116 @@ describe('durable claim bundles', () => {
     }))
     expect(await reopened.claims.pending()).toHaveLength(1)
     expect(claimSubmissions).toBe(0)
+  })
+
+  test('altered browser candidate or authority bytes remain non-signable after recreation', async () => {
+    const originalProcess = node.process.bind(node)
+    let claimSubmissions = 0
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
+      return originalProcess(block)
+    }
+
+    for (const [phase, amount] of [['candidate', 29], ['authority', 31]] as const) {
+      const storage = new MemoryWebStorage()
+      const lockManager = new SerializedClaimLockManager()
+      const store = createBrowserClaimStore(storage, { lockManager })
+      const player = remember(await Kei.start({
+        node,
+        seed: PLAYER_SEED,
+        autoClaim: false,
+        claimStore: store,
+      }))
+      const drop = await gems.commit([{ to: player.address, amount }])
+      const bundle = drop.proofFor(player.address)
+      const scope = { network: 'mock', address: player.address }
+      const rewrite = (_key: string, raw: string): string => {
+        const namespace = JSON.parse(raw) as {
+          records: [string, string, string | null][]
+        }
+        const record = namespace.records.find(([root]) => root === bundle.root)
+        if (!record) throw new Error('test admission record was not stored')
+        const envelope = JSON.parse(record[1]) as {
+          bundle: { root: string; asset: string; amount: string; proof: string[] }
+        }
+        record[1] = claimEnvelope({
+          ...envelope.bundle,
+          amount: String(BigInt(envelope.bundle.amount) + 1n),
+        })
+        return JSON.stringify(namespace)
+      }
+      storage.rewriteNextSet = phase === 'candidate'
+        ? rewrite
+        : (_key, raw) => {
+            storage.rewriteNextSet = rewrite
+            return raw
+          }
+
+      expect((await refused(player.claims.add(bundle))).code).toBe('claim-store-readback-mismatch')
+      expect(await store.readAdmitted?.(scope, bundle.root)).toBeNull()
+      expect(JSON.parse(await store.read(scope, bundle.root) as string).bundle.amount)
+        .toBe(String(amount + 1))
+      player.close()
+
+      const reopened = remember(await Kei.start({
+        node,
+        seed: PLAYER_SEED,
+        claimStore: createBrowserClaimStore(storage, { lockManager }),
+      }))
+      expect(await reopened.claims.pending()).toEqual([])
+      expect((await reopened.claims.storageStatus()).diagnostics.map(({ code }) => code))
+        .toEqual(['claim-store-quarantined'])
+      reopened.close()
+    }
+    expect(claimSubmissions).toBe(0)
+  })
+
+  test('browser quarantine preserves a concurrent exact same-root admission', async () => {
+    const storage = new MemoryWebStorage()
+    const lockManager = new SerializedClaimLockManager()
+    const firstStore = createBrowserClaimStore(storage, { lockManager })
+    const secondStore = createBrowserClaimStore(storage, { lockManager })
+    const player = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: firstStore,
+    }))
+    const drop = await gems.commit([{ to: player.address, amount: 47 }])
+    const bundle = drop.proofFor(player.address)
+    const expected = claimEnvelope(bundle)
+    const scope = { network: 'mock', address: player.address }
+    storage.rewriteNextSet = (_key, raw) => {
+      const namespace = JSON.parse(raw) as {
+        records: [string, string, string | null][]
+      }
+      const record = namespace.records.find(([root]) => root === bundle.root)
+      if (!record) throw new Error('test admission candidate was not stored')
+      record[1] = claimEnvelope({ ...bundle, amount: '48' })
+      return JSON.stringify(namespace)
+    }
+    // The other tab acquires the released namespace lock before the rejecting
+    // caller can quarantine. Its exact proof must remain the durable authority.
+    lockManager.afterNextRelease = async () => {
+      expect(await secondStore.admit?.(scope, bundle.root, expected)).toBe(true)
+    }
+
+    expect((await refused(player.claims.add(bundle))).code).toBe('claim-store-write-refused')
+    expect(await firstStore.readAdmitted?.(scope, bundle.root)).toBe(expected)
+    expect((await player.claims.storageStatus()).diagnostics.map(({ code }) => code)).toEqual([
+      'claim-store-quarantine-failed',
+      'claim-store-write-refused',
+    ])
+    player.close()
+
+    const reopened = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: createBrowserClaimStore(storage, { lockManager }),
+    }))
+    expect((await reopened.claims.pending()).map(({ root }) => root)).toEqual([bundle.root])
+    expect((await reopened.claims.storageStatus()).diagnostics).toEqual([])
   })
 
   test('legacy v1 and v2 envelopes remain non-signable pending explicit re-add', async () => {

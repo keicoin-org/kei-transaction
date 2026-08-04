@@ -7,6 +7,8 @@
  * server credential.
  */
 
+import { blake2b, bytesToHex, utf8 } from '@keicoin/core'
+
 export type ClaimStoreDurability = 'persistent' | 'session'
 export const MAX_PENDING_CLAIMS = 128
 
@@ -132,7 +134,12 @@ export interface BrowserClaimStoreOptions {
 }
 
 const BROWSER_PREFIX = 'kei:claim-store:v1:'
-const BROWSER_NAMESPACE_VERSION = 2
+const BROWSER_NAMESPACE_VERSION = 3
+const BROWSER_ADMISSION_DOMAIN = 'kei-claim-store-admission-v1\n'
+
+function browserAdmission(value: string): string {
+  return bytesToHex(blake2b(utf8(`${BROWSER_ADMISSION_DOMAIN}${value}`), 32))
+}
 
 function browserNamespaceKey(scope: ClaimStoreScope): string {
   return `${BROWSER_PREFIX}${encodeURIComponent(scope.network)}:${encodeURIComponent(scope.address)}`
@@ -161,7 +168,7 @@ function defaultBrowserLockManager(): ClaimWebLockManager | null {
 
 interface BrowserNamespace {
   readonly version: number
-  readonly records: readonly (readonly [root: string, value: string, admitted: boolean])[]
+  readonly records: readonly (readonly [root: string, value: string, admission: string | null])[]
 }
 
 function parseBrowserNamespace(raw: string | null): BrowserNamespace {
@@ -174,25 +181,32 @@ function parseBrowserNamespace(raw: string | null): BrowserNamespace {
   }
   if (!parsed || typeof parsed !== 'object') throw new Error('claim store namespace is corrupt')
   const namespace = parsed as { version?: unknown; records?: unknown }
-  if (namespace.version !== 1 && namespace.version !== BROWSER_NAMESPACE_VERSION) {
+  if (namespace.version !== 1 && namespace.version !== 2 &&
+      namespace.version !== BROWSER_NAMESPACE_VERSION) {
     throw new Error('claim store namespace version is unsupported')
   }
   if (!Array.isArray(namespace.records) || namespace.records.length > MAX_PENDING_CLAIMS) {
     throw new Error('claim store namespace is corrupt')
   }
   const roots = new Set<string>()
-  const records: [string, string, boolean][] = []
+  const records: [string, string, string | null][] = []
   for (const record of namespace.records) {
     const legacy = namespace.version === 1
     if (!Array.isArray(record) || record.length !== (legacy ? 2 : 3) ||
         typeof record[0] !== 'string' || typeof record[1] !== 'string' ||
-        (!legacy && typeof record[2] !== 'boolean') || roots.has(record[0])) {
+        (namespace.version === 2 && typeof record[2] !== 'boolean') ||
+        (namespace.version === BROWSER_NAMESPACE_VERSION &&
+          record[2] !== null && typeof record[2] !== 'string') || roots.has(record[0])) {
       throw new Error('claim store namespace is corrupt')
     }
     roots.add(record[0])
-    // A v1 namespace has no admission authority. Preserve the candidate for
-    // explicit re-add, but never infer that it was admitted.
-    records.push([record[0], record[1], legacy ? false : record[2] as boolean])
+    // Boolean namespaces do not bind their authority to exact bytes. Preserve
+    // legacy candidates for explicit re-add, but never infer admission.
+    records.push([
+      record[0],
+      record[1],
+      namespace.version === BROWSER_NAMESPACE_VERSION ? record[2] as string | null : null,
+    ])
   }
   return { version: BROWSER_NAMESPACE_VERSION, records }
 }
@@ -229,7 +243,7 @@ class BrowserClaimStore implements ClaimStore {
   readAdmitted(scope: ClaimStoreScope, root: string): Promise<string | null> {
     return this.withLock(scope, () => {
       const record = this.load(scope).records.find(([candidate]) => candidate === root)
-      return record?.[2] === true ? record[1] : null
+      return record && record[2] === browserAdmission(record[1]) ? record[1] : null
     })
   }
 
@@ -241,8 +255,8 @@ class BrowserClaimStore implements ClaimStore {
       if (existing === -1 && records.length >= MAX_PENDING_CLAIMS) {
         throw new ClaimStoreCapacityError('claim store record limit reached')
       }
-      if (existing === -1) records.push([root, value, false])
-      else records[existing] = [root, value, false]
+      if (existing === -1) records.push([root, value, null])
+      else records[existing] = [root, value, null]
       this.storage.setItem(key, JSON.stringify({ version: BROWSER_NAMESPACE_VERSION, records }))
     })
   }
@@ -252,17 +266,31 @@ class BrowserClaimStore implements ClaimStore {
       const key = browserNamespaceKey(scope)
       const records = [...this.load(scope).records]
       const existing = records.findIndex(([candidate]) => candidate === root)
-      if (existing !== -1 && records[existing]?.[2] === true) {
-        return records[existing]?.[1] === value
+      const existingRecord = records[existing]
+      if (existingRecord && existingRecord[2] === browserAdmission(existingRecord[1])) {
+        return existingRecord[1] === value
       }
       if (existing === -1 && records.length >= MAX_PENDING_CLAIMS) {
         throw new ClaimStoreCapacityError('claim store record limit reached')
       }
-      if (existing === -1) records.push([root, value, true])
-      else records[existing] = [root, value, true]
+      if (existing === -1) records.push([root, value, null])
+      else records[existing] = [root, value, null]
       this.storage.setItem(key, JSON.stringify({ version: BROWSER_NAMESPACE_VERSION, records }))
-      const persisted = this.load(scope).records.find(([candidate]) => candidate === root)
-      return persisted?.[1] === value && persisted[2] === true
+      const candidateRecords = [...this.load(scope).records]
+      const candidate = candidateRecords.findIndex(([storedRoot]) => storedRoot === root)
+      if (candidate === -1 || candidateRecords[candidate]?.[1] !== value ||
+          candidateRecords[candidate]?.[2] !== null) {
+        return candidate !== -1 && candidateRecords[candidate]?.[1] === value &&
+          candidateRecords[candidate]?.[2] === browserAdmission(value)
+      }
+      const admission = browserAdmission(value)
+      candidateRecords[candidate] = [root, value, admission]
+      this.storage.setItem(key, JSON.stringify({
+        version: BROWSER_NAMESPACE_VERSION,
+        records: candidateRecords,
+      }))
+      const admitted = this.load(scope).records.find(([storedRoot]) => storedRoot === root)
+      return admitted?.[1] === value && admitted[2] === admission
     })
   }
 
