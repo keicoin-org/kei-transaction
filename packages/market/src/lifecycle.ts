@@ -164,10 +164,14 @@ export async function reconcileOffers(
   const gone: { hash: string; life: OfferLife; reason: string }[] = []
   const changed: Change[] = []
   const unknown: string[] = []
+  // A snapshot assembled from several reads repeats itself; one listing is
+  // one row and one `swap_info` call however many times it was mentioned.
+  const seen = new Set<string>()
 
   for (const entry of snapshot) {
     const hash = (typeof entry === 'string' ? entry : entry?.hash)?.toUpperCase()
-    if (!hash) continue
+    if (!hash || seen.has(hash)) continue
+    seen.add(hash)
     const raw = await context.client.node.swapOffer(hash)
     if (!raw) {
       unknown.push(hash)
