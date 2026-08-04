@@ -325,6 +325,30 @@ describe('expiry duration normalization is safe before network or signing', () =
       expect(counting.calls.assetInfo, evidence('calls', counting.report())).toBe(0)
     }
   })
+
+  test('a clock that becomes invalid is refused before an offer can be signed', async () => {
+    const counting = new CountingNode(world.node)
+    let reads = 0
+    const seller = await world.actor('changing-clock', {
+      node: counting,
+      market: {
+        autoCancelExpired: true,
+        now: () => (reads++ === 0 ? world.clock.at : Number.NaN),
+      },
+    })
+    await world.mint(sword, seller, 1)
+    counting.reset()
+
+    const failure = await seller.market
+      .sell({ asset: sword, price: 5, expiresAt: world.clock.at + 1_000 })
+      .catch((error) => error)
+
+    expect(isMarketError(failure, 'bad-expiry')).toBe(true)
+    expect(counting.calls.assetInfo, evidence('calls', counting.report())).toBe(0)
+    expect(counting.calls.holderBalance, evidence('calls', counting.report())).toBe(0)
+    expect(counting.calls.process, evidence('calls', counting.report())).toBe(0)
+    expect(counting.calls.swapOffer, evidence('calls', counting.report())).toBe(0)
+  })
 })
 
 describe('the sweep cancels what expired, and only that', () => {

@@ -265,7 +265,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
   let backgroundClosed = false
   let sweepEpoch = 0
 
-  const arm = (expiresAt: number | undefined): void => {
+  const arm = (expiresAt: number | undefined, checkedNow?: number): void => {
     if (!autoCancelExpired || backgroundClosed || expiresAt === undefined) return
     if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) {
       fail(
@@ -276,7 +276,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     if (timer !== undefined && armedFor !== undefined && armedFor <= expiresAt) return
     if (timer !== undefined) clearTimeout(timer)
     armedFor = expiresAt
-    const remaining = expiresAt - clockTime(now)
+    const remaining = expiresAt - (checkedNow ?? clockTime(now))
     // Add one millisecond for ordinary deadlines so the callback observes the
     // advisory expiry as passed. Clamp after the addition: larger waits are
     // checkpoints, never permission to hand an overflowing delay to a runtime.
@@ -343,6 +343,10 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     // Time controls are entirely local and must be valid before metadata,
     // balance, work, or signing can begin.
     const expiresAt = resolveExpiry(expiry, now)
+    // `arm()` runs after the signed offer is submitted. Validate and capture
+    // the scheduling clock before any network work so an injected clock that
+    // changes from valid to invalid cannot make this call reject after write.
+    const schedulingNow = expiresAt === undefined ? undefined : clockTime(now)
     const giveMeta = await meta(assetIdOf(give.asset))
     const wantMeta = await meta(assetIdOf(want.asset))
     const giveRaw = positiveRaw(give.amount, giveMeta, `The amount of ${giveMeta.symbol} offered`)
@@ -373,7 +377,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     if (!created) {
       fail('offer-failed', `Offer ${hash} was published but cannot be read back. This is a node bug.`)
     }
-    arm(expiresAt)
+    arm(expiresAt, schedulingNow)
     return toOffer(created)
   }
 
