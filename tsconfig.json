@@ -6,6 +6,7 @@
     { "path": "packages/claims" },
     { "path": "packages/tokens" },
     { "path": "packages/market" },
+    { "path": "packages/economy" },
     { "path": "packages/wallet" },
     { "path": "packages/kei" }
   ]

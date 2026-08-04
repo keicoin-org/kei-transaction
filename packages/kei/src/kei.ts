@@ -47,6 +47,7 @@ import {
   type PlayerToken,
 } from '@keicoin/tokens'
 import { createMarket, type MarketApi } from '@keicoin/market'
+import { createEconomy, type EconomyApi, type Recipe, type RecipeSpec } from '@keicoin/economy'
 import { createWorkProvider } from '@keicoin/work'
 import { createWallet, type WalletApi } from '@keicoin/wallet'
 
@@ -86,6 +87,12 @@ export interface StartOptions {
   storage?: SeedStore
   /** Where item images go. Defaults to a local stand-in until M4. */
   uploader?: IpfsUploader
+  /**
+   * The economy catalogue: rewards, sinks, shops and crafts, declared once in a
+   * file both halves of the game import (SPEC §5.4, §9.2). Reaches
+   * `kei.economy`, and more can be added later with `economy.define()`.
+   */
+  recipes?: Iterable<Recipe | RecipeSpec>
 }
 
 export interface ServerOptions extends StartOptions {
@@ -140,10 +147,17 @@ export class Kei {
   readonly wallet: WalletApi
   /** Offers, atomic settlement, and price history read from the chain (SPEC §9). */
   readonly market: MarketApi
+  /** Rewards, sinks, shops and crafts, declared as recipes and dry-run first. */
+  readonly economy: EconomyApi
 
   private constructor(
     client: KeiClient,
-    options: { uploader?: IpfsUploader; autoClaim?: boolean; autoCancelExpired?: boolean },
+    options: {
+      uploader?: IpfsUploader
+      autoClaim?: boolean
+      autoCancelExpired?: boolean
+      recipes?: Iterable<Recipe | RecipeSpec>
+    },
   ) {
     this.client = client
     this.network = client.node.network
@@ -155,6 +169,12 @@ export class Kei {
       client,
       options.autoCancelExpired === false ? { autoCancelExpired: false } : {},
     )
+    // Shares this market rather than opening a second one, so a recipe's offers
+    // are swept by the same background cancel as everything else (SPEC §9.3).
+    this.economy = createEconomy(client, {
+      market: this.market,
+      ...(options.recipes === undefined ? {} : { recipes: options.recipes }),
+    })
 
     const get = (symbolOrId: string, issuer?: string): Promise<PlayerToken> =>
       readToken(client, symbolOrId, issuer)
@@ -230,6 +250,7 @@ export class Kei {
       ...(options.uploader === undefined ? {} : { uploader: options.uploader }),
       ...(options.autoClaim === undefined ? {} : { autoClaim: options.autoClaim }),
       ...(options.autoCancelExpired === undefined ? {} : { autoCancelExpired: options.autoCancelExpired }),
+      ...(options.recipes === undefined ? {} : { recipes: options.recipes }),
     })
     await client.start(options.autoReceive === false ? { autoReceive: false } : {})
     return kei

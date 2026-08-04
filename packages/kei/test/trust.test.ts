@@ -55,7 +55,7 @@ describe('the issuer seed cannot reach a browser (acceptance criterion 6)', () =
 })
 
 describe('one signer per operation (SPEC §6.3)', () => {
-  test('a player cannot mint, burn, or issue', async () => {
+  test('a player cannot mint or issue', async () => {
     const game = await KeiFacade.server({ seed: GAME_SEED, node })
     await game.faucet(5_000)
     await game.token.issue({ name: 'Gems', symbol: 'GEM', decimals: 0 })
@@ -64,10 +64,44 @@ describe('one signer per operation (SPEC §6.3)', () => {
     const gems = await player.token('GEM', game.address)
 
     expect((gems as unknown as Record<string, unknown>).mint).toBeUndefined()
-    expect((gems as unknown as Record<string, unknown>).burn).toBeUndefined()
     await expect(player.token.issue({ name: 'Fake Gems', symbol: 'FAKE' })).rejects.toThrow(
       /Only an issuer/,
     )
+  })
+
+  /**
+   * Burning used to be asserted absent from the player surface alongside mint
+   * and issue. That was an SDK-shape assumption the ledger never made: `burn`
+   * debits the signer's own holding and checks nobody's issuer (SPEC §5.6.6),
+   * which is exactly why a soulbound token's refusal says burning is its one
+   * exit (§5.4). The property that matters is not that a player cannot burn —
+   * it is that a player can only burn what is theirs.
+   */
+  test('a player burns only their own units, and cannot reach anybody else\'s', async () => {
+    const game = await KeiFacade.server({ seed: GAME_SEED, node })
+    await game.faucet(5_000)
+    const gems = await game.token.issue({ name: 'Gems', symbol: 'GEM', decimals: 0 })
+
+    const player = await KeiFacade.start({ node, seed: randomSeed() })
+    const other = await KeiFacade.start({ node, seed: randomSeed() })
+    await gems.mint(player.address, 10)
+    await gems.mint(other.address, 10)
+    await Promise.all([player.sync(), other.sync()])
+
+    const token = await player.token('GEM', game.address)
+    // No `from`: the signer is the holder, so there is no argument through
+    // which somebody else's balance could be named.
+    expect(token.burn.length).toBe(1)
+    await token.burn(4)
+
+    expect(await gems.balanceOf(player.address)).toBe(6)
+    expect(await gems.balanceOf(other.address)).toBe(10)
+    // Past their own balance it is refused by the ledger, not by the SDK.
+    await expect(token.burn(7)).rejects.toThrow(/Not enough GEM/)
+    expect(await gems.balanceOf(other.address)).toBe(10)
+
+    player.close()
+    other.close()
   })
 
   test('a block signed by the wrong key is rejected by the ledger', async () => {

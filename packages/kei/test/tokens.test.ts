@@ -137,6 +137,41 @@ describe('mint, burn, balanceOf', () => {
     expect(await gems.supply()).toBe(1_000)
   })
 
+  test('a player burns their own units, and needs nothing from the issuer to do it', async () => {
+    await gems.mint(player.address, 100)
+    await player.sync()
+    const token = await player.token('GEM', game.address)
+
+    const burned = await token.burn(30)
+    expect(burned.amount).toBe(30)
+    expect(burned.hash).toMatch(/^[0-9A-F]{64}$/)
+    expect(await token.balance()).toBe(70)
+    // A sink is a sink: the units are gone from circulation, not parked
+    // somewhere (SPEC §5.6.6).
+    expect(await gems.supply()).toBe(70)
+  })
+
+  test('a burn is signed by whoever holds the units, so it is not the issuer\'s to refuse', async () => {
+    const rank = await game.token.issue({ name: 'Rank', symbol: 'RANK', transfer: 'none' })
+    await rank.mint(player.address, 1)
+    await player.sync()
+
+    // Soulbound: transfer is refused, and burning is the one exit (SPEC §5.4).
+    const token = await player.token('RANK', game.address)
+    await expect(token.transfer(other.address, 1)).rejects.toThrow(/soulbound/)
+    await token.burn(1)
+    expect(await rank.balanceOf(player.address)).toBe(0)
+  })
+
+  test('a player cannot burn what they do not hold', async () => {
+    await gems.mint(player.address, 5)
+    await player.sync()
+    const token = await player.token('GEM', game.address)
+    await expect(token.burn(6)).rejects.toThrow(/Not enough GEM/)
+    await expect(token.burn(0)).rejects.toThrow(/greater than zero/)
+    expect(await token.balance()).toBe(5)
+  })
+
   test('minting past maxSupply says how much room is left', async () => {
     await expect(gems.mint(player.address, 1_001)).rejects.toThrow(/only 1000 can be created/)
   })
