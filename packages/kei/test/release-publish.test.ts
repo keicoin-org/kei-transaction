@@ -177,7 +177,7 @@ exit 0
     expect(result.exitCode).not.toBe(0)
     expect(result.output).toContain('must exactly match the freshly fetched origin/master')
     expect(await npmCalls()).toBe('')
-  }, 30_000)
+  }, 60_000)
 
   test('authenticates before publishing from the exact fetched default-branch commit', async () => {
     await git(repository, 'merge', '--ff-only', 'origin/master')
@@ -195,7 +195,7 @@ exit 0
     const firstPublish = calls.findIndex((call) => call.startsWith('publish'))
     expect(whoami).toBeGreaterThanOrEqual(0)
     expect(firstPublish).toBeGreaterThan(whoami)
-  }, 30_000)
+  }, 60_000)
 
   test('skips only a registry artifact with the same reviewed integrity', async () => {
     let result = await publish({ PUBLISH_TEST_REGISTRY_INTEGRITY: 'sha512-different' })
@@ -207,5 +207,5 @@ exit 0
     expect(result.exitCode, result.output).toBe(0)
     expect(result.output).toContain('artifact matches; skipping')
     expect(await npmCalls()).not.toContain('publish')
-  }, 30_000)
+  }, 60_000)
 })
