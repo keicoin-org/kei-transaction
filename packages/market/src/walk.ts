@@ -68,9 +68,9 @@ export const DEFAULT_ACCOUNT_LIMIT = 100
 export interface Coverage {
   /** Accounts the walk was asked to read, after removing duplicates. */
   asked: number
-  /** Accounts that answered. */
+  /** Accounts that answered. `asked - read` equals the unique entries in `failed`. */
   read: number
-  /** Accounts whose read threw, and the sentence it threw. */
+  /** Accounts whose read threw, once per unread account, and the sentence it threw. */
   failed: readonly { account: string; reason: string }[]
   /**
    * Accounts that returned as many rows as this walk asked for, so their chain
@@ -187,19 +187,30 @@ export function withCoverageOn<T extends object, C extends Coverage | null>(
  * the same logical scope. Unequal `asked` counts throw `coverage-mismatch`
  * instead of manufacturing a plausible-looking answer.
  *
- * `read` counts accounts that answered every part. Named failures make that
+ * `read` counts accounts that answered every part. Every unread account must
+ * have exactly one failure identity inside each part, which makes that
  * intersection exact even when different calls missed different accounts.
- * A valid hand-built coverage may omit names for some unread accounts. One
- * such incomplete part can still be merged with complete parts, but two
- * incomplete parts are ambiguous without identities and are rejected rather
- * than silently upgrading or undercounting the intersection.
+ * Public JavaScript and deserialised values are validated before any field is
+ * read; malformed or internally inconsistent parts throw `coverage-mismatch`
+ * instead of producing plausible-looking arithmetic or an incidental error.
  *
  * Used where a single read has to touch two RPCs — "my trades" reads this
  * wallet's offers *and* scans its history for the accepts it wrote — because a
  * caller cares whether the answer is whole, not which of two calls dropped it.
  */
 export function mergeCoverage(...parts: readonly (Coverage | null | undefined)[]): Coverage {
-  const present = parts.filter((part): part is Coverage => part !== null && part !== undefined)
+  const present: Coverage[] = []
+  for (const [index, part] of parts.entries()) {
+    if (part === null || part === undefined) continue
+    const problem = coverageProblem(part)
+    if (problem !== null) {
+      throw new KeiError(
+        'coverage-mismatch',
+        `Coverage part ${index + 1} is invalid: ${problem} Fix or discard that coverage before merging it.`,
+      )
+    }
+    present.push(part)
+  }
   if (present.length === 0) return emptyCoverage()
   const asked = present[0]!.asked
   const mismatched = present.find((part) => part.asked !== asked)
@@ -209,30 +220,42 @@ export function mergeCoverage(...parts: readonly (Coverage | null | undefined)[]
       `Coverage can only be merged for the same logical account scope. Expected ${asked} accounts, but another part describes ${mismatched.asked}. Keep coverage from different market scopes separate.`,
     )
   }
-  const failed = present.flatMap((part) => [...part.failed])
-  const truncated = [...new Set(present.flatMap((part) => [...part.truncated]))]
-  const skipped = [...new Set(present.flatMap((part) => [...part.skipped]))]
-  const failedAccounts = new Set(failed.map((failure) => failure.account))
-  const unnamedFailures = present.reduce((total, part) => {
-    const namedInPart = new Set(part.failed.map((failure) => failure.account)).size
-    return total + Math.max(0, part.asked - part.read - namedInPart)
-  }, 0)
-  const incompleteParts = present.filter((part) => part.read < asked)
-  if (unnamedFailures > 0 && incompleteParts.length > 1) {
+  const failedByAccount = new Map<string, string[]>()
+  for (const part of present) {
+    for (const failure of part.failed) {
+      const reasons = failedByAccount.get(failure.account)
+      if (!reasons) failedByAccount.set(failure.account, [failure.reason])
+      else if (!reasons.includes(failure.reason)) reasons.push(failure.reason)
+    }
+  }
+  const failed = [...failedByAccount].map(([account, reasons]) => ({
+    account,
+    reason: reasons.join('; '),
+  }))
+  if (failed.length > asked) {
     throw new KeiError(
       'coverage-mismatch',
-      'Coverage with unnamed unread accounts cannot be merged across multiple incomplete reads. Preserve account failure identities or keep these coverage values separate.',
+      `Coverage parts name ${failed.length} failed accounts inside a scope of ${asked}. They cannot describe the same logical account scope; keep coverage from different market scopes separate.`,
     )
   }
-  const read = Math.max(0, asked - failedAccounts.size - unnamedFailures)
+  const truncated = [...new Set(present.flatMap((part) => [...part.truncated]))]
+  const skipped = [...new Set(present.flatMap((part) => [...part.skipped]))]
+  const read = asked - failed.length
+  const dropped = Math.max(...present.map((part) => part.dropped))
   return {
     asked,
     read,
     failed,
     truncated,
-    dropped: Math.max(...present.map((part) => part.dropped)),
+    dropped,
     skipped,
-    complete: present.every((part) => part.complete) && read === asked,
+    complete:
+      present.every((part) => part.complete) &&
+      read === asked &&
+      failed.length === 0 &&
+      truncated.length === 0 &&
+      dropped === 0 &&
+      skipped.length === 0,
   }
 }
 
@@ -375,33 +398,65 @@ interface Failure {
 type Answer<T> = { ok: true; value: AccountRead<T> } | Failure
 
 function isCoverage(value: unknown): value is Coverage {
-  if (typeof value !== 'object' || value === null) return false
+  return coverageProblem(value) === null
+}
+
+/** A sentence fragment naming why a structural public coverage is unsafe. */
+function coverageProblem(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) return 'it must be a Coverage object.'
   const candidate = value as Partial<Coverage>
-  return (
-    isCount(candidate.asked) &&
-    isCount(candidate.read) &&
-    candidate.read <= candidate.asked &&
-    Array.isArray(candidate.failed) &&
-    candidate.failed.every(
-      (failure) =>
-        typeof failure === 'object' &&
-        failure !== null &&
-        typeof (failure as { account?: unknown }).account === 'string' &&
-        typeof (failure as { reason?: unknown }).reason === 'string',
-    ) &&
-    Array.isArray(candidate.truncated) &&
-    candidate.truncated.every((account) => typeof account === 'string') &&
-    isCount(candidate.dropped) &&
-    Array.isArray(candidate.skipped) &&
-    candidate.skipped.every((account) => typeof account === 'string') &&
-    typeof candidate.complete === 'boolean' &&
-    (!candidate.complete ||
-      (candidate.read === candidate.asked &&
-        candidate.failed.length === 0 &&
-        candidate.truncated.length === 0 &&
-        candidate.dropped === 0 &&
-        candidate.skipped.length === 0))
-  )
+  for (const field of ['asked', 'read', 'dropped'] as const) {
+    if (!isCount(candidate[field])) {
+      return `${field} must be a non-negative safe integer, not ${String(candidate[field])}.`
+    }
+  }
+  const asked = candidate.asked as number
+  const read = candidate.read as number
+  const dropped = candidate.dropped as number
+  if (read > asked) {
+    return `read (${read}) cannot exceed asked (${asked}).`
+  }
+  if (!Array.isArray(candidate.failed)) return 'failed must be an array.'
+  const failed = candidate.failed
+  const failedAccounts = new Set<string>()
+  for (const [index, failure] of failed.entries()) {
+    if (typeof failure !== 'object' || failure === null) {
+      return `failed[${index}] must contain string account and reason fields.`
+    }
+    const account = (failure as { account?: unknown }).account
+    const reason = (failure as { reason?: unknown }).reason
+    if (typeof account !== 'string' || typeof reason !== 'string') {
+      return `failed[${index}] must contain string account and reason fields.`
+    }
+    if (failedAccounts.has(account)) {
+      return `failed names account ${account} more than once; each unread account needs one failure entry.`
+    }
+    failedAccounts.add(account)
+  }
+  const unread = asked - read
+  if (failedAccounts.size !== unread) {
+    return `asked (${asked}) minus read (${read}) is ${unread}, but failed names ${failedAccounts.size} unique accounts.`
+  }
+  for (const field of ['truncated', 'skipped'] as const) {
+    const entries = candidate[field]
+    if (!Array.isArray(entries) || entries.some((entry) => typeof entry !== 'string')) {
+      return `${field} must be an array of strings.`
+    }
+  }
+  const truncated = candidate.truncated as readonly string[]
+  const skipped = candidate.skipped as readonly string[]
+  if (typeof candidate.complete !== 'boolean') return 'complete must be a boolean.'
+  if (
+    candidate.complete &&
+    (read !== asked ||
+      failed.length > 0 ||
+      truncated.length > 0 ||
+      dropped > 0 ||
+      skipped.length > 0)
+  ) {
+    return 'complete can only be true when every asked account was read and failed, truncated, dropped, and skipped are empty.'
+  }
+  return null
 }
 
 function isCount(value: unknown): value is number {

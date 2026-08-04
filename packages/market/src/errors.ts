@@ -42,7 +42,7 @@ export type MarketErrorCode =
   | 'bad-sweep-interval'
   /** A per-account read limit that is not a positive safe integer. */
   | 'bad-limit'
-  /** Coverage from walks over different account cardinalities was combined. */
+  /** Coverage was malformed, internally inconsistent, or combined across different account cardinalities. */
   | 'coverage-mismatch'
   /** `offer()` without both legs, or an offer argument with no hash in it. */
   | 'bad-offer'
