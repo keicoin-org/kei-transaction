@@ -336,6 +336,32 @@ describe('walkAccounts — coverage is the honest half', () => {
     expect(mergeCoverage(restored, a, b, c)).toEqual(left)
   })
 
+  test('truncated and skipped unions are permutation-invariant', () => {
+    const a: Coverage = {
+      ...emptyCoverage(),
+      asked: 2,
+      read: 2,
+      truncated: ['kei_z'],
+      skipped: ['zeta'],
+      complete: false,
+    }
+    const b: Coverage = {
+      ...emptyCoverage(),
+      asked: 2,
+      read: 2,
+      truncated: ['kei_a'],
+      skipped: ['alpha'],
+      complete: false,
+    }
+
+    const merged = mergeCoverage(a, b)
+    expect(mergeCoverage(b, a)).toEqual(merged)
+    expect(merged).toMatchObject({
+      truncated: ['kei_a', 'kei_z'],
+      skipped: ['alpha', 'zeta'],
+    })
+  })
+
   test('merging different account cardinalities refuses instead of inventing coverage', () => {
     const one = { ...emptyCoverage(), asked: 1, read: 1 }
     const two = { ...emptyCoverage(), asked: 2, read: 2 }
@@ -388,6 +414,7 @@ describe('walkAccounts — coverage is the honest half', () => {
   test('malformed public coverage rejects with a stable typed error before arithmetic', () => {
     const sparseStrings: string[] = []
     sparseStrings.length = 1
+    const sparseFailures: Coverage['failed'] = Array(1)
     const sparseReasons: string[] = []
     sparseReasons.length = 2
     sparseReasons[1] = 'x'
@@ -422,6 +449,7 @@ describe('walkAccounts — coverage is the honest half', () => {
       { value: { asked: 0, read: 0, dropped: 0, complete: true }, message: 'failed must be an array' },
       { value: { ...emptyCoverage(), failed: undefined }, message: 'failed must be an array' },
       { value: { ...emptyCoverage(), failed: {} }, message: 'failed must be an array' },
+      { value: { ...emptyCoverage(), failed: sparseFailures }, message: 'failed[0] must contain string account and reason fields' },
       { value: { ...emptyCoverage(), truncated: undefined }, message: 'truncated must be an array of strings' },
       { value: { ...emptyCoverage(), truncated: 'kei_x' }, message: 'truncated must be an array of strings' },
       { value: { ...emptyCoverage(), truncated: sparseStrings }, message: 'truncated must be an array of strings' },
@@ -700,6 +728,7 @@ describe('coverage rides along without changing the rows', () => {
   test('coverageOf refuses partial, inconsistent, and malformed lookalikes', () => {
     const sparseStrings: string[] = []
     sparseStrings.length = 1
+    const sparseFailures: Coverage['failed'] = Array(1)
     const sparseReasons: string[] = []
     sparseReasons.length = 2
     sparseReasons[1] = 'x'
@@ -711,6 +740,7 @@ describe('coverage rides along without changing the rows', () => {
       { ...emptyCoverage(), asked: 1, read: 1, failed: [{ account: 'foreign', reason: 'forged' }], complete: false },
       { ...emptyCoverage(), asked: Number.NaN },
       { ...emptyCoverage(), failed: [{ account: 'kei_x' }] },
+      { ...emptyCoverage(), failed: sparseFailures },
       { ...emptyCoverage(), truncated: sparseStrings },
       { ...emptyCoverage(), skipped: sparseStrings },
       {

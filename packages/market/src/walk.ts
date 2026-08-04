@@ -259,8 +259,8 @@ export function mergeCoverage(...parts: readonly (Coverage | null | undefined)[]
       `Coverage parts name ${failed.length} failed accounts inside a scope of ${asked}. They cannot describe the same logical account scope; keep coverage from different market scopes separate.`,
     )
   }
-  const truncated = [...new Set(present.flatMap((part) => [...part.truncated]))]
-  const skipped = [...new Set(present.flatMap((part) => [...part.skipped]))]
+  const truncated = [...new Set(present.flatMap((part) => [...part.truncated]))].sort(compareText)
+  const skipped = [...new Set(present.flatMap((part) => [...part.skipped]))].sort(compareText)
   const read = asked - failed.length
   const dropped = Math.max(...present.map((part) => part.dropped))
   return {
