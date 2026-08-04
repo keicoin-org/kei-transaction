@@ -282,6 +282,15 @@ describe('walkAccounts — coverage is the honest half', () => {
     const whole = { ...emptyCoverage(), asked: 2, read: 2 }
     expect(mergeCoverage(undefined, whole, null)).toEqual(whole)
   })
+
+  test('an unnamed read deficit is never upgraded to complete coverage', () => {
+    const partial = { ...emptyCoverage(), asked: 2, read: 1, complete: false }
+    expect(mergeCoverage(undefined, partial, null)).toMatchObject({
+      asked: 2,
+      read: 1,
+      complete: false,
+    })
+  })
 })
 
 describe('walkAccounts — a read that can be stopped', () => {
