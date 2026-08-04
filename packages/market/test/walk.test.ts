@@ -418,6 +418,23 @@ describe('walkAccounts — coverage is the honest half', () => {
     const sparseReasons: string[] = []
     sparseReasons.length = 2
     sparseReasons[1] = 'x'
+    const inheritedStrings: string[] = Array(1)
+    Object.setPrototypeOf(
+      inheritedStrings,
+      Object.assign(Object.create(Array.prototype), { 0: 'inherited' }),
+    )
+    const inheritedFailures: Coverage['failed'] = Array(1)
+    Object.setPrototypeOf(
+      inheritedFailures,
+      Object.assign(Object.create(Array.prototype), {
+        0: { account: 'kei_x', reason: 'inherited' },
+      }),
+    )
+    const inheritedReasons: string[] = Array(2)
+    Object.setPrototypeOf(
+      inheritedReasons,
+      Object.assign(Object.create(Array.prototype), { 0: 'one', 1: 'two' }),
+    )
     const cases: Array<{ value: unknown; message: string }> = [
       {
         value: { ...emptyCoverage(), asked: 1, read: 1, failed: [{ account: 'foreign', reason: 'forged' }], complete: false },
@@ -450,12 +467,18 @@ describe('walkAccounts — coverage is the honest half', () => {
       { value: { ...emptyCoverage(), failed: undefined }, message: 'failed must be an array' },
       { value: { ...emptyCoverage(), failed: {} }, message: 'failed must be an array' },
       { value: { ...emptyCoverage(), failed: sparseFailures }, message: 'failed[0] must contain string account and reason fields' },
+      {
+        value: { ...emptyCoverage(), asked: 1, read: 0, failed: inheritedFailures, complete: false },
+        message: 'failed[0] must contain string account and reason fields',
+      },
       { value: { ...emptyCoverage(), truncated: undefined }, message: 'truncated must be an array of strings' },
       { value: { ...emptyCoverage(), truncated: 'kei_x' }, message: 'truncated must be an array of strings' },
       { value: { ...emptyCoverage(), truncated: sparseStrings }, message: 'truncated must be an array of strings' },
+      { value: { ...emptyCoverage(), truncated: inheritedStrings }, message: 'truncated must be an array of strings' },
       { value: { ...emptyCoverage(), skipped: undefined }, message: 'skipped must be an array of strings' },
       { value: { ...emptyCoverage(), skipped: {} }, message: 'skipped must be an array of strings' },
       { value: { ...emptyCoverage(), skipped: sparseStrings }, message: 'skipped must be an array of strings' },
+      { value: { ...emptyCoverage(), skipped: inheritedStrings }, message: 'skipped must be an array of strings' },
       {
         value: { ...emptyCoverage(), asked: 1, read: 0, failed: [{ account: 'kei_x' }], complete: false },
         message: 'failed[0] must contain string account and reason fields',
@@ -474,6 +497,16 @@ describe('walkAccounts — coverage is the honest half', () => {
           asked: 1,
           read: 0,
           failed: [{ account: 'kei_x', reason: 'one', reasons: 'one' }],
+          complete: false,
+        },
+        message: 'reasons must be an array of strings',
+      },
+      {
+        value: {
+          ...emptyCoverage(),
+          asked: 1,
+          read: 0,
+          failed: [{ account: 'kei_x', reason: 'one; two', reasons: inheritedReasons }],
           complete: false,
         },
         message: 'reasons must be an array of strings',

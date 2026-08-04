@@ -441,7 +441,7 @@ function coverageProblem(value: unknown): string | null {
   const failed = candidate.failed
   const failedAccounts = new Set<string>()
   for (const [index, failure] of failed.entries()) {
-    if (typeof failure !== 'object' || failure === null) {
+    if (!Object.hasOwn(failed, index) || typeof failure !== 'object' || failure === null) {
       return `failed[${index}] must contain string account and reason fields.`
     }
     const account = (failure as { account?: unknown }).account
@@ -511,7 +511,7 @@ function isCount(value: unknown): value is number {
 function isStringArray(value: unknown): value is string[] {
   if (!Array.isArray(value)) return false
   for (let index = 0; index < value.length; index += 1) {
-    if (typeof value[index] !== 'string') return false
+    if (!Object.hasOwn(value, index) || typeof value[index] !== 'string') return false
   }
   return true
 }
