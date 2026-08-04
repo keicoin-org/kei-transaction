@@ -41,7 +41,7 @@ export type {
 export { isMarketError } from './errors.js'
 export type { MarketErrorCode } from './errors.js'
 
-export { priceIndex, toCandles, toSeries } from './series.js'
+export { DEFAULT_MAX_CANDLES, MAX_CANDLES, priceIndex, toCandles, toSeries } from './series.js'
 export type {
   Candle,
   CandleOptions,
