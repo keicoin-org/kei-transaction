@@ -205,6 +205,25 @@ send(playerA, drop.proofFor(playerA))   // plain JSON
 await kei.claims.add(bundle)
 ```
 
+Claim proofs are off-chain data: a root cannot reconstruct one after a reload.
+The default remains session memory, while wallets that need “next login”
+recovery can opt into browser storage (or inject the same interface on Node):
+
+```js
+const kei = await Kei.start({
+  claimStore: createBrowserClaimStore(localStorage),
+})
+
+await kei.claims.add(bundle)             // persisted and read back before signing
+await kei.claims.storageStatus()         // durability plus typed diagnostics
+```
+
+Records are isolated by network, wallet address, and root, removed only after
+confirmed claim/reconciliation, and bounded to 128 records, 16,384 bytes each,
+and 128 proof hashes. They contain award metadata but no seed or private key;
+browser storage is recovery, not a backup. See
+[`docs/decisions-claims-durability.md`](docs/decisions-claims-durability.md).
+
 Claiming happens in the background. A forged proof, a forged amount, or a second
 claim from the same account is rejected by the ledger, not by the SDK.
 
