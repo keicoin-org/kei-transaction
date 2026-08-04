@@ -20,6 +20,7 @@ const OTHER_SEED = 'E'.repeat(64)
 
 class MemoryWebStorage implements ClaimWebStorage {
   private readonly values = new Map<string, string>()
+  beforeNextSet: (() => void) | undefined
 
   get length(): number {
     return this.values.size
@@ -34,6 +35,9 @@ class MemoryWebStorage implements ClaimWebStorage {
   }
 
   setItem(key: string, value: string): void {
+    const beforeSet = this.beforeNextSet
+    this.beforeNextSet = undefined
+    beforeSet?.()
     this.values.set(key, value)
   }
 
@@ -127,12 +131,32 @@ describe('durable claim bundles', () => {
 
     const beforeReload = (await first.claims.pending()).length
     first.close()
+    const originalHasClaimed = node.hasClaimed.bind(node)
+    const originalCommitInfo = node.commitInfo.bind(node)
+    const originalProcess = node.process.bind(node)
+    let reconciledReads = 0
+    let claimSubmissions = 0
+    node.hasClaimed = async (address, root) => {
+      reconciledReads += 1
+      return originalHasClaimed(address, root)
+    }
+    node.commitInfo = async (root) => {
+      reconciledReads += 1
+      return originalCommitInfo(root)
+    }
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
+      return originalProcess(block)
+    }
     const reloaded = remember(await Kei.start({
       node,
       seed: PLAYER_SEED,
       autoClaim: false,
       claimStore: createBrowserClaimStore(storage),
     }))
+    expect(reconciledReads).toBe(2)
+    expect(claimSubmissions).toBe(0)
+    expect(storage.length).toBe(1)
     const afterReload = (await reloaded.claims.pending()).length
 
     expect({ beforeReload, afterReload }).toEqual({ beforeReload: 1, afterReload: 1 })
@@ -195,10 +219,61 @@ describe('durable claim bundles', () => {
       submissions += 1
       return originalProcess(block)
     }
-    const reconciled = remember(await Kei.start({ node, seed: PLAYER_SEED, claimStore: store }))
-    expect(await reconciled.claims.pending()).toHaveLength(0)
-    expect(submissions).toBe(0)
+    const reconciled = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: store,
+    }))
     expect((await store.list({ network: 'mock', address: reconciled.address }, 3))).toHaveLength(0)
+    expect(submissions).toBe(0)
+    expect(await reconciled.claims.pending()).toHaveLength(0)
+  })
+
+  test('browser namespaces stay bounded across stale concurrent writers and hydrate cleanly', async () => {
+    const storage = new MemoryWebStorage()
+    const firstStore = createBrowserClaimStore(storage)
+    const secondStore = createBrowserClaimStore(storage)
+    const scoped = remember(await Kei.start({ node, seed: PLAYER_SEED, autoClaim: false }))
+    const scope = { network: 'mock', address: scoped.address }
+    scoped.close()
+    const roots = Array.from({ length: MAX_PENDING_CLAIMS + 1 }, (_, index) =>
+      index.toString(16).toUpperCase().padStart(64, '0'))
+    const envelope = (root: string): string => JSON.stringify({
+      version: 1,
+      bundle: { root, asset: gems.id, amount: '1', proof: [] },
+    })
+    for (const root of roots.slice(0, MAX_PENDING_CLAIMS - 1)) {
+      firstStore.write(scope, root, envelope(root))
+    }
+
+    // Both adapters read the same 127-record snapshot. The nested write lands
+    // first; the outer stale snapshot then replaces it atomically.
+    storage.beforeNextSet = () => secondStore.write(
+      scope,
+      roots[MAX_PENDING_CLAIMS] as string,
+      envelope(roots[MAX_PENDING_CLAIMS] as string),
+    )
+    firstStore.write(
+      scope,
+      roots[MAX_PENDING_CLAIMS - 1] as string,
+      envelope(roots[MAX_PENDING_CLAIMS - 1] as string),
+    )
+
+    const futureStore = createBrowserClaimStore(storage)
+    const persisted = await futureStore.list(scope, MAX_PENDING_CLAIMS + 1)
+    expect(persisted).toHaveLength(MAX_PENDING_CLAIMS)
+    expect(await Promise.all(persisted.map((root) => futureStore.read(scope, root))))
+      .not.toContain(null)
+
+    const hydrated = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: futureStore,
+    }))
+    expect((await hydrated.claims.storageStatus()).diagnostics).toEqual([])
+    expect(await futureStore.list(scope, MAX_PENDING_CLAIMS + 1)).toEqual([])
   })
 
   test('wallet and network namespaces do not leak records', async () => {

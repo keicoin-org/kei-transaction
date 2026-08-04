@@ -358,9 +358,8 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
     return { ...description, hash }
   }
 
-  const pending = async (): Promise<PendingClaim[]> => {
+  const reconcile = async (): Promise<void> => {
     await hydrate()
-    const out: PendingClaim[] = []
     for (const bundle of [...held.values()]) {
       if (await client.node.hasClaimed(client.address, bundle.root)) {
         await removePersisted(bundle.root)
@@ -374,8 +373,13 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
         held.delete(bundle.root)
         continue
       }
-      out.push(await describe(bundle))
     }
+  }
+
+  const pending = async (): Promise<PendingClaim[]> => {
+    await reconcile()
+    const out: PendingClaim[] = []
+    for (const bundle of held.values()) out.push(await describe(bundle))
     return out
   }
 
@@ -423,9 +427,10 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
     if (startup) return startup
     startup = (async () => {
       await hydrate()
-      if (!autoClaim || held.size === 0) return
+      if (held.size === 0) return
       try {
-        await claimAll()
+        if (autoClaim) await claimAll()
+        else await reconcile()
       } catch {
         diagnose({
           code: 'claim-retry-failed',

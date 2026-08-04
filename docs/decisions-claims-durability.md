@@ -9,9 +9,10 @@ not change consensus, RPC, blocks, proofs, seed custody, or issuer custody.
 
 `ClaimStore` has four deliberately small operations: list roots, read one raw
 record, write one raw record, and remove one raw record. Every operation receives
-`{ network, address }`; the root is the record key. A browser adapter therefore
-uses `kei:claim:v1:<network>:<address>:<root>`, while a database adapter can map
-the same identity to its own primary key.
+`{ network, address }`; the root is the logical record key. The browser adapter
+stores one versioned, bounded namespace value at
+`kei:claim-store:v1:<network>:<address>`, while a database adapter can map the
+same identity to its own primary key.
 
 The default is a fresh memory store, preserving the old process-local behaviour
 and reporting `durability: 'session'`. Reload recovery is opt-in through
@@ -54,6 +55,13 @@ values, seeds, keys, signatures, or adapter exception text.
 `'persistent' | 'session'` declaration, the active namespace, and diagnostics.
 A custom store is trusted code about whether its backing service really
 survives a restart; the SDK can verify immediate read-back, not a future disk.
+
+The browser adapter encodes all records for one wallet/network in a single
+localStorage value. `setItem` atomically replaces that bounded value, so two
+tabs acting on stale snapshots may replace one another, but cannot expose a
+129th record or leave hydration stuck behind an overflow. The SDK's exact
+read-back check still detects contention that happens before read-back completes;
+ledger reconciliation remains authoritative for later multi-tab races.
 
 ## 4. Startup retries without making a transient node error fatal
 
