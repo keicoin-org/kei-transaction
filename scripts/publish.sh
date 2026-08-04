@@ -38,6 +38,44 @@ if [ -n "$(git status --porcelain)" ]; then
   exit 1
 fi
 
+# A pull request may exercise the entire preflight with --check, but the live
+# path is deliberately narrower: publish only the exact commit currently at
+# the fetched default branch. This rejects release branches, detached HEADs and
+# a local default branch that became stale after it was checked out.
+if [ "$CHECK_ONLY" -eq 0 ]; then
+  current_branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+  if [ -z "$current_branch" ]; then
+    echo "release refused: publication requires the checked-out default branch, not a detached HEAD" >&2
+    exit 1
+  fi
+
+  default_ref=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  case "$default_ref" in
+    origin/*) default_branch=${default_ref#origin/} ;;
+    *)
+      echo "release refused: origin's default branch is not configured" >&2
+      exit 1
+      ;;
+  esac
+
+  if [ "$current_branch" != "$default_branch" ]; then
+    echo "release refused: publication requires the default branch '$default_branch' (currently '$current_branch')" >&2
+    exit 1
+  fi
+
+  if ! git fetch --quiet --no-tags origin "+refs/heads/$default_branch:refs/remotes/origin/$default_branch"; then
+    echo "release refused: could not refresh origin/$default_branch" >&2
+    exit 1
+  fi
+
+  head_commit=$(git rev-parse HEAD)
+  remote_commit=$(git rev-parse "refs/remotes/origin/$default_branch")
+  if [ "$head_commit" != "$remote_commit" ]; then
+    echo "release refused: HEAD must exactly match the freshly fetched origin/$default_branch release commit" >&2
+    exit 1
+  fi
+fi
+
 echo "==> Checking release manifests"
 npm run release:check
 
@@ -84,6 +122,12 @@ done
 if [ "$CHECK_ONLY" -eq 1 ]; then
   echo "Preflight passed. Nothing was published."
   exit 0
+fi
+
+echo "==> Verifying npm publisher identity"
+if ! npm whoami >/dev/null; then
+  echo "release refused: npm authentication is required before publication" >&2
+  exit 1
 fi
 
 for package in $PACKAGES; do
