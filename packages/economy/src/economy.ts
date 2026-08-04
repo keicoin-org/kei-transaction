@@ -201,6 +201,16 @@ export function createEconomy(client: KeiClient, options: EconomyOptions = {}): 
 
     const held = await spendableRaw(client, grant, issuer)
     if (held < needed) {
+      // A shop that pays out Kei — a buyback, a bounty board — locks Kei rather
+      // than stock, and nobody issues Kei: its supply is fixed at genesis
+      // (SPEC §5.7). Saying "mint the shortfall" here would be a fix that
+      // cannot work, so this leg gets its own sentence and its own code.
+      if (grant.asset === KEI_ASSET) {
+        fail(
+          'insufficient-kei',
+          `${issuer} holds ${format(held, grant)} Kei and stocking ${count} × "${recipe.id}" locks ${format(needed, grant)}. Nobody issues Kei — the supply is fixed at genesis (SPEC §5.7) — so { mint: true } cannot help here. Fund this account first; on testnet call faucet().`,
+        )
+      }
       if (stockOptions.mint !== true) {
         fail(
           'no-stock',

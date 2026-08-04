@@ -162,6 +162,12 @@ export function defineRecipe(spec: RecipeSpec): Recipe {
  * copy and the player's copy" a meaningful sentence. Everything else goes
  * through `defineRecipe()`, because a half-built recipe reaching `plan()` is a
  * `TypeError` deep in the resolver rather than a sentence at the call site.
+ *
+ * The entries are checked too, not just the arrays holding them. A catalogue
+ * that arrived as JSON and was frozen on the way in has the outward shape of a
+ * recipe and can still carry a `null` where a stack belongs — and the whole
+ * point of this predicate is that whatever it turns down gets a sentence from
+ * `defineRecipe()` instead.
  */
 export function isRecipe(value: Recipe | RecipeSpec): value is Recipe {
   if (!Object.isFrozen(value)) return false
@@ -172,9 +178,16 @@ export function isRecipe(value: Recipe | RecipeSpec): value is Recipe {
     typeof candidate.name === 'string' &&
     (candidate.strategy === 'grant' || candidate.strategy === 'sink' || candidate.strategy === 'exchange') &&
     (candidate.sink === 'burn' || candidate.sink === 'issuer') &&
-    Array.isArray(candidate.requires) &&
-    Array.isArray(candidate.costs) &&
-    Array.isArray(candidate.grants)
+    isStackList(candidate.requires) &&
+    isStackList(candidate.costs) &&
+    isStackList(candidate.grants)
+  )
+}
+
+function isStackList(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.every((stack) => stack !== null && typeof stack === 'object' && namesAnAsset((stack as Stack).asset))
   )
 }
 
@@ -282,20 +295,22 @@ function normalizeStack(stack: Stack, id: string, field: string, index: number):
 }
 
 function assertRef(asset: AssetRef | undefined, where: string): void {
+  if (namesAnAsset(asset)) return
   if (typeof asset === 'string') {
-    if (asset.trim() === '') {
-      fail('bad-asset', `${where} names an empty asset. Use 'KEI', an asset id, or the token object itself.`)
-    }
-    return
-  }
-  if (asset && typeof asset === 'object') {
-    if ('id' in asset && typeof asset.id === 'string' && asset.id !== '') return
-    if ('symbol' in asset && typeof asset.symbol === 'string' && asset.symbol.trim() !== '') return
+    fail('bad-asset', `${where} names an empty asset. Use 'KEI', an asset id, or the token object itself.`)
   }
   fail(
     'bad-asset',
     `${where} does not name an asset. Pass the token or item object, an asset id, 'KEI', or { symbol: 'GEM', issuer: gameAddress } for a recipe written before the token exists.`,
   )
+}
+
+/** Whether a ref could be resolved at all. The chain decides whether it exists. */
+function namesAnAsset(asset: AssetRef | undefined): boolean {
+  if (typeof asset === 'string') return asset.trim() !== ''
+  if (!asset || typeof asset !== 'object') return false
+  if ('id' in asset && typeof asset.id === 'string' && asset.id !== '') return true
+  return 'symbol' in asset && typeof asset.symbol === 'string' && asset.symbol.trim() !== ''
 }
 
 function plural(count: number, word: string): string {

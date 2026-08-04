@@ -391,6 +391,46 @@ describe('stocking the shelf', () => {
     rival.close()
   })
 
+  test('a shop that pays out Kei is funded, not minted, and says so', async () => {
+    // A buyback — the game buys scrap back for Kei — locks Kei rather than
+    // stock, and nobody issues Kei: the supply is fixed at genesis (SPEC §5.7).
+    // "Mint the shortfall" is the one fix that cannot work here.
+    const broke = await Kei.server({ seed: 'E'.repeat(64), node })
+    const buyback = defineRecipe({
+      id: 'buyback',
+      costs: [{ asset: scrap, amount: 10 }],
+      grants: [{ asset: 'KEI', amount: 5 }],
+      issuer: broke.address,
+    })
+
+    const plan = await broke.economy.plan(buyback, { player: alice.address })
+    expect(plan.ok).toBe(false)
+    const shortfall = plan.problems.find((entry) => entry.code === 'insufficient-kei')
+    expect(shortfall?.message).toContain('fixed at genesis')
+    expect(shortfall?.message).toContain('faucet()')
+
+    for (const options of [{}, { mint: true }]) {
+      const message = await messageOf(() => broke.economy.stock(buyback, options))
+      expect(message).toContain('Nobody issues Kei')
+      expect(message).toContain('faucet()')
+      expect(message).not.toContain('issued by null')
+    }
+    expect(await codeOf(() => broke.economy.stock(buyback, { mint: true }))).toBe('insufficient-kei')
+
+    // Funded, it stocks and settles like any other exchange.
+    await game.send(broke.address, 10)
+    await broke.sync()
+    const [offer] = await broke.economy.stock(buyback)
+    expect(offer?.give).toMatchObject({ symbol: 'KEI', amount: 5 })
+
+    const before = await alice.balance()
+    await alice.economy.run(buyback)
+    await alice.sync()
+    expect(await alice.balance()).toBe(before + 5)
+    expect(await scrap.balanceOf(alice.address)).toBe(90)
+    broke.close()
+  })
+
   test('a reward or a sink has no shelf, and stock() says which call it wants', async () => {
     const daily = defineRecipe({ id: 'daily', grants: [{ asset: gem, amount: 5 }] })
     const repair = defineRecipe({ id: 'repair', costs: [{ asset: scrap, amount: 5 }] })

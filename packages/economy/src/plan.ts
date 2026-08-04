@@ -404,10 +404,19 @@ async function planExchange(
   if (context.client.role === 'issuer' && context.client.address === issuer) {
     const held = await spendableRaw(context.client, grant, issuer)
     if (held < grant.raw) {
-      problems.push({
-        code: 'no-stock',
-        message: `${issuer} holds ${format(held, grant)} ${grant.symbol} and stocking "${recipe.id}" locks ${grant.amount}. Mint some to this account first, or pass { mint: true } to economy.stock() and it will mint the shortfall before it lists.`,
-      })
+      // A shop that pays out Kei locks Kei, and nobody issues Kei (SPEC §5.7),
+      // so the mint that fixes a stock shortfall does not exist for this leg.
+      problems.push(
+        grant.asset === KEI_ASSET
+          ? {
+              code: 'insufficient-kei',
+              message: `"${recipe.id}" pays out ${grant.amount} Kei and ${issuer} holds ${format(held, grant)}. Kei is not minted — its supply is fixed at genesis (SPEC §5.7) — so fund this account before stocking; on testnet call faucet().`,
+            }
+          : {
+              code: 'no-stock',
+              message: `${issuer} holds ${format(held, grant)} ${grant.symbol} and stocking "${recipe.id}" locks ${grant.amount}. Mint some to this account first, or pass { mint: true } to economy.stock() and it will mint the shortfall before it lists.`,
+            },
+      )
     }
   } else {
     const listings = await matchingOffers(context, { issuer, cost, grant })

@@ -10,6 +10,7 @@
 import { beforeEach, describe, expect, test } from 'bun:test'
 import {
   Kei,
+  KeiError,
   defineRecipe,
   randomSeed,
   type IssuerToken,
@@ -60,6 +61,16 @@ async function withoutWriting<T>(run: () => Promise<T>): Promise<T> {
   )
   expect(after.map((info) => info?.frontier)).toEqual(before.map((info) => info?.frontier))
   return result
+}
+
+function codeOf(run: () => unknown): string {
+  try {
+    run()
+  } catch (error) {
+    if (error instanceof KeiError) return error.code
+    throw error
+  }
+  throw new Error('expected a KeiError, and nothing was thrown')
 }
 
 function problem(plan: Plan, code: string): string {
@@ -483,6 +494,34 @@ describe('the catalogue on a Kei instance', () => {
     expect(registered.requires).toEqual([])
     expect(registered.sink).toBe('burn')
     expect((await alice.economy.plan('hand-made')).strategy).toBe('grant')
+  })
+
+  test('a frozen catalogue with a hole in it is a sentence, not a TypeError', async () => {
+    // The outward shape of a recipe is not enough: a catalogue that arrived as
+    // JSON and was frozen on the way in has all the right fields and can still
+    // carry a null where a stack belongs. Turning it down here is what sends it
+    // through defineRecipe() and gets it a sentence at the call site.
+    const fromJson = Object.freeze({
+      id: 'from-json',
+      name: 'from-json',
+      strategy: 'sink',
+      sink: 'burn',
+      requires: [],
+      costs: [null],
+      grants: [],
+    })
+    expect(codeOf(() => alice.economy.define(fromJson as never))).toBe('bad-stack')
+
+    const noAsset = Object.freeze({
+      id: 'no-asset',
+      name: 'no-asset',
+      strategy: 'sink',
+      sink: 'burn',
+      requires: [],
+      costs: [{ amount: 5 }],
+      grants: [],
+    })
+    expect(codeOf(() => alice.economy.define(noAsset as never))).toBe('bad-asset')
   })
 })
 
