@@ -653,19 +653,47 @@ published outside that range may as well not exist. The **npm** row above is
 that lesson learned the expensive way, and this section exists so the next
 release is read as a set rather than as nine independent publishes.
 
-### Unreleased — the durability work, source-only
+### Unreleased — coordinated SDK release
 
-`kei.custody`, `Kei.start({ requireDurableSeed })`, the `SeedStore` durability
-contract, and the wallet panel's session-only warning are in this tree and in no
-published package. Every version number in this repository is still the one that
-is on npm — `npm view kei-transaction version` reports `0.6.0`, `@keicoin/wallet`
-is `0.4.2` — and no version or dependency range has been moved ahead of a
-publish. The release that carries this work is a separate PR of its own, opened
-after the source lands, in the same order [#32] was followed by [#33]: the
-feature merges first, then one PR moves the whole set together.
+The source is merged; the registry release is tracked in [#53]. At the opening
+of this release candidate on 4 August 2026, the npm registry baseline was
+`kei-transaction@0.6.0`, `@keicoin/core@0.4.0`,
+`@keicoin/market@0.2.0`, and `@keicoin/wallet@0.4.2`. A release manifest may
+name the next versions before npm accepts them; that is a release candidate,
+not evidence that they are installable.
 
-[#32]: https://github.com/keicoin-org/kei-transaction/pull/32
-[#33]: https://github.com/keicoin-org/kei-transaction/pull/33
+| Package | Planned | Why |
+|---|---:|---|
+| `@keicoin/core` | `0.5.0` | Bounded HTTP requests and response bodies, single-flight receivable polling with backoff, cancellation, typed timeout errors, and credential-safe endpoint diagnostics |
+| `@keicoin/work` | `0.4.1` | Dependency-only move to `@keicoin/core@^0.5.0` |
+| `@keicoin/claims` | `0.5.1` | Dependency-only move to `@keicoin/core@^0.5.0` |
+| `@keicoin/tokens` | `0.5.2` | Dependency-only move to `@keicoin/core@^0.5.0` and `@keicoin/claims@^0.5.1` |
+| `@keicoin/market` | `0.3.0` | Bounded and abortable aggregate reads, explicit scope-safe coverage provenance with structural validation before merges, oriented `BookLevel` prices, deterministic precision/race/paging conformance, validated limits and retry timers |
+| `@keicoin/wallet` | `0.5.0` | Durable-seed reporting, bounded identity-checked metadata caching, and a coalesced ordered refresh stream with subscription-instance stale-paint protection |
+| `@keicoin/economy` | `0.2.1` | Dependency-only move to core `^0.5.0`, claims `^0.5.1`, and market `^0.3.0` |
+| `@keicoin/player-economy` | `0.1.1` | Correct whole-shelf browsing to consume oriented ask levels, plus dependency moves to core `^0.5.0` and market `^0.3.0` |
+| `kei-transaction` | `0.7.0` | The coordinated umbrella range that exposes one copy of every release above and records its public npm access policy in the manifest |
+
+`HttpNodeOptions.requestTimeout` is new public configuration, so core takes a
+strict-semver minor rather than hiding that surface in a patch. Under 0.x caret
+rules `^0.4.0` excludes `0.5.0`; every direct core consumer therefore moves its
+floor and is republished. Dependency-only consumers take patches; player economy
+also carries its compatible browse fix, while market, wallet, and the umbrella
+keep the minor versions warranted by their own public additions.
+
+The publish order is core, work, claims, tokens, market, wallet, economy,
+player-economy, and the umbrella last. Before publication, `sh
+scripts/publish.sh --check` requires the committed Bun lockfile, installs it
+frozen, cleans and rebuilds every declaration and JavaScript artifact, runs the
+suite, validates every manifest export and binary in each tarball, then installs
+the packed graph and imports its public Node entries. Publication is allowed only
+from the fetched, merged default-branch commit, and interrupted reruns skip an
+existing version only when its registry integrity matches the reviewed local
+artifact. The published-release table and
+website move only after an empty-project install proves that npm resolves one
+copy of every package.
+
+[#53]: https://github.com/keicoin-org/kei-transaction/issues/53
 
 ### `0.6.0` — published 4 August 2026
 

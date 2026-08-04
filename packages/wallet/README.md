@@ -118,6 +118,12 @@ lookup with metadata carrying a different asset id, the summary rejects with
 `KeiError('asset-info-mismatch')`, caches nothing from that response, and retries
 the lookup on the next summary.
 
+Token and item rows are sorted by asset id, independent of node response order.
+Every `change` listener shares one client subscription and one refresh loop.
+Bursts collapse to the refresh in flight plus one follow-up, listener failures
+are isolated, and a listener never receives a snapshot whose read started before
+that subscription instance existed.
+
 ## Status
 
 **M6 of eleven.** The panel and its seed-reveal friction are real and tested end to

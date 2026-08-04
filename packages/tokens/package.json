@@ -1,6 +1,6 @@
 {
   "name": "@keicoin/tokens",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Kei native tokens and items: issue, mint, burn, transfer, balanceOf, policy flags, commits.",
   "license": "MIT",
   "author": "Sano",
@@ -41,7 +41,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@keicoin/claims": "^0.5.0",
-    "@keicoin/core": "^0.4.0"
+    "@keicoin/claims": "^0.5.1",
+    "@keicoin/core": "^0.5.0"
   }
 }
