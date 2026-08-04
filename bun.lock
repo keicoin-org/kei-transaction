@@ -27,22 +27,22 @@
     },
     "packages/economy": {
       "name": "@keicoin/economy",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "dependencies": {
         "@keicoin/claims": "^0.5.1",
         "@keicoin/core": "^0.5.0",
-        "@keicoin/market": "^0.3.0",
+        "@keicoin/market": "^0.4.0",
       },
     },
     "packages/kei": {
       "name": "kei-transaction",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "dependencies": {
         "@keicoin/claims": "^0.5.1",
         "@keicoin/core": "^0.5.0",
-        "@keicoin/economy": "^0.2.1",
-        "@keicoin/market": "^0.3.0",
-        "@keicoin/player-economy": "^0.1.1",
+        "@keicoin/economy": "^0.2.2",
+        "@keicoin/market": "^0.4.0",
+        "@keicoin/player-economy": "^0.1.2",
         "@keicoin/tokens": "^0.5.2",
         "@keicoin/wallet": "^0.5.0",
         "@keicoin/work": "^0.4.1",
@@ -50,17 +50,17 @@
     },
     "packages/market": {
       "name": "@keicoin/market",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@keicoin/core": "^0.5.0",
       },
     },
     "packages/player-economy": {
       "name": "@keicoin/player-economy",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "dependencies": {
         "@keicoin/core": "^0.5.0",
-        "@keicoin/market": "^0.3.0",
+        "@keicoin/market": "^0.4.0",
       },
     },
     "packages/tokens": {
