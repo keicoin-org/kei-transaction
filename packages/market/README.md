@@ -112,6 +112,13 @@ out of order. Aborting rejects with the typed `read-aborted` market error, stops
 new chain reads from starting, and does not claim to cancel a node request
 already in flight.
 
+Each walk reads at most `limit` rows from each account, 100 by default. A limit
+must be a positive safe whole number; an invalid value rejects with
+`bad-limit` before the node read starts. That validation prevents coercion and
+unbounded numeric values, but it is not a small resource ceiling: callers can
+still choose a large valid page. Keep it at or below the node's documented cap
+and at a size the client can afford.
+
 `offers()`, `mine()` and `trades()` remain arrays; their non-enumerable
 `coverage` property does not change iteration or JSON output. Array transforms
 such as `.map()` return a new plain array, so read coverage before transforming
