@@ -75,13 +75,14 @@ configuration throws `bad-directory-limit` before an initial iterable is
 touched. Re-announcing still refreshes LRU order, and evictions still appear as
 `coverage.dropped`.
 
-### Durable discovery and materialized observations
+### Reference discovery and materialized observations
 
 `createDirectory()` is deliberately a live, process-local LRU. For a market
-that must survive restart, use the portable catalog/store contracts instead:
+that needs a richer in-process read model, use the bounded catalog/store
+reference. This PR deliberately does not claim restart-safe production storage:
 
 ```js
-const storage = myAtomicAdapter // SQLite, IndexedDB, Durable Object, etc.
+const storage = createMemoryMarketStorage()
 const catalog = createMarketCatalog({ storage })
 const store = createMarketStore({ storage })
 
@@ -94,34 +95,34 @@ await catalog.announce({
   instrument: { base: sword.id, quote: KEI_ASSET },
 })
 
-const source = createAccountChainSource({
+const ingestor = createAccountChainIngestor({
   id: 'public-node',
   provider: node,
   catalog,
   store,
 })
-await source.ingest({ instrument: { base: sword.id, quote: KEI_ASSET } })
+await ingestor.ingest({ instrument: { base: sword.id, quote: KEI_ASSET } })
 const page = await store.offers({ network: 'testnet', base: sword.id })
 ```
 
-The storage boundary is one small `MarketStorageDriver`: `load()` plus atomic
-revision-based `compareAndSwap()`. Rows discovered in one account page and its
-checkpoint are therefore acknowledged together or not at all. The included
-`createMemoryMarketStorage()` is a deterministic reference adapter and says
-`durability: 'memory'`; sharing it across SDK instances demonstrates restart of
-the SDK object, not restart of the process. A database adapter may advertise
-`durable` only when its compare-and-swap is an atomic durable commit.
+`MarketMemoryStorageAdapter` is a deliberately narrow whole-snapshot reference:
+`load()` plus in-process compare-and-swap. Rows discovered in one account page
+and its checkpoint are acknowledged together or not at all within that
+reference. Sharing `createMemoryMarketStorage()` across SDK instances
+demonstrates restart of the SDK object, not restart of the process. A future
+production driver needs operation-level transactions, migrations, indexes, and
+conformance tests; this whole-envelope API must not be presented as that driver.
 
 Catalog observations are append-only and idempotent by
 `network/source/observationId`. Participant and instrument pages use opaque,
-revision-bound cursors. A catalog write makes an old cursor fail with
+revision-, query-, and integrity-bound cursors. A catalog write makes an old cursor fail with
 `stale-market-cursor`, so callers restart the traversal rather than accepting a
 page with gaps or duplicates. Store pages keep exact raw integer strings and
 provenance; a second source cannot rewrite immutable terms for the same
 `network/hash`. Conflicts are quarantined and the first canonical row stays.
 
 The current `account_swaps` RPC only returns a bounded newest window. The
-account-chain source can durably re-poll that window and resume catalog paging,
+account-chain ingestor can re-poll that window and resume catalog paging,
 but it always reports `sourceBackfill.complete: false`, reason
 `unsupported_pagination`, and `scannedBlocks: 'unsupported'`. Stored results are
 **materialized observations**, not network-global history. Complete historical

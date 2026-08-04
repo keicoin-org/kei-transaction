@@ -1,11 +1,12 @@
-import { KeiError, isAddress } from '@keicoin/core'
+import { blake2b, bytesToHex, KeiError, isAddress, utf8 } from '@keicoin/core'
 
 import { deadlineOf } from './catalog.js'
 import {
   loadEnvelope,
+  cursorSecretFor,
   throwIfStopped,
   updateEnvelope,
-  type MarketStorageDriver,
+  type MarketMemoryStorageAdapter,
   type StoredOfferRecord,
   type StoredRejectedRow,
   type StoredSourceCheckpoint,
@@ -57,6 +58,9 @@ export interface SourceCheckpointInput {
   readonly source: string
   readonly account: string
   readonly adapterVersion: number
+  /** Monotonic poll generation within this exact network/source/account/filter scope. */
+  readonly generation: number
+  readonly instrument?: { readonly base: string; readonly quote: string }
   readonly observedAt: number
   readonly newestHash: string | null
   readonly providerCursor: string | null
@@ -100,7 +104,7 @@ export interface MaterializedPageReceipt {
   readonly conflicts: number
   readonly quarantined: number
   readonly revision: number
-  readonly durability: 'memory' | 'durable'
+  readonly durability: 'memory'
 }
 
 export interface StoredOfferQuery {
@@ -128,7 +132,7 @@ export interface StoredOfferPage {
 }
 
 export interface MarketStore {
-  readonly durability: 'memory' | 'durable'
+  readonly durability: 'memory'
   materialize(input: MaterializedPageInput): Promise<MaterializedPageReceipt>
   offers(query: StoredOfferQuery): Promise<StoredOfferPage>
   checkpoint(query: {
@@ -136,6 +140,7 @@ export interface MarketStore {
     source: string
     account: string
     adapterVersion: number
+    instrument?: { readonly base: string; readonly quote: string }
     deadlineMs?: number
     signal?: AbortSignal
   }): Promise<SourceCheckpointInput | null>
@@ -143,13 +148,14 @@ export interface MarketStore {
 }
 
 export interface MarketStoreOptions {
-  readonly storage: MarketStorageDriver
+  readonly storage: MarketMemoryStorageAdapter
   readonly now?: () => number
 }
 
 export function createMarketStore(options: MarketStoreOptions): MarketStore {
   const storage = options.storage
   const now = options.now ?? Date.now
+  const cursorSecret = cursorSecretFor(storage)
   return {
     get durability() {
       return storage.capabilities.durability
@@ -164,6 +170,9 @@ export function createMarketStore(options: MarketStoreOptions): MarketStore {
       for (const offer of offers) {
         if (offer.network !== checkpoint.network || !offer.sources.includes(checkpoint.source)) {
           throw badRow('every offer in a page must share its checkpoint network and source')
+        }
+        if (checkpoint.base !== null && (offer.giveAsset !== checkpoint.base || offer.wantAsset !== checkpoint.quote)) {
+          throw badRow('every offer in a filtered page must match its checkpoint instrument scope')
         }
       }
       const deadline = deadlineOf(input, now, 'Market page materialization')
@@ -209,7 +218,7 @@ export function createMarketStore(options: MarketStoreOptions): MarketStore {
           const prior = checkpointRows[checkpointIndex]!
           // An overlapping/stale poll may retry after a newer poll committed.
           // It can add idempotent rows, but must never move the watermark back.
-          if (checkpoint.observedAt >= prior.observedAt) checkpointRows[checkpointIndex] = checkpoint
+          if (compareCheckpoint(checkpoint, prior) > 0) checkpointRows[checkpointIndex] = checkpoint
         }
         else checkpointRows.push(checkpoint)
         const { revision: _revision, ...rest } = current
@@ -231,7 +240,8 @@ export function createMarketStore(options: MarketStoreOptions): MarketStore {
       const parsed = offerQueryOf(query)
       const deadline = deadlineOf(query, now, 'Stored market offer page')
       const { envelope } = await loadEnvelope(storage, deadline)
-      const after = storeCursorOf(parsed.cursor, envelope.offerRevision)
+      const scope = offerQueryScope(parsed)
+      const after = storeCursorOf(parsed.cursor, envelope.offerRevision, scope, cursorSecret)
       const matching = envelope.offers
         .map(validateStoredOffer)
         .filter(
@@ -265,7 +275,7 @@ export function createMarketStore(options: MarketStoreOptions): MarketStore {
       const last = output.at(-1)
       return {
         rows: output,
-        nextCursor: more && last ? storeCursor(envelope.offerRevision, `${last.network}\u0000${last.hash}`) : null,
+        nextCursor: more && last ? storeCursor(envelope.offerRevision, scope, cursorSecret, `${last.network}\u0000${last.hash}`) : null,
         snapshotRevision: envelope.offerRevision,
         complete: !more,
         consumed: { rows: output.length, bytes },
@@ -294,31 +304,32 @@ export function createMarketStore(options: MarketStoreOptions): MarketStore {
 }
 
 function offerOf(value: StoredMarketOfferInput): StoredOfferRecord {
-  if (typeof value !== 'object' || value === null) throw badRow('offer must be an object')
-  const network = networkOf(value.network)
-  const hash = hashOf(value.hash)
-  const author = addressOf(value.author, 'author')
-  const give = legOf(value.give, 'give')
-  const want = legOf(value.want, 'want')
+  const network = networkOf(ownValue(value, 'network'))
+  const hash = hashOf(ownValue(value, 'hash'))
+  const author = addressOf(ownValue(value, 'author'), 'author')
+  const give = legOf(ownValue(value, 'give'), 'give')
+  const want = legOf(ownValue(value, 'want'), 'want')
   if (give.asset === want.asset) throw badRow('offer legs must use different assets')
-  const counterparty = nullableAddressOf(value.counterparty, 'counterparty')
-  const acceptedBy = nullableAddressOf(value.acceptedBy, 'acceptedBy')
-  const settledBy = nullableHashOf(value.settledBy, 'settledBy')
-  if (!['open', 'accepted', 'cancelled'].includes(value.state)) throw badRow('state is invalid')
-  if (value.state === 'open' && (acceptedBy !== null || settledBy !== null || value.settledAt !== null)) {
+  const counterparty = nullableAddressOf(ownValue(value, 'counterparty'), 'counterparty')
+  const acceptedBy = nullableAddressOf(ownValue(value, 'acceptedBy'), 'acceptedBy')
+  const settledBy = nullableHashOf(ownValue(value, 'settledBy'), 'settledBy')
+  const state = ownValue(value, 'state')
+  const settledAtValue = ownValue(value, 'settledAt')
+  if (typeof state !== 'string' || !['open', 'accepted', 'cancelled'].includes(state)) throw badRow('state is invalid')
+  if (state === 'open' && (acceptedBy !== null || settledBy !== null || settledAtValue !== null)) {
     throw badRow('an open offer cannot carry settlement fields')
   }
-  if (value.state === 'accepted' && (acceptedBy === null || settledBy === null || value.settledAt === null)) {
+  if (state === 'accepted' && (acceptedBy === null || settledBy === null || settledAtValue === null)) {
     throw badRow('an accepted offer needs acceptedBy, settledBy, and settledAt')
   }
-  if (value.state === 'cancelled' && (acceptedBy !== null || settledBy === null || value.settledAt === null)) {
+  if (state === 'cancelled' && (acceptedBy !== null || settledBy === null || settledAtValue === null)) {
     throw badRow('a cancelled offer needs settledBy/settledAt and cannot have acceptedBy')
   }
-  const height = safeInteger(value.height, 1, Number.MAX_SAFE_INTEGER, 'height')
-  const seenAt = safeInteger(value.seenAt, 0, Number.MAX_SAFE_INTEGER, 'seenAt')
-  const settledAt = value.settledAt === null ? null : safeInteger(value.settledAt, 0, Number.MAX_SAFE_INTEGER, 'settledAt')
-  const source = textOf(value.source, 1, 128, 'source')
-  const observedAt = safeInteger(value.observedAt, 0, Number.MAX_SAFE_INTEGER, 'observedAt')
+  const height = safeInteger(ownValue(value, 'height'), 1, Number.MAX_SAFE_INTEGER, 'height')
+  const seenAt = safeInteger(ownValue(value, 'seenAt'), 0, Number.MAX_SAFE_INTEGER, 'seenAt')
+  const settledAt = settledAtValue === null ? null : safeInteger(settledAtValue, 0, Number.MAX_SAFE_INTEGER, 'settledAt')
+  const source = textOf(ownValue(value, 'source'), 1, 128, 'source')
+  const observedAt = safeInteger(ownValue(value, 'observedAt'), 0, Number.MAX_SAFE_INTEGER, 'observedAt')
   return {
     network,
     hash,
@@ -328,7 +339,7 @@ function offerOf(value: StoredMarketOfferInput): StoredOfferRecord {
     wantAsset: want.asset,
     wantRaw: want.raw,
     counterparty,
-    state: value.state,
+    state: state as 'open' | 'accepted' | 'cancelled',
     acceptedBy,
     settledBy,
     height,
@@ -341,78 +352,106 @@ function offerOf(value: StoredMarketOfferInput): StoredOfferRecord {
 }
 
 function checkpointOf(value: SourceCheckpointInput): StoredSourceCheckpoint {
-  if (typeof value !== 'object' || value === null) throw badRow('checkpoint must be an object')
-  const network = networkOf(value.network)
-  const source = textOf(value.source, 1, 128, 'checkpoint source')
-  const account = addressOf(value.account, 'checkpoint account')
-  const adapterVersion = safeInteger(value.adapterVersion, 1, 1_000_000, 'adapterVersion')
-  const observedAt = safeInteger(value.observedAt, 0, Number.MAX_SAFE_INTEGER, 'checkpoint observedAt')
-  const newestHash = value.newestHash === null ? null : hashOf(value.newestHash)
-  const providerCursor = value.providerCursor === null ? null : textOf(value.providerCursor, 1, 2_048, 'providerCursor')
+  const network = networkOf(ownValue(value, 'network'))
+  const source = textOf(ownValue(value, 'source'), 1, 128, 'checkpoint source')
+  const account = addressOf(ownValue(value, 'account'), 'checkpoint account')
+  const adapterVersion = safeInteger(ownValue(value, 'adapterVersion'), 1, 1_000_000, 'adapterVersion')
+  const generation = safeInteger(ownValue(value, 'generation'), 1, Number.MAX_SAFE_INTEGER, 'checkpoint generation')
+  const instrumentValue = ownValue(value, 'instrument', false)
+  const instrument = instrumentValue === undefined ? undefined : instrumentOf(instrumentValue as { base: string; quote: string })
+  const observedAt = safeInteger(ownValue(value, 'observedAt'), 0, Number.MAX_SAFE_INTEGER, 'checkpoint observedAt')
+  const newestHashValue = ownValue(value, 'newestHash')
+  const newestHash = newestHashValue === null ? null : hashOf(newestHashValue)
+  const providerCursorValue = ownValue(value, 'providerCursor')
+  const providerCursor = providerCursorValue === null ? null : textOf(providerCursorValue, 1, 2_048, 'providerCursor')
+  const stopReason = ownValue(value, 'stopReason')
+  const exhausted = ownValue(value, 'exhausted')
   const reasons: readonly MarketIngestStopReason[] = ['exhausted', 'account_limit', 'request_limit', 'result_limit', 'byte_limit', 'page_limit', 'scan_limit', 'deadline', 'aborted', 'provider_error', 'unsupported_pagination']
-  if (!reasons.includes(value.stopReason)) throw badRow('checkpoint stopReason is invalid')
-  if (typeof value.exhausted !== 'boolean') throw badRow('checkpoint exhausted must be boolean')
-  if (value.exhausted && (value.stopReason !== 'exhausted' || providerCursor !== null)) {
+  if (typeof stopReason !== 'string' || !reasons.includes(stopReason as MarketIngestStopReason)) throw badRow('checkpoint stopReason is invalid')
+  if (typeof exhausted !== 'boolean') throw badRow('checkpoint exhausted must be boolean')
+  if (exhausted && (stopReason !== 'exhausted' || providerCursor !== null)) {
     throw badRow('an exhausted checkpoint must say exhausted and have no provider cursor')
   }
-  if (!value.exhausted && value.stopReason === 'exhausted') throw badRow('a non-exhausted checkpoint cannot say exhausted')
+  if (!exhausted && stopReason === 'exhausted') throw badRow('a non-exhausted checkpoint cannot say exhausted')
   return {
-    key: checkpointKey(network, source, account, adapterVersion),
+    key: checkpointKey(network, source, account, adapterVersion, instrument),
     network,
     source,
     account,
     adapterVersion,
+    generation,
+    base: instrument?.base ?? null,
+    quote: instrument?.quote ?? null,
     observedAt,
     newestHash,
     providerCursor,
-    exhausted: value.exhausted,
-    stopReason: value.stopReason,
+    exhausted,
+    stopReason,
   }
 }
 
 function rejectedOf(value: RejectedMarketRowInput): StoredRejectedRow {
-  if (typeof value !== 'object' || value === null) throw badRow('rejected row must be an object')
   return {
-    network: networkOf(value.network),
-    source: textOf(value.source, 1, 128, 'rejected source'),
-    account: addressOf(value.account, 'rejected account'),
-    observedAt: safeInteger(value.observedAt, 0, Number.MAX_SAFE_INTEGER, 'rejected observedAt'),
-    reason: textOf(value.reason, 1, 512, 'rejected reason'),
+    network: networkOf(ownValue(value, 'network')),
+    source: textOf(ownValue(value, 'source'), 1, 128, 'rejected source'),
+    account: addressOf(ownValue(value, 'account'), 'rejected account'),
+    observedAt: safeInteger(ownValue(value, 'observedAt'), 0, Number.MAX_SAFE_INTEGER, 'rejected observedAt'),
+    reason: textOf(ownValue(value, 'reason'), 1, 512, 'rejected reason'),
   }
 }
 
 function validateStoredOffer(row: StoredOfferRecord): StoredOfferRecord {
-  const sources = denseArray(row.sources, 'stored offer sources', 32).map((source) => textOf(source, 1, 128, 'stored source'))
+  const sources = denseArray(ownValue(row, 'sources') as readonly string[], 'stored offer sources', 32).map((source) => textOf(source, 1, 128, 'stored source'))
   if (sources.length === 0) throw badRow('stored offer needs at least one provenance source')
   const input: StoredMarketOfferInput = {
-    network: row.network,
-    hash: row.hash,
-    author: row.author,
-    give: { asset: row.giveAsset, raw: row.giveRaw },
-    want: { asset: row.wantAsset, raw: row.wantRaw },
-    counterparty: row.counterparty,
-    state: row.state,
-    acceptedBy: row.acceptedBy,
-    settledBy: row.settledBy,
-    height: row.height,
-    seenAt: row.seenAt,
-    settledAt: row.settledAt,
+    network: ownValue(row, 'network') as string,
+    hash: ownValue(row, 'hash') as string,
+    author: ownValue(row, 'author') as string,
+    give: { asset: ownValue(row, 'giveAsset') as string, raw: ownValue(row, 'giveRaw') as string },
+    want: { asset: ownValue(row, 'wantAsset') as string, raw: ownValue(row, 'wantRaw') as string },
+    counterparty: ownValue(row, 'counterparty') as string | null,
+    state: ownValue(row, 'state') as StoredMarketOfferInput['state'],
+    acceptedBy: ownValue(row, 'acceptedBy') as string | null,
+    settledBy: ownValue(row, 'settledBy') as string | null,
+    height: ownValue(row, 'height') as number,
+    seenAt: ownValue(row, 'seenAt') as number,
+    settledAt: ownValue(row, 'settledAt') as number | null,
     source: sources[0] ?? 'invalid',
-    observedAt: row.firstObservedAt,
+    observedAt: ownValue(row, 'firstObservedAt') as number,
   }
   const validated = offerOf(input)
-  const last = safeInteger(row.lastObservedAt, validated.firstObservedAt, Number.MAX_SAFE_INTEGER, 'lastObservedAt')
+  const last = safeInteger(ownValue(row, 'lastObservedAt'), validated.firstObservedAt, Number.MAX_SAFE_INTEGER, 'lastObservedAt')
   return { ...validated, sources: [...new Set(sources)].sort(compareText), lastObservedAt: last }
 }
 
 function validateCheckpoint(row: StoredSourceCheckpoint): StoredSourceCheckpoint {
-  const parsed = checkpointOf(publicCheckpoint(row))
-  if (row.key !== parsed.key) throw badRow('stored checkpoint key does not match its scope')
+  const base = ownValue(row, 'base')
+  const quote = ownValue(row, 'quote')
+  const parsed = checkpointOf({
+    network: ownValue(row, 'network') as string,
+    source: ownValue(row, 'source') as string,
+    account: ownValue(row, 'account') as string,
+    adapterVersion: ownValue(row, 'adapterVersion') as number,
+    generation: ownValue(row, 'generation') as number,
+    ...(base === null && quote === null ? {} : { instrument: { base: base as string, quote: quote as string } }),
+    observedAt: ownValue(row, 'observedAt') as number,
+    newestHash: ownValue(row, 'newestHash') as string | null,
+    providerCursor: ownValue(row, 'providerCursor') as string | null,
+    exhausted: ownValue(row, 'exhausted') as boolean,
+    stopReason: ownValue(row, 'stopReason') as MarketIngestStopReason,
+  })
+  if (ownValue(row, 'key') !== parsed.key) throw badRow('stored checkpoint key does not match its scope')
   return parsed
 }
 
 function validateRejected(row: StoredRejectedRow): StoredRejectedRow {
-  return rejectedOf(row)
+  return rejectedOf({
+    network: ownValue(row, 'network') as string,
+    source: ownValue(row, 'source') as string,
+    account: ownValue(row, 'account') as string,
+    observedAt: ownValue(row, 'observedAt') as number,
+    reason: ownValue(row, 'reason') as string,
+  })
 }
 
 function reconcileOffer(
@@ -484,6 +523,8 @@ function publicCheckpoint(row: StoredSourceCheckpoint): SourceCheckpointInput {
     source: row.source,
     account: row.account,
     adapterVersion: row.adapterVersion,
+    generation: row.generation,
+    ...(row.base === null && row.quote === null ? {} : { instrument: { base: row.base!, quote: row.quote! } }),
     observedAt: row.observedAt,
     newestHash: row.newestHash,
     providerCursor: row.providerCursor,
@@ -504,45 +545,86 @@ function offerQueryOf(query: StoredOfferQuery): { network: string; base?: string
   return { network, limit, maxResultBytes, ...(base === undefined ? {} : { base }), ...(quote === undefined ? {} : { quote }), ...(query.state === undefined ? {} : { state: query.state }), ...(query.cursor === undefined ? {} : { cursor: query.cursor }) }
 }
 
-function checkpointKeyQueryOf(query: { network: string; source: string; account: string; adapterVersion: number }): { key: string } {
+function checkpointKeyQueryOf(query: { network: string; source: string; account: string; adapterVersion: number; instrument?: { base: string; quote: string } }): { key: string } {
   const network = networkOf(query.network)
   const source = textOf(query.source, 1, 128, 'checkpoint source')
   const account = addressOf(query.account, 'checkpoint account')
   const version = safeInteger(query.adapterVersion, 1, 1_000_000, 'adapterVersion')
-  return { key: checkpointKey(network, source, account, version) }
+  const instrument = query.instrument === undefined ? undefined : instrumentOf(query.instrument)
+  return { key: checkpointKey(network, source, account, version, instrument) }
 }
 
-function checkpointKey(network: string, source: string, account: string, version: number): string {
-  return `${network}\u0000${source}\u0000${version}\u0000${account}`
+function checkpointKey(network: string, source: string, account: string, version: number, instrument?: { base: string; quote: string }): string {
+  return `${network}\u0000${source}\u0000${version}\u0000${account}\u0000${instrument?.base ?? '*'}\u0000${instrument?.quote ?? '*'}`
 }
 
 function offerKey(row: StoredOfferRecord): string {
   return `${row.network}\u0000${row.hash}`
 }
 
-function storeCursor(revision: number, key: string): string {
+function storeCursor(revision: number, scope: string, secret: string, key: string): string {
   let hex = ''
   for (let index = 0; index < key.length; index += 1) hex += key.charCodeAt(index).toString(16).padStart(4, '0')
-  return `mstore1.${revision}.${hex}`
+  const payload = `mstore2.${revision}.${scope}.${hex}`
+  return `${payload}.${cursorIntegrity(secret, payload)}`
 }
 
-function storeCursorOf(cursor: string | undefined, revision: number): string | null {
+function storeCursorOf(cursor: string | undefined, revision: number, scope: string, secret: string): string | null {
   if (cursor === undefined) return null
   const parts = cursor.split('.')
-  if (parts.length !== 3 || parts[0] !== 'mstore1' || !/^\d+$/.test(parts[1]!) || !/^[0-9a-f]+$/.test(parts[2]!) || parts[2]!.length % 4 !== 0 || parts[2]!.length > 1_600) {
+  if (parts.length !== 5 || parts[0] !== 'mstore2' || !/^\d+$/.test(parts[1]!) || parts[2] !== scope || !/^[0-9a-f]+$/.test(parts[3]!) || parts[3]!.length % 4 !== 0 || parts[3]!.length > 1_600) {
     throw new KeiError('bad-market-cursor', 'Stored offer cursor is malformed.')
   }
   if (Number(parts[1]) !== revision) throw new KeiError('stale-market-cursor', 'The materialized store changed; restart paging for a stable snapshot.')
+  const payload = `mstore2.${parts[1]}.${scope}.${parts[3]}`
+  if (parts[4] !== cursorIntegrity(secret, payload)) throw new KeiError('bad-market-cursor', 'Stored offer cursor failed its integrity check or belongs to another query.')
   let key = ''
-  for (let index = 0; index < parts[2]!.length; index += 4) key += String.fromCharCode(Number.parseInt(parts[2]!.slice(index, index + 4), 16))
+  for (let index = 0; index < parts[3]!.length; index += 4) key += String.fromCharCode(Number.parseInt(parts[3]!.slice(index, index + 4), 16))
   return key
 }
 
-function legOf(value: { asset: string; raw: string }, label: string): { asset: string; raw: string } {
-  if (typeof value !== 'object' || value === null) throw badRow(`${label} leg must be an object`)
-  const raw = textOf(value.raw, 1, 256, `${label}.raw`)
+function offerQueryScope(query: ReturnType<typeof offerQueryOf>): string {
+  return cursorIntegrity('public-query-scope', JSON.stringify({
+    network: query.network,
+    base: query.base ?? null,
+    quote: query.quote ?? null,
+    state: query.state ?? null,
+    limit: query.limit,
+    maxResultBytes: query.maxResultBytes,
+  }))
+}
+
+function cursorIntegrity(secret: string, value: string): string {
+  return bytesToHex(blake2b(utf8(`kei-market-cursor-v2\n${secret}\n${value}`), 16)).toLowerCase()
+}
+
+function instrumentOf(value: { readonly base: string; readonly quote: string }): { base: string; quote: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw badRow('checkpoint instrument must be an object')
+  const base = assetOf(value.base, 'checkpoint instrument base')
+  const quote = assetOf(value.quote, 'checkpoint instrument quote')
+  if (base === quote) throw badRow('checkpoint instrument legs must differ')
+  return { base, quote }
+}
+
+function compareCheckpoint(left: StoredSourceCheckpoint, right: StoredSourceCheckpoint): number {
+  if (left.observedAt !== right.observedAt) return left.observedAt - right.observedAt
+  if (left.generation !== right.generation) return left.generation - right.generation
+  return compareText(checkpointOrder(left), checkpointOrder(right))
+}
+
+function checkpointOrder(value: StoredSourceCheckpoint): string {
+  return JSON.stringify({
+    newestHash: value.newestHash,
+    providerCursor: value.providerCursor,
+    exhausted: value.exhausted,
+    stopReason: value.stopReason,
+  })
+}
+
+function legOf(value: unknown, label: string): { asset: string; raw: string } {
+  const raw = textOf(ownValue(value, 'raw'), 1, 256, `${label}.raw`)
   if (!/^[1-9]\d*$/.test(raw)) throw badRow(`${label}.raw must be a positive canonical integer string`)
-  return { asset: assetOf(value.asset, `${label}.asset`), raw }
+  return { asset: assetOf(ownValue(value, 'asset'), `${label}.asset`), raw }
 }
 
 function assetOf(value: unknown, label: string): string {
@@ -607,6 +689,19 @@ function denseArray<T>(value: readonly T[], label: string, maximum: number): T[]
     output.push(value[index] as T)
   }
   return output
+}
+
+function ownValue(value: unknown, key: string, required = true): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw badRow('records must be plain own-property objects')
+  const prototype = Object.getPrototypeOf(value)
+  if (prototype !== Object.prototype && prototype !== null) throw badRow('inherited record fields are not accepted')
+  const descriptor = Object.getOwnPropertyDescriptor(value, key)
+  if (descriptor === undefined) {
+    if (!required) return undefined
+    throw badRow(`${key} must be an own data property`)
+  }
+  if (!Object.hasOwn(descriptor, 'value')) throw badRow(`${key} cannot be an accessor property`)
+  return descriptor.value
 }
 
 function compareText(left: string, right: string): number {

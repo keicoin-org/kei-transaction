@@ -6,8 +6,8 @@ export { assetIdOf, durationMs } from './util.js'
 
 export { createMemoryMarketStorage } from './storage.js'
 export type {
-  MarketStorageCapabilities,
-  MarketStorageDriver,
+  MarketMemoryStorageCapabilities,
+  MarketMemoryStorageAdapter,
   MarketStorageEnvelope,
   MemoryMarketStorage,
 } from './storage.js'
@@ -54,15 +54,15 @@ export type {
   StoredOfferQuery,
 } from './store.js'
 
-export { DEFAULT_MARKET_READ_BUDGET, createAccountChainSource } from './account-chain-source.js'
+export { DEFAULT_MARKET_READ_BUDGET, createAccountChainIngestor } from './account-chain-ingestor.js'
 export type {
   AccountChainIngestRequest,
   AccountChainIngestResult,
-  AccountChainMarketSource,
+  AccountChainIngestor,
+  AccountChainIngestorOptions,
   AccountChainProvider,
-  AccountChainSourceOptions,
   MarketReadBudget,
-} from './account-chain-source.js'
+} from './account-chain-ingestor.js'
 
 export {
   DEFAULT_DIRECTORY_LIMIT,

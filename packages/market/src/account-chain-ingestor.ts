@@ -11,7 +11,6 @@ import type {
 export interface MarketReadBudget {
   readonly maxAccounts: number
   readonly maxRequests: number
-  readonly maxConcurrentRequests: number
   readonly maxResultsPerRequest: number
   readonly maxResultRows: number
   readonly maxResultBytes: number
@@ -23,7 +22,6 @@ export interface MarketReadBudget {
 export const DEFAULT_MARKET_READ_BUDGET: MarketReadBudget = {
   maxAccounts: 64,
   maxRequests: 64,
-  maxConcurrentRequests: 8,
   maxResultsPerRequest: 100,
   maxResultRows: 2_000,
   maxResultBytes: 1_000_000,
@@ -39,7 +37,7 @@ export interface AccountChainProvider {
   ): Promise<unknown>
 }
 
-export interface AccountChainSourceOptions {
+export interface AccountChainIngestorOptions {
   readonly id: string
   readonly provider: AccountChainProvider
   readonly catalog: MarketCatalog
@@ -78,11 +76,11 @@ export interface AccountChainIngestResult {
   }
 }
 
-export interface AccountChainMarketSource {
+export interface AccountChainIngestor {
   readonly id: string
   readonly network: string
   readonly capabilities: {
-    readonly durable: boolean
+    readonly storage: 'process-memory-reference'
     readonly catalogPaging: true
     readonly sourceBackfillPaging: false
     readonly scannedBlockBudget: false
@@ -97,7 +95,7 @@ export interface AccountChainMarketSource {
  * atomically with its rows. Chain-history backfill does not resume because the
  * current node RPC has no cursor/exhaustion proof (kei-node#27).
  */
-export function createAccountChainSource(options: AccountChainSourceOptions): AccountChainMarketSource {
+export function createAccountChainIngestor(options: AccountChainIngestorOptions): AccountChainIngestor {
   if (typeof options !== 'object' || options === null) throw badSource('options must be an object')
   const id = textOf(options.id, 1, 128, 'source id')
   const network = networkOf(options.provider?.network)
@@ -111,7 +109,7 @@ export function createAccountChainSource(options: AccountChainSourceOptions): Ac
     id,
     network,
     capabilities: {
-      durable: options.store.durability === 'durable',
+      storage: 'process-memory-reference',
       catalogPaging: true,
       sourceBackfillPaging: false,
       scannedBlockBudget: false,
@@ -187,7 +185,21 @@ export function createAccountChainSource(options: AccountChainSourceOptions): Ac
           accounts += 1
           requests += 1
           let raw: unknown
+          let generation: number
           try {
+            const prior = await options.store.checkpoint({
+              network,
+              source: id,
+              account,
+              adapterVersion,
+              ...(instrument === undefined ? {} : { instrument }),
+              deadlineMs: Math.min(remainingMs(now, deadlineAt), 60_000),
+              ...(signal === undefined ? {} : { signal }),
+            })
+            generation = (prior?.generation ?? 0) + 1
+            if (!Number.isSafeInteger(generation) || generation > Number.MAX_SAFE_INTEGER) {
+              throw badSource('checkpoint generation is exhausted for this source scope')
+            }
             raw = await within(
               Promise.resolve().then(() => options.provider.accountSwaps(account, { limit: perRequestLimit })),
               signal,
@@ -235,6 +247,8 @@ export function createAccountChainSource(options: AccountChainSourceOptions): Ac
               source: id,
               account,
               adapterVersion,
+              generation,
+              ...(instrument === undefined ? {} : { instrument }),
               observedAt,
               newestHash: converted.offers[0]?.hash ?? null,
               providerCursor: null,
@@ -321,25 +335,28 @@ function providerRows(
 }
 
 function providerOffer(value: unknown, context: { network: string; source: string; account: string; observedAt: number }): StoredMarketOfferInput {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw badSource('provider row is not an offer object')
-  const row = value as SwapOffer
-  const hash = providerHash(row.hash, 'offer hash')
-  const author = providerAddress(row.from, 'offer author')
-  const giveAsset = asset(row.asset, 'give asset')
-  const giveRaw = providerRaw(row.amount, 'give amount')
-  const wantAsset = asset(row.wantAsset, 'want asset')
-  const wantRaw = providerRaw(row.wantAmount, 'want amount')
+  const hash = providerHash(ownProviderValue(value, 'hash'), 'offer hash')
+  const author = providerAddress(ownProviderValue(value, 'from'), 'offer author')
+  const giveAsset = asset(ownProviderValue(value, 'asset'), 'give asset')
+  const giveRaw = providerRaw(ownProviderValue(value, 'amount'), 'give amount')
+  const wantAsset = asset(ownProviderValue(value, 'wantAsset'), 'want asset')
+  const wantRaw = providerRaw(ownProviderValue(value, 'wantAmount'), 'want amount')
   if (giveAsset === wantAsset) throw badSource('provider offer legs use the same asset')
-  const counterparty = row.counterparty === null ? null : providerAddress(row.counterparty, 'counterparty')
-  if (!['open', 'accepted', 'cancelled'].includes(row.state)) throw badSource('provider offer state is invalid')
-  const acceptedBy = row.acceptedBy === null ? null : providerAddress(row.acceptedBy, 'acceptedBy')
-  const settledBy = row.settledBy === null ? null : providerHash(row.settledBy, 'settledBy')
-  const height = integer(row.height, 1, Number.MAX_SAFE_INTEGER, 'offer height')
-  const seenAt = integer(row.seenAt, 0, Number.MAX_SAFE_INTEGER, 'offer seenAt')
-  const settledAt = row.settledAt === null ? null : integer(row.settledAt, 0, Number.MAX_SAFE_INTEGER, 'offer settledAt')
-  if (row.state === 'open' && (acceptedBy !== null || settledBy !== null || settledAt !== null)) throw badSource('open provider offer carries settlement fields')
-  if (row.state === 'accepted' && (acceptedBy === null || settledBy === null || settledAt === null)) throw badSource('accepted provider offer is missing settlement fields')
-  if (row.state === 'cancelled' && (acceptedBy !== null || settledBy === null || settledAt === null)) throw badSource('cancelled provider offer has inconsistent settlement fields')
+  const counterpartyValue = ownProviderValue(value, 'counterparty')
+  const counterparty = counterpartyValue === null ? null : providerAddress(counterpartyValue, 'counterparty')
+  const state = ownProviderValue(value, 'state')
+  if (typeof state !== 'string' || !['open', 'accepted', 'cancelled'].includes(state)) throw badSource('provider offer state is invalid')
+  const acceptedByValue = ownProviderValue(value, 'acceptedBy')
+  const acceptedBy = acceptedByValue === null ? null : providerAddress(acceptedByValue, 'acceptedBy')
+  const settledByValue = ownProviderValue(value, 'settledBy')
+  const settledBy = settledByValue === null ? null : providerHash(settledByValue, 'settledBy')
+  const height = integer(ownProviderValue(value, 'height'), 1, Number.MAX_SAFE_INTEGER, 'offer height')
+  const seenAt = integer(ownProviderValue(value, 'seenAt'), 0, Number.MAX_SAFE_INTEGER, 'offer seenAt')
+  const settledAtValue = ownProviderValue(value, 'settledAt')
+  const settledAt = settledAtValue === null ? null : integer(settledAtValue, 0, Number.MAX_SAFE_INTEGER, 'offer settledAt')
+  if (state === 'open' && (acceptedBy !== null || settledBy !== null || settledAt !== null)) throw badSource('open provider offer carries settlement fields')
+  if (state === 'accepted' && (acceptedBy === null || settledBy === null || settledAt === null)) throw badSource('accepted provider offer is missing settlement fields')
+  if (state === 'cancelled' && (acceptedBy !== null || settledBy === null || settledAt === null)) throw badSource('cancelled provider offer has inconsistent settlement fields')
   return {
     network: context.network,
     hash,
@@ -347,7 +364,7 @@ function providerOffer(value: unknown, context: { network: string; source: strin
     give: { asset: giveAsset, raw: giveRaw },
     want: { asset: wantAsset, raw: wantRaw },
     counterparty,
-    state: row.state,
+    state: state as SwapOffer['state'],
     acceptedBy,
     settledBy,
     height,
@@ -381,7 +398,6 @@ function budgetOf(input: Partial<MarketReadBudget> | undefined): MarketReadBudge
   const result: MarketReadBudget = {
     maxAccounts: budgetInteger(budget.maxAccounts, DEFAULT_MARKET_READ_BUDGET.maxAccounts, 1, 256, 'maxAccounts'),
     maxRequests: budgetInteger(budget.maxRequests, DEFAULT_MARKET_READ_BUDGET.maxRequests, 1, 256, 'maxRequests'),
-    maxConcurrentRequests: budgetInteger(budget.maxConcurrentRequests, DEFAULT_MARKET_READ_BUDGET.maxConcurrentRequests, 1, 32, 'maxConcurrentRequests'),
     maxResultsPerRequest: budgetInteger(budget.maxResultsPerRequest, DEFAULT_MARKET_READ_BUDGET.maxResultsPerRequest, 1, 256, 'maxResultsPerRequest'),
     maxResultRows: budgetInteger(budget.maxResultRows, DEFAULT_MARKET_READ_BUDGET.maxResultRows, 1, 10_000, 'maxResultRows'),
     maxResultBytes: budgetInteger(budget.maxResultBytes, DEFAULT_MARKET_READ_BUDGET.maxResultBytes, 1, 10_000_000, 'maxResultBytes'),
@@ -486,6 +502,15 @@ function offerBytes(offer: StoredMarketOfferInput): number {
 
 function messageOf(error: unknown): string {
   return error instanceof Error && error.message !== '' ? error.message : String(error)
+}
+
+function ownProviderValue(value: unknown, key: string): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw badSource('provider row is not a plain offer object')
+  const prototype = Object.getPrototypeOf(value)
+  if (prototype !== Object.prototype && prototype !== null) throw badSource('provider rows cannot inherit offer fields')
+  const descriptor = Object.getOwnPropertyDescriptor(value, key)
+  if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) throw badSource(`provider row ${key} must be an own data property`)
+  return descriptor.value
 }
 
 function badSource(problem: string): KeiError {

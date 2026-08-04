@@ -1,10 +1,11 @@
-import { KeiError, isAddress } from '@keicoin/core'
+import { blake2b, bytesToHex, KeiError, isAddress, utf8 } from '@keicoin/core'
 
 import {
   loadEnvelope,
+  cursorSecretFor,
   throwIfStopped,
   updateEnvelope,
-  type MarketStorageDriver,
+  type MarketMemoryStorageAdapter,
   type StorageDeadline,
   type StoredParticipantObservation,
 } from './storage.js'
@@ -33,7 +34,7 @@ export interface ParticipantAnnouncement {
 export interface AnnouncementReceipt {
   readonly inserted: boolean
   readonly revision: number
-  readonly durability: 'memory' | 'durable'
+  readonly durability: 'memory'
 }
 
 export interface MarketParticipant {
@@ -81,20 +82,21 @@ export interface InstrumentQuery extends CatalogQuery {
 }
 
 export interface MarketCatalog {
-  readonly durability: 'memory' | 'durable'
+  readonly durability: 'memory'
   announce(input: ParticipantAnnouncement, options?: { deadlineMs?: number; signal?: AbortSignal }): Promise<AnnouncementReceipt>
   participants(query?: ParticipantQuery): Promise<CatalogPage<MarketParticipant>>
   instruments(query?: InstrumentQuery): Promise<CatalogPage<MarketInstrumentRecord>>
 }
 
 export interface MarketCatalogOptions {
-  readonly storage: MarketStorageDriver
+  readonly storage: MarketMemoryStorageAdapter
   readonly now?: () => number
 }
 
 export function createMarketCatalog(options: MarketCatalogOptions): MarketCatalog {
   const storage = options.storage
   const now = options.now ?? Date.now
+  const cursorSecret = cursorSecretFor(storage)
 
   return {
     get durability() {
@@ -107,8 +109,9 @@ export function createMarketCatalog(options: MarketCatalogOptions): MarketCatalo
       const row = observationOf(input)
       let resultingRevision = 0
       const inserted = await updateEnvelope(storage, deadline, (current) => {
+        const observations = current.observations.map(validateStoredObservation)
         resultingRevision = current.catalogRevision + 1
-        const sameId = current.observations.find(
+        const sameId = observations.find(
           (candidate) =>
             candidate.network === row.network &&
             candidate.source === row.source &&
@@ -122,10 +125,10 @@ export function createMarketCatalog(options: MarketCatalogOptions): MarketCatalo
             )
           }
           resultingRevision = current.catalogRevision
-          return { next: withoutRevision(current), value: false }
+          return { next: { ...withoutRevision(current), observations }, value: false }
         }
         return {
-          next: { ...withoutRevision(current), catalogRevision: current.catalogRevision + 1, observations: [...current.observations, row] },
+          next: { ...withoutRevision(current), catalogRevision: current.catalogRevision + 1, observations: [...observations, row] },
           value: true,
         }
       })
@@ -137,9 +140,9 @@ export function createMarketCatalog(options: MarketCatalogOptions): MarketCatalo
       const deadline = deadlineOf(query, now, 'Market catalog participant page')
       const { envelope } = await loadEnvelope(storage, deadline)
       throwIfStopped(deadline)
-      const cursor = cursorOf(parsed.cursor, 'participants', envelope.catalogRevision)
+      const cursor = cursorOf(parsed.cursor, 'participants', envelope.catalogRevision, queryScope('participants', parsed), cursorSecret)
       const rows = participantView(envelope.observations, parsed)
-      return page(rows, parsed, cursor, envelope.catalogRevision, 'participants', participantKey, deadline)
+      return page(rows, parsed, cursor, envelope.catalogRevision, 'participants', queryScope('participants', parsed), cursorSecret, participantKey, deadline)
     },
 
     async instruments(query = {}) {
@@ -147,9 +150,9 @@ export function createMarketCatalog(options: MarketCatalogOptions): MarketCatalo
       const deadline = deadlineOf(query, now, 'Market catalog instrument page')
       const { envelope } = await loadEnvelope(storage, deadline)
       throwIfStopped(deadline)
-      const cursor = cursorOf(parsed.cursor, 'instruments', envelope.catalogRevision)
+      const cursor = cursorOf(parsed.cursor, 'instruments', envelope.catalogRevision, queryScope('instruments', parsed), cursorSecret)
       const rows = instrumentView(envelope.observations, parsed)
-      return page(rows, parsed, cursor, envelope.catalogRevision, 'instruments', instrumentKey, deadline)
+      return page(rows, parsed, cursor, envelope.catalogRevision, 'instruments', queryScope('instruments', parsed), cursorSecret, instrumentKey, deadline)
     },
   }
 }
@@ -289,6 +292,8 @@ function page<T>(
   after: string | null,
   revision: number,
   kind: 'participants' | 'instruments',
+  scope: string,
+  secret: string,
   keyOf: (row: T) => string,
   deadline: StorageDeadline,
 ): CatalogPage<T> {
@@ -320,17 +325,17 @@ function page<T>(
   const last = output.length === 0 ? null : keyOf(output[output.length - 1] as T)
   return {
     rows: output,
-    nextCursor: hasMore && last !== null ? encodeCursor(kind, revision, last) : null,
+    nextCursor: hasMore && last !== null ? encodeCursor(kind, revision, scope, secret, last) : null,
     snapshotRevision: revision,
     complete: !hasMore,
     consumed: { rows: output.length, bytes },
   }
 }
 
-function cursorOf(value: string | undefined, kind: 'participants' | 'instruments', revision: number): string | null {
+function cursorOf(value: string | undefined, kind: 'participants' | 'instruments', revision: number, scope: string, secret: string): string | null {
   if (value === undefined) return null
   const parts = value.split('.')
-  if (parts.length !== 4 || parts[0] !== 'mcat1' || parts[2] !== kind || !/^\d+$/.test(parts[1]!)) {
+  if (parts.length !== 6 || parts[0] !== 'mcat2' || parts[2] !== kind || !/^\d+$/.test(parts[1]!) || parts[3] !== scope) {
     throw new KeiError('bad-market-cursor', 'The market catalog cursor is malformed or belongs to a different page kind.')
   }
   const cursorRevision = Number(parts[1])
@@ -340,13 +345,41 @@ function cursorOf(value: string | undefined, kind: 'participants' | 'instruments
       'The catalog changed after this cursor was issued. Restart paging from the first page to get a stable snapshot without gaps or duplicates.',
     )
   }
-  return decodeHex(parts[3]!)
+  const key = decodeHex(parts[4]!)
+  const expected = cursorIntegrity(secret, `mcat2.${parts[1]}.${kind}.${scope}.${parts[4]}`)
+  if (parts[5] !== expected) throw new KeiError('bad-market-cursor', 'The market catalog cursor failed its integrity check or belongs to another query.')
+  return key
 }
 
-function encodeCursor(kind: string, revision: number, key: string): string {
+function encodeCursor(kind: string, revision: number, scope: string, secret: string, key: string): string {
   let hex = ''
   for (let index = 0; index < key.length; index += 1) hex += key.charCodeAt(index).toString(16).padStart(4, '0')
-  return `mcat1.${revision}.${kind}.${hex}`
+  const payload = `mcat2.${revision}.${kind}.${scope}.${hex}`
+  return `${payload}.${cursorIntegrity(secret, payload)}`
+}
+
+function queryScope(kind: 'participants' | 'instruments', query: ParsedParticipantQuery | ParsedInstrumentQuery): string {
+  const normalized = kind === 'participants'
+    ? {
+        kind,
+        network: query.network ?? null,
+        instrument: 'instrument' in query ? query.instrument ?? null : null,
+        limit: query.limit,
+        maxResultBytes: query.maxResultBytes,
+      }
+    : {
+        kind,
+        network: query.network ?? null,
+        base: 'base' in query ? query.base ?? null : null,
+        quote: 'quote' in query ? query.quote ?? null : null,
+        limit: query.limit,
+        maxResultBytes: query.maxResultBytes,
+      }
+  return cursorIntegrity('public-query-scope', JSON.stringify(normalized))
+}
+
+function cursorIntegrity(secret: string, value: string): string {
+  return bytesToHex(blake2b(utf8(`kei-market-cursor-v2\n${secret}\n${value}`), 16)).toLowerCase()
 }
 
 function decodeHex(value: string): string {
@@ -377,22 +410,24 @@ export function deadlineOf(
 }
 
 function observationOf(input: ParticipantAnnouncement): StoredParticipantObservation {
-  if (typeof input !== 'object' || input === null) throw badObservation('it must be an object')
-  const network = networkOf(input.network)
-  if (typeof input.address !== 'string' || input.address.length > 128 || !isAddress(input.address)) {
+  const network = networkOf(ownValue(input, 'network'))
+  const address = ownValue(input, 'address')
+  if (typeof address !== 'string' || address.length > 128 || !isAddress(address)) {
     throw badObservation('address must be a canonical Kei address')
   }
-  const source = boundedText(input.source, 1, 128, 'source')
-  const observationId = boundedText(input.observationId, 1, 256, 'observationId')
-  if (!Number.isSafeInteger(input.observedAt) || input.observedAt < 0) {
+  const source = boundedText(ownValue(input, 'source'), 1, 128, 'source')
+  const observationId = boundedText(ownValue(input, 'observationId'), 1, 256, 'observationId')
+  const observedAt = ownValue(input, 'observedAt')
+  if (!Number.isSafeInteger(observedAt) || (observedAt as number) < 0) {
     throw badObservation('observedAt must be a non-negative safe whole-millisecond timestamp')
   }
-  const instrument = input.instrument === undefined ? undefined : instrumentOf(input.instrument)
+  const instrumentValue = ownValue(input, 'instrument', false)
+  const instrument = instrumentValue === undefined ? undefined : instrumentOf(instrumentValue as MarketInstrumentIdentity)
   return {
     network,
-    address: input.address,
+    address,
     source,
-    observedAt: input.observedAt,
+    observedAt: observedAt as number,
     observationId,
     base: instrument?.base ?? null,
     quote: instrument?.quote ?? null,
@@ -401,32 +436,31 @@ function observationOf(input: ParticipantAnnouncement): StoredParticipantObserva
 
 function validateStoredObservation(input: StoredParticipantObservation): StoredParticipantObservation {
   return observationOf({
-    network: input.network,
-    address: input.address,
-    source: input.source,
-    observedAt: input.observedAt,
-    observationId: input.observationId,
-    ...(input.base === null && input.quote === null
+    network: ownValue(input, 'network') as string,
+    address: ownValue(input, 'address') as string,
+    source: ownValue(input, 'source') as string,
+    observedAt: ownValue(input, 'observedAt') as number,
+    observationId: ownValue(input, 'observationId') as string,
+    ...(ownValue(input, 'base') === null && ownValue(input, 'quote') === null
       ? {}
-      : { instrument: { base: input.base as string, quote: input.quote as string } }),
+      : { instrument: { base: ownValue(input, 'base') as string, quote: ownValue(input, 'quote') as string } }),
   })
 }
 
 function instrumentOf(value: MarketInstrumentIdentity): MarketInstrumentIdentity {
-  if (typeof value !== 'object' || value === null) throw badObservation('instrument must contain base and quote asset ids')
-  const base = assetOf(value.base, 'base')
-  const quote = assetOf(value.quote, 'quote')
+  const base = assetOf(ownValue(value, 'base'), 'base')
+  const quote = assetOf(ownValue(value, 'quote'), 'quote')
   if (base === quote) throw badObservation('instrument base and quote must differ')
   return { base, quote }
 }
 
-function assetOf(value: string, label: string): string {
+function assetOf(value: unknown, label: string): string {
   const text = boundedText(value, 1, 128, label).toUpperCase()
   if (!/^[A-Z0-9:_-]+$/.test(text)) throw badObservation(`${label} contains unsupported asset-id characters`)
   return text
 }
 
-function networkOf(value: string): string {
+function networkOf(value: unknown): string {
   const text = boundedText(value, 1, 64, 'network').toLowerCase()
   if (!/^[a-z][a-z0-9.-]*$/.test(text)) throw badObservation('network must be a canonical lowercase namespace')
   return text
@@ -437,6 +471,19 @@ function boundedText(value: unknown, minimum: number, maximum: number, label: st
     throw badObservation(`${label} must be a bounded printable string (${minimum}-${maximum} characters)`)
   }
   return value
+}
+
+function ownValue(value: unknown, key: string, required = true): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw badObservation('it must be a plain own-property object')
+  const prototype = Object.getPrototypeOf(value)
+  if (prototype !== Object.prototype && prototype !== null) throw badObservation('inherited record fields are not accepted')
+  const descriptor = Object.getOwnPropertyDescriptor(value, key)
+  if (descriptor === undefined) {
+    if (!required) return undefined
+    throw badObservation(`${key} must be an own data property`)
+  }
+  if (!Object.hasOwn(descriptor, 'value')) throw badObservation(`${key} cannot be an accessor property`)
+  return descriptor.value
 }
 
 function boundedInteger(value: number | undefined, fallback: number, minimum: number, maximum: number, label: string): number {
