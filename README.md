@@ -20,8 +20,9 @@ await kei.send('kei_3abc...', 0.001)   // sub-cent, instant, feeless
 > the native swap blocks it reads have since merged into the node — and
 > `WalletPanel.mount()` gives games a drop-in balance/inventory/claims UI. Both
 > ship in the published `0.5.0` SDK set, so installing the SDK gets them.
-> Player shops (`kei.shop`) do not — that package is unpublished, and
-> [Where this is](#where-this-is) says what an install actually contains.
+> Player shops (`kei.shop`) do not. `@keicoin/player-economy` is published, but
+> the `0.5.0` umbrella predates it and does not depend on it, so it takes a
+> second install — [Where this is](#where-this-is) has the detail.
 > The public endpoint answers `version` with `store_version 24`, which is the
 > build that accepts both claim and swap blocks, so this is measured rather than
 > inferred from CI. It is still one best-effort node with weak consensus, no
@@ -243,14 +244,15 @@ chain and reports what it could not see, **price series and candles** ready to
 draw, and a **verify-before-signing** check so an index can never become an
 authority.
 
-> **Everything above this line is installable; everything below it is not yet.**
-> The published `@keicoin/market` is `0.1.1`, which has `sell`, `bid`, `offer`,
-> `accept`, `cancel`, `offers`, `trades`, `medianPrice` and `price`. The
-> directory, `book()`, `series()`, `candles()` and `accept(offer, { expect })`
-> are `0.2.0`, and this tree is the only place they exist. Note the pin as well:
-> `kei-transaction@0.5.0` depends on `@keicoin/market@^0.1.1`, which cannot
-> resolve to `0.2.0` — publishing the market alone would not put these in an
-> install until the umbrella's range moves with it.
+> **Everything below this line needs a newer market than the SDK installs.**
+> `@keicoin/market@0.2.0` published on 4 August 2026 and has the directory,
+> `book()`, `series()`, `candles()` and `accept(offer, { expect })`. But
+> `kei-transaction@0.5.0` depends on `@keicoin/market@^0.1.1`, and for a 0.x
+> package that range stops below `0.2.0` — so `kei.market` off a plain
+> `bun add kei-transaction` is still `0.1.1`, which has `sell`, `bid`, `offer`,
+> `accept`, `cancel`, `offers`, `trades`, `medianPrice` and `price`, and none of
+> the four below. Publishing the market did not change what the umbrella
+> resolves; only an umbrella release that moves the range will.
 
 ```js
 const directory = createDirectory()         // or your own { accounts() }
@@ -271,11 +273,14 @@ because this chain has no clock — and the value says so rather than a comment.
 
 ## Player shops
 
-> **Not in an npm install yet.** `kei.shop` lives in `@keicoin/player-economy`,
-> which is unpublished, and the published `kei-transaction@0.5.0` does not depend
-> on it — `kei.shop` is `undefined` there. Everything below runs from a checkout
-> of this repository. Read it as the shape this surface has, not as something to
-> install today.
+> **Published, but not in a plain SDK install.** `kei.shop` lives in
+> `@keicoin/player-economy`, which published at `0.1.0` on 4 August 2026 — and
+> `kei-transaction@0.5.0` predates it and does not depend on it, so `kei.shop`
+> is `undefined` after `bun add kei-transaction`. Add it explicitly:
+> `bun add @keicoin/player-economy`. Be aware of what that resolves — the
+> package requires `@keicoin/market@^0.2.0` while the umbrella pins `^0.1.1`, so
+> a project with both carries two versions of the market in one tree until an
+> umbrella release reconciles them.
 
 The counterpart to the recipes below: a shop that belongs to the **player**, that
 a world can embed and cannot touch.
@@ -499,11 +504,11 @@ The M0–M10 ladder was retired on 3 August 2026 for four concurrent tracks
 | **The chain** | A real Kei node enforcing the SPEC §5.6 / §7 ledger rules, including native `commit`/`claim`/`commit_close` in its pinned CI gate. Native `swap_offer`/`swap_accept`/`swap_cancel` are merged too; the reference mock remains for hermetic tests |
 | **The network** | One public, rate-limited, best-effort Hetzner testnet node. `Kei.start()` selects it by default; `Kei.mock()` is explicit |
 | **The demo** | [Button](../button) — playable single-player, every number on the chain and none in a database |
-| **The market** | `@keicoin/market@0.1.1` — offers, atomic settlement, price history, all read from the chain. Published, and on its own version line rather than the SDK set's because it is the newest package here and has the least mileage. This tree is at `0.2.0` — the directory, `book()`, `series()`, `candles()` and `accept(offer, { expect })` — and that is unpublished. The umbrella pins `^0.1.1`, so that range has to move too before an install would see it |
+| **The market** | `@keicoin/market@0.2.0` — offers, atomic settlement, price history, all read from the chain, plus the directory, `book()`, `series()`, `candles()` and `accept(offer, { expect })`. Published 4 August 2026, on its own version line rather than the SDK set's because it is the newest package here and has the least mileage. **`kei.market` from a plain SDK install is still `0.1.1`**: `kei-transaction@0.5.0` pins `^0.1.1`, which stops below `0.2.0` |
 | **The wallet panel** | `WalletPanel.mount()` is real and tested end to end, with the SPEC §6.6 seed-reveal friction |
 | **Recipes** | `@keicoin/economy@0.1.0` — declare a reward, a sink, or a shop once, dry-run it, and run only the half this key may sign. It adds no consensus rules: every block it writes is one the SDK could already write by hand. Published, and reachable as `kei.economy` from an install |
-| **Player shops** | `@keicoin/player-economy@0.1.0` — `kei.shop`, the player's half of the same idea: list, browse, buy, cancel and gift from the player's own key, with nothing stocked or approved by the game. **Unpublished**, and the published umbrella does not depend on it, so `kei.shop` is absent from an npm install and present only in a checkout |
-| **npm** | `kei-transaction@0.5.0` is published, and installs clean: `@keicoin/tokens` at `0.5.0`, `@keicoin/wallet` at `0.4.1`, `@keicoin/economy` at `0.1.0`, `@keicoin/market` at `0.1.1`, and `@keicoin/core`, `claims` and `work` at `0.4.0`. **Two packages in this tree are ahead of that and unpublished** — `@keicoin/market` at `0.2.0`, and `@keicoin/player-economy` at `0.1.0`, which the published umbrella does not depend on at all. The practical consequence, and the only one worth acting on: an install gives you `kei.economy` and not `kei.shop`. Publishing is a separate approval. `create-kei-game@0.2.0` was released before the package moved to its standalone repository; future harness releases are owned there |
+| **Player shops** | `@keicoin/player-economy@0.1.0` — `kei.shop`, the player's half of the same idea: list, browse, buy, cancel and gift from the player's own key, with nothing stocked or approved by the game. Published 4 August 2026. The `0.5.0` umbrella predates it and does not depend on it, so `kei.shop` is `undefined` unless you `bun add @keicoin/player-economy` yourself |
+| **npm** | Every package in this tree is now published — the last two, `@keicoin/market@0.2.0` and `@keicoin/player-economy@0.1.0`, went out on 4 August 2026. **What that did not do is change what `bun add kei-transaction` resolves.** `kei-transaction@0.5.0` was published before them and still declares `@keicoin/market@^0.1.1` with no player-economy dependency, so a clean install gives you `tokens` at `0.5.0`, `wallet` at `0.4.1`, `economy` at `0.1.0`, `market` at **`0.1.1`**, `core`/`claims`/`work` at `0.4.0`, and no `kei.shop`. Adding player-economy explicitly works and pulls `market@^0.2.0` beside the umbrella's `0.1.1` — two versions in one tree. Closing that is an umbrella release, not a publish. `create-kei-game@0.2.0` was released before the package moved to its standalone repository; future harness releases are owned there |
 | **The harness** | Create Kei MMO owns its own releases. Its repository is still named [`create-kei-game`](https://github.com/keicoin-org/create-kei-game) pending the rename, and its default branch still carries the retired scaffolder that `create-kei-game@0.2.0` was published from; the transition into an ongoing MMO creation harness is an unmerged draft, [PR #1](https://github.com/keicoin-org/create-kei-game/pull/1) |
 | **The work server** | `@keicoin/work@0.4.0` exports the bounded handler/server integration and the `kei-work-server` CLI; operating a public instance is separate deployment work |
 
