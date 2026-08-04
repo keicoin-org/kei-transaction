@@ -87,6 +87,11 @@ and `complete|partial` axes. The account-chain adapter says
 or exhaustion proof. It labels time and durability as node-local. Those are
 product facts, not documentation a response can lose.
 
+A window uses `settledAt` when available and falls back to the node's usable
+`seenAt`. An accepted row with neither time is not invented into the line or
+OHLCV: the history remains `available` and `partial`, and `time.untimed` counts
+the unplaceable row so an empty chart cannot claim full knowledge.
+
 `snapshot.coverage.book` and `.history` keep each page's evidence.
 `snapshot.coverage.combined` is their validated same-roster intersection: an
 account counts as read only if both pages answered. Complementary failures are

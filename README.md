@@ -346,6 +346,9 @@ ticker/book/history, status, completeness, source/time provenance, and an honest
 unsupported-pagination answer for the legacy account-chain adapter. The book
 and history pages share one roster but are not atomic; `coverage.combined`
 reports the exact accounts that answered both, while `asOf` marks completion.
+History windows prefer `settledAt`, fall back to usable `seenAt`, and keep a
+fully untimed accepted row explicit through `available`/`partial` state and
+`time.untimed` without fabricating a line point or candle.
 Polls do not overlap, have a finite per-refresh deadline, retain last-good data
 through transient failures, measure age from successful completion, and wake
 after instrument writes. Acceptance freshly re-reads chain and asset metadata

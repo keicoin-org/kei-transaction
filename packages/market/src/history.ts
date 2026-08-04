@@ -88,21 +88,31 @@ export async function readTrades(context: MarketContext, options: TradeOptions =
   for (const raw of bought?.rows ?? []) found.set(raw.hash, raw)
   const coverage = mergeCoverage(walk.coverage, bought?.coverage)
 
-  const since =
-    options.window === undefined ? undefined : context.now() - durationMs(options.window, 'window')
+  let windowTo: number | undefined
+  let since: number | undefined
+  if (options.window !== undefined) {
+    windowTo = context.now()
+    since = windowTo - durationMs(options.window, 'window')
+  }
 
   const matched: SwapOffer[] = []
   for (const raw of found.values()) {
     if (raw.state !== 'accepted') continue
     if (asset !== undefined && raw.asset !== asset && raw.wantAsset !== asset) continue
     if (quote !== undefined && raw.asset !== quote && raw.wantAsset !== quote) continue
-    if (since !== undefined && (raw.settledAt === null || raw.settledAt < since)) continue
+    const at = advisoryTimeOf(raw)
+    // `settledAt` is preferable, but older or degraded nodes may only retain
+    // the first-seen observation. A row with neither usable advisory time is
+    // still an observed trade: keep it so callers can report the temporal gap
+    // instead of turning partial knowledge into an apparently empty window.
+    if (since !== undefined && windowTo !== undefined && at !== null && (at < since || at > windowTo)) continue
     matched.push(raw)
   }
 
   // Newest first, by the node's local clock — the only ordering available across
   // two chains. The hash breaks ties so the answer is at least stable.
-  matched.sort((a, b) => (b.settledAt ?? 0) - (a.settledAt ?? 0) || a.hash.localeCompare(b.hash))
+  matched.sort((a, b) => (advisoryTimeOf(b) ?? Number.MIN_SAFE_INTEGER)
+    - (advisoryTimeOf(a) ?? Number.MIN_SAFE_INTEGER) || a.hash.localeCompare(b.hash))
   const trimmed = options.last === undefined ? matched : matched.slice(0, Math.max(0, options.last))
 
   const trades = await mapConcurrent(
@@ -120,6 +130,13 @@ export async function readTrades(context: MarketContext, options: TradeOptions =
     read,
   )
   return withCoverage(trades, coverage)
+}
+
+/** Best usable node-local observation for windowing and advisory ordering. */
+function advisoryTimeOf(raw: Pick<SwapOffer, 'settledAt' | 'seenAt'>): number | null {
+  if (Number.isSafeInteger(raw.settledAt)) return raw.settledAt as number
+  if (Number.isSafeInteger(raw.seenAt)) return raw.seenAt
+  return null
 }
 
 /**
