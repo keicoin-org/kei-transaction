@@ -198,6 +198,9 @@ larger. A deliberate `maxCandles` may raise the budget no higher than the
 exported `MAX_CANDLES` (1,000,000); invalid budgets throw
 `KeiError('bad-max-candles')`. A market read's `limit` bounds input trades per
 account; it does **not** raise this generated-output cap.
+Advisory trade times must also form safe whole-millisecond bucket starts on
+both sparse and filled paths; an unsafe boundary throws
+`KeiError('bad-candle-time')` before a candle is emitted.
 
 ### Lifecycle, reconciliation, and not trusting an index
 
