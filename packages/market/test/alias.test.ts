@@ -86,6 +86,35 @@ describe('chart aliases are strict compatibility wrappers', () => {
     expect(chart.candles).toEqual(candles)
   })
 
+  test('chart includes line and unixCandles chart payloads', async () => {
+    const seller = await world.actor('seller')
+    const buyer = await world.actor('buyer')
+    await world.mint(asset, seller, 1)
+
+    const listing = await seller.market.sell({ asset, amount: 1, price: 2 })
+    await buyer.market.accept(listing)
+
+    const chart = await seller.market.chart({
+      from: [seller.address, buyer.address],
+      asset,
+      every: '1m',
+    })
+
+    const firstPoint = chart.series.points[0]
+    if (!firstPoint || firstPoint.at === null) throw new Error('expected a timed series point')
+
+    expect(chart.line).toEqual([{ time: Math.floor(firstPoint.at / 1_000), value: firstPoint.price }])
+    expect(chart.unixCandles).toEqual(chart.candles.map((candle) => ({
+      time: Math.floor(candle.at / 1_000),
+      open: candle.open,
+      high: candle.high,
+      low: candle.low,
+      close: candle.close,
+      volume: candle.volume,
+      trades: candle.trades,
+    })))
+  })
+
   test('chart defaults candle width to 1h when omitted', async () => {
     const seller = await world.actor('seller')
     const buyer = await world.actor('buyer')

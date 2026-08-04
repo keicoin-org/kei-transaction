@@ -328,6 +328,8 @@ const chart = await market.chart({
   every: '1h',
   window: '30d',
 })
+const line = chart.line                      // [{ time: unixSeconds, value: price }]
+const ohlcv = chart.unixCandles            // [{ time: unixSeconds, open, high, low, close, volume, trades }]
 ```
 
 `market.chart()` also accepts the same query as `series(...)`/`history(...)`; if
