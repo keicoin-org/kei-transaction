@@ -33,6 +33,11 @@ OTP="${1:-${NPM_OTP:-}}"
 
 cd "$(dirname "$0")/.."
 
+if [ -n "$(git status --porcelain)" ]; then
+  echo "release refused: the worktree must be clean before release checks or publication" >&2
+  exit 1
+fi
+
 echo "==> Checking release manifests"
 npm run release:check
 
@@ -104,4 +109,3 @@ done
 echo
 echo "Published. Check one:"
 echo "  npm view kei-transaction"
-echo "  npm create kei-game@latest my-game -- --currency 'Gold Pieces' --yes"
