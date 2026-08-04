@@ -22,10 +22,11 @@ The SDK never uploads proofs or takes custody on an issuer's behalf.
 
 ## 2. Retention is established before signing
 
-`claims.add()` validates and serialises a bundle, writes it, then reads the exact
-bytes back before automatic claiming begins. A refusal or mismatch is a typed
-`KeiError` and no claim is signed. A successful claim is confirmed by the node
-before the stored record is removed, and removal is read back too.
+Every signing entry point, including direct `claims.claim(bundle)`, validates
+and bounds a bundle, writes it, then reads the exact bytes back before claiming
+begins. A refusal or mismatch is a typed `KeiError` and no claim is signed. A
+successful claim is confirmed by the node before the stored record is removed,
+and removal is read back too.
 
 This ordering leaves a safe duplicate after a crash between ledger acceptance
 and deletion. On the next start, `hasClaimed(address, root)` proves that no new
@@ -35,14 +36,23 @@ idempotency and later reconciliation remain the authority for submissions.
 
 ## 3. Stored input is versioned, bounded, and fail-closed
 
-Each value is JSON `{ version: 1, bundle }`. The public finite limits are:
+Each value is JSON `{ version: 2, bundle, integrity }`, where `integrity` is a
+domain-separated BLAKE2b-256 digest of the normalised bundle. A mismatch is
+removed and read back; if removal cannot be proven, a versioned quarantine
+tombstone is written and read back at that root. Later instances diagnose the
+tombstone and never sign it. If neither cleanup action can be proven, altered
+bytes still fail integrity and a typed diagnostic tells the caller to repair the
+adapter. The public finite limits are:
 
 | Limit | Value |
 |---|---:|
 | Pending roots per wallet/network | `MAX_PENDING_CLAIMS = 128` |
 | Serialised bytes per record | `MAX_CLAIM_RECORD_BYTES = 16,384` |
 | Sibling hashes per proof | `MAX_CLAIM_PROOF_LENGTH = 128` |
+| Decimal digits in a raw amount | `MAX_CLAIM_AMOUNT_DIGITS = 39` (unsigned 128-bit) |
 
+Amount length, proof count, and every fixed-size hash are checked before the
+envelope is serialised, so the record ceiling is also an allocation ceiling.
 Hydration asks for at most 129 roots so overflow is observable without loading
 an unbounded set. Roots deduplicate before reads. Malformed roots, JSON,
 envelopes, bundles, unsupported versions, oversized records, and excessive

@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { blake2b, bytesToHex, utf8 } from '@keicoin/core'
 import {
   Kei,
   KeiError,
+  MAX_CLAIM_AMOUNT_DIGITS,
   MAX_CLAIM_PROOF_LENGTH,
   MAX_CLAIM_RECORD_BYTES,
   MAX_PENDING_CLAIMS,
@@ -18,6 +20,14 @@ import {
 
 const PLAYER_SEED = 'D'.repeat(64)
 const OTHER_SEED = 'E'.repeat(64)
+const CLAIM_ENVELOPE_DOMAIN = 'kei-claim-envelope-v2\n'
+
+function claimEnvelope(bundle: { root: string; asset: string; amount: string; proof: string[] }): string {
+  const integrity = bytesToHex(
+    blake2b(utf8(`${CLAIM_ENVELOPE_DOMAIN}${JSON.stringify(bundle)}`), 32),
+  )
+  return JSON.stringify({ version: 2, bundle, integrity })
+}
 
 class MemoryWebStorage implements ClaimWebStorage {
   private readonly values = new Map<string, string>()
@@ -72,6 +82,10 @@ class InspectableClaimStore implements ClaimStore {
   removeCount = 0
   dropWrites = false
   throwWrites = false
+  alterWrites = false
+  dropRemoves = false
+  dropQuarantines = false
+  throwRemoves = false
   listedRoots: readonly string[] | undefined
 
   private key(scope: ClaimStoreScope): string {
@@ -91,6 +105,15 @@ class InspectableClaimStore implements ClaimStore {
     this.writeCount += 1
     if (this.throwWrites) throw new Error('quota details must not escape')
     if (this.dropWrites) return
+    const parsed = JSON.parse(value) as {
+      bundle?: { amount: string }
+      quarantine?: unknown
+    }
+    if (this.dropQuarantines && parsed.quarantine) return
+    if (this.alterWrites) {
+      if (parsed.bundle) parsed.bundle.amount = String(BigInt(parsed.bundle.amount) + 1n)
+      value = JSON.stringify(parsed)
+    }
     const key = this.key(scope)
     const records = this.records.get(key) ?? new Map<string, string>()
     records.set(root, value)
@@ -99,6 +122,8 @@ class InspectableClaimStore implements ClaimStore {
 
   remove(scope: ClaimStoreScope, root: string): void {
     this.removeCount += 1
+    if (this.throwRemoves) throw new Error('remove details must not escape')
+    if (this.dropRemoves) return
     this.records.get(this.key(scope))?.delete(root)
   }
 
@@ -297,7 +322,7 @@ describe('durable claim bundles', () => {
     expect(error.code).toBe('claim-store-write-refused')
     expect(error.message).not.toContain('quota details')
     expect(store.writeCount).toBe(1)
-    expect(store.removeCount).toBe(0)
+    expect(store.removeCount).toBe(1)
     expect(claimSubmissions).toBe(0)
     expect(await gems.balanceOf(player.address)).toBe(0)
   })
@@ -343,9 +368,11 @@ describe('durable claim bundles', () => {
     scoped.close()
     const roots = Array.from({ length: MAX_PENDING_CLAIMS + 3 }, (_, index) =>
       index.toString(16).toUpperCase().padStart(64, '0'))
-    const envelope = (root: string): string => JSON.stringify({
-      version: 1,
-      bundle: { root, asset: gems.id, amount: '1', proof: [] },
+    const envelope = (root: string): string => claimEnvelope({
+      root,
+      asset: gems.id,
+      amount: '1',
+      proof: [],
     })
     for (const root of roots.slice(0, MAX_PENDING_CLAIMS - 1)) {
       await firstStore.write(scope, root, envelope(root))
@@ -502,7 +529,7 @@ describe('durable claim bundles', () => {
     const versionRoot = 'B'.repeat(64)
     const largeRoot = 'C'.repeat(64)
     store.inject(scope, corruptRoot, '{not-json')
-    store.inject(scope, versionRoot, JSON.stringify({ version: 2, bundle: {} }))
+    store.inject(scope, versionRoot, JSON.stringify({ version: 99, bundle: {} }))
     store.inject(scope, largeRoot, 'X'.repeat(MAX_CLAIM_RECORD_BYTES + 1))
 
     const originalProcess = node.process.bind(node)
@@ -546,9 +573,9 @@ describe('durable claim bundles', () => {
     expect((await refused(player.claims.add({
       ...bundle,
       root: 'E'.repeat(64),
-      amount: '9'.repeat(MAX_CLAIM_RECORD_BYTES),
+      amount: '9'.repeat(MAX_CLAIM_AMOUNT_DIGITS + 1),
       proof: [],
-    }))).code).toBe('claim-record-too-large')
+    }))).code).toBe('claim-amount-too-large')
     expect(store.writeCount).toBe(1)
   })
 
@@ -581,6 +608,168 @@ describe('durable claim bundles', () => {
     const writeError = await refused(player.claims.add(refusedDrop.proofFor(player.address)))
     expect(writeError.code).toBe('claim-store-write-refused')
     expect(writeError.message).not.toContain('quota details')
+    expect(claimSubmissions).toBe(0)
+  })
+
+  test('direct claim persists and reads back before signing, then removes durably', async () => {
+    const refusing = new InspectableClaimStore()
+    refusing.throwWrites = true
+    const player = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: refusing,
+    }))
+    const refusedDrop = await gems.commit([{ to: player.address, amount: 11 }])
+    const originalProcess = node.process.bind(node)
+    let claimSubmissions = 0
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
+      return originalProcess(block)
+    }
+
+    expect((await refused(player.claims.claim(refusedDrop.proofFor(player.address)))).code)
+      .toBe('claim-store-write-refused')
+    expect(claimSubmissions).toBe(0)
+    expect(refusing.writeCount).toBe(1)
+
+    const retained = new InspectableClaimStore()
+    const claimant = remember(await Kei.start({
+      node,
+      seed: OTHER_SEED,
+      autoClaim: false,
+      claimStore: retained,
+    }))
+    const claimedDrop = await gems.commit([{ to: claimant.address, amount: 13 }])
+    await claimant.claims.claim(claimedDrop.proofFor(claimant.address))
+    expect(claimSubmissions).toBe(1)
+    expect(await retained.list({ network: 'mock', address: claimant.address }, 2)).toEqual([])
+    expect(await gems.balanceOf(claimant.address)).toBe(13)
+  })
+
+  test('a mismatched write that cannot be removed stays quarantined across recreation', async () => {
+    const store = new InspectableClaimStore()
+    store.alterWrites = true
+    store.dropRemoves = true
+    const player = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: store,
+    }))
+    const drop = await gems.commit([{ to: player.address, amount: 19 }])
+    expect((await refused(player.claims.add(drop.proofFor(player.address)))).code)
+      .toBe('claim-store-readback-mismatch')
+    expect((await player.claims.storageStatus()).diagnostics.map(({ code }) => code)).toEqual([
+      'claim-store-quarantined',
+      'claim-store-readback-mismatch',
+    ])
+    player.close()
+
+    const originalProcess = node.process.bind(node)
+    let claimSubmissions = 0
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
+      return originalProcess(block)
+    }
+    const reopened = remember(await Kei.start({ node, seed: PLAYER_SEED, claimStore: store }))
+    expect(claimSubmissions).toBe(0)
+    expect((await reopened.claims.storageStatus()).diagnostics.map(({ code }) => code))
+      .toEqual(['claim-store-quarantined'])
+    expect(await store.list({ network: 'mock', address: reopened.address }, 2)).toEqual([drop.root])
+  })
+
+  test('failed mismatch cleanup is diagnosed and integrity still blocks restart signing', async () => {
+    const store = new InspectableClaimStore()
+    store.alterWrites = true
+    store.dropRemoves = true
+    store.dropQuarantines = true
+    const player = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: store,
+    }))
+    const drop = await gems.commit([{ to: player.address, amount: 29 }])
+    expect((await refused(player.claims.add(drop.proofFor(player.address)))).code)
+      .toBe('claim-store-readback-mismatch')
+    expect((await player.claims.storageStatus()).diagnostics.map(({ code }) => code)).toEqual([
+      'claim-store-quarantine-failed',
+      'claim-store-readback-mismatch',
+    ])
+    player.close()
+
+    const originalProcess = node.process.bind(node)
+    let claimSubmissions = 0
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
+      return originalProcess(block)
+    }
+    const reopened = remember(await Kei.start({ node, seed: PLAYER_SEED, claimStore: store }))
+    expect(claimSubmissions).toBe(0)
+    expect((await reopened.claims.storageStatus()).diagnostics.map(({ code }) => code))
+      .toEqual(['claim-store-corrupt'])
+  })
+
+  test('a confirmed claim with failed removal reconciles without signing again', async () => {
+    const store = new InspectableClaimStore()
+    store.dropRemoves = true
+    const player = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: store,
+    }))
+    const drop = await gems.commit([{ to: player.address, amount: 31 }])
+    expect((await refused(player.claims.claim(drop.proofFor(player.address)))).code)
+      .toBe('claim-store-remove-refused')
+    expect(await gems.balanceOf(player.address)).toBe(31)
+    expect(await store.list({ network: 'mock', address: player.address }, 2)).toEqual([drop.root])
+    player.close()
+
+    store.dropRemoves = false
+    const originalProcess = node.process.bind(node)
+    let claimSubmissions = 0
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
+      return originalProcess(block)
+    }
+    const reopened = remember(await Kei.start({ node, seed: PLAYER_SEED, claimStore: store }))
+    expect(claimSubmissions).toBe(0)
+    expect(await store.list({ network: 'mock', address: reopened.address }, 2)).toEqual([])
+  })
+
+  test('direct claim bounds variable components before serialising or submitting', async () => {
+    const store = new InspectableClaimStore()
+    const player = remember(await Kei.start({
+      node,
+      seed: PLAYER_SEED,
+      autoClaim: false,
+      claimStore: store,
+    }))
+    const drop = await gems.commit([{ to: player.address, amount: 23 }])
+    const bundle = drop.proofFor(player.address)
+    let serialised = false
+    const amount = {
+      toString: () => '9'.repeat(MAX_CLAIM_AMOUNT_DIGITS + 1),
+      toJSON: () => {
+        serialised = true
+        throw new Error('amount reached JSON.stringify')
+      },
+    }
+    const originalProcess = node.process.bind(node)
+    let claimSubmissions = 0
+    node.process = async (block: Block) => {
+      if (block.type === 'asset' && block.op.kind === 'claim') claimSubmissions += 1
+      return originalProcess(block)
+    }
+
+    expect((await refused(player.claims.claim({
+      ...bundle,
+      amount: amount as unknown as string,
+    }))).code).toBe('claim-amount-too-large')
+    expect(serialised).toBe(false)
+    expect(store.writeCount).toBe(0)
     expect(claimSubmissions).toBe(0)
   })
 })

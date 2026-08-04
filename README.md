@@ -220,8 +220,9 @@ await kei.claims.storageStatus()         // durability plus typed diagnostics
 
 Records are isolated by network, wallet address, and root, removed only after
 confirmed claim/reconciliation, and bounded to 128 records, 16,384 bytes each,
-and 128 proof hashes. They contain award metadata but no seed or private key;
-browser storage is recovery, not a backup. See
+128 proof hashes, and 39 decimal amount digits. Versioned integrity checks
+quarantine altered records before signing. They contain award metadata but no
+seed or private key; browser storage is recovery, not a backup. See
 [`docs/decisions-claims-durability.md`](docs/decisions-claims-durability.md).
 
 Claiming happens in the background. A forged proof, a forged amount, or a second

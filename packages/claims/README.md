@@ -49,12 +49,13 @@ lock, storage fails closed: no retained record is loaded or signed, and the
 status contains an actionable diagnostic. Tests or embedded browser runtimes
 may inject a shared `ClaimWebLockManager` as the adapter's second argument.
 
-Records are namespaced by network, wallet address, and root. A validated write
-is read back before automatic claiming, successful/already-claimed/closed roots
-are removed durably, and startup retries retained claims. The finite public
-limits are 128 records per wallet/network, 16,384 serialised bytes per record,
-and 128 sibling hashes per proof. Unsupported versions and malformed or
-over-budget records are diagnosed and never signed.
+Records are namespaced by network, wallet address, and root. Every public claim
+path is read back exactly before signing; successful/already-claimed/closed
+roots are removed durably, and startup retries retained claims. The finite
+public limits are 128 records per wallet/network, 16,384 serialised bytes per
+record, 128 sibling hashes per proof, and 39 decimal amount digits (the ledger's
+unsigned 128-bit field). Unsupported versions, failed integrity checks, and
+malformed or over-budget records are diagnosed and never signed.
 
 Bundles reveal award metadata even though they contain no seed, key, or server
 credential. Browser storage is recovery, not a backup; inject a store whose

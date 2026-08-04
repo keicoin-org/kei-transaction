@@ -86,6 +86,7 @@ export type {
 } from '@keicoin/core'
 
 export {
+  MAX_CLAIM_AMOUNT_DIGITS,
   MAX_CLAIM_PROOF_LENGTH,
   MAX_CLAIM_RECORD_BYTES,
   MAX_PENDING_CLAIMS,
