@@ -214,9 +214,11 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
 
   let timer: ReturnType<typeof setTimeout> | undefined
   let armedFor: number | undefined
+  let backgroundClosed = false
+  let sweepEpoch = 0
 
   const arm = (expiresAt: number | undefined): void => {
-    if (!autoCancelExpired || expiresAt === undefined) return
+    if (!autoCancelExpired || backgroundClosed || expiresAt === undefined) return
     if (timer !== undefined && armedFor !== undefined && armedFor <= expiresAt) return
     if (timer !== undefined) clearTimeout(timer)
     armedFor = expiresAt
@@ -229,17 +231,21 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
   const sweep = async (): Promise<void> => {
     timer = undefined
     armedFor = undefined
+    const epoch = sweepEpoch
     try {
-      await cancelExpired()
+      await cancelExpired(() => !backgroundClosed && sweepEpoch === epoch)
+      if (backgroundClosed || sweepEpoch !== epoch) return
       const open = await mine({ state: 'open', includeExpired: true })
+      if (backgroundClosed || sweepEpoch !== epoch) return
       const next = open
         .map((offer) => offer.expiresAt)
         .filter((at): at is number => at !== null)
         .sort((a, b) => a - b)[0]
       if (next !== undefined) arm(next)
     } catch {
-      // A sweep is housekeeping. If the node is unreachable this round, the next
-      // offer this wallet writes arms it again; nothing is lost by staying quiet.
+      // A transient read failure must not orphan an expired lock until another
+      // offer happens to be written. Retry on the caller's housekeeping cadence.
+      if (!backgroundClosed && sweepEpoch === epoch) arm(now() + sweepInterval)
     }
   }
 
@@ -366,17 +372,22 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
           : `Offer ${hash} was already cancelled, and the ${offer.give.symbol} is back in this wallet.`,
       )
     }
-    const amountRaw = toRaw(offer.give.amount, offer.give.decimals, 'Locked amount')
+    // Return `raw`'s own amount, not a re-conversion of offer.give.amount —
+    // that field round-tripped through a JS number for display, and a cancel
+    // built from it states a balance the ledger refuses whenever the locked
+    // raw does not fit a double. Same rule as accept(): the chain only ever
+    // sees the raw string.
     const { hash: block } = await client.submitAsset(
       { kind: 'swap_cancel', offer: hash },
-      offer.give.asset === KEI_ASSET ? amountRaw : 0n,
+      raw.asset === KEI_ASSET ? BigInt(raw.amount) : 0n,
     )
     return { hash: block, offer: hash, returned: offer.give }
   }
 
-  const cancelExpired = async (): Promise<Cancellation[]> => {
+  const cancelExpired = async (shouldContinue: () => boolean = () => true): Promise<Cancellation[]> => {
     const out: Cancellation[] = []
     for (const offer of await mine({ state: 'open', includeExpired: true })) {
+      if (!shouldContinue()) return out
       if (!offer.expired) continue
       try {
         out.push(await cancelOffer(offer))
@@ -399,7 +410,10 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     filter: { asset?: AssetId; want?: AssetId; state: MineOptions['state']; includeExpired: boolean; limit?: number },
   ): Promise<Offer[]> => {
     const out: Offer[] = []
-    for (const account of accounts) {
+    // The same chain named twice is one chain, and an offer hash is the
+    // offer's id — a roster assembled from several sources will repeat itself,
+    // and a listing must not appear once per mention.
+    for (const account of new Set(accounts)) {
       const raws = await client.node.accountSwaps(assertAddress(account, 'account address'), {
         ...(filter.limit === undefined ? {} : { limit: filter.limit }),
         ...(filter.state ? { state: filter.state } : {}),
@@ -528,6 +542,8 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     lifeOf: (offer) => classify(offer, { viewer: client.address, now }),
 
     close() {
+      backgroundClosed = true
+      sweepEpoch += 1
       if (timer !== undefined) clearTimeout(timer)
       timer = undefined
       armedFor = undefined

@@ -43,7 +43,17 @@ export interface Coverage {
   read: number
   /** Accounts whose read threw, and the sentence it threw. */
   failed: readonly { account: string; reason: string }[]
-  /** Accounts that returned a full page, so their chain may hold more. */
+  /**
+   * Accounts that returned a full page — as many rows as this walk asked for —
+   * so their chain may hold more.
+   *
+   * Full means *the asked limit*, which is the only yardstick the wire gives:
+   * `account_swaps` returns rows and nothing else, so a server that silently
+   * caps `count` below what was asked returns a short page this walk cannot
+   * tell from a complete one. Against such a node, `truncated` under-reports
+   * and `complete` may overstate. Keeping the asked limit at or below the
+   * server's cap is what makes this field trustworthy.
+   */
   truncated: readonly string[]
   /** Accounts a bounded directory evicted before this walk (see `directory.ts`). */
   dropped: number
@@ -118,6 +128,14 @@ export async function readBook(context: MarketContext, options: BookOptions): Pr
   const asks: Offer[] = []
   const bids: Offer[] = []
   const other: Offer[] = []
+  /**
+   * An offer hash is the offer's id, so one hash is one row whatever the
+   * pages said. An honest node never repeats a row — an offer lives on
+   * exactly one chain — but this walk merges pages from a source it does not
+   * trust, and a read model that pads its pages must only ever be able to
+   * hide rows, never multiply them (SPEC §9.4).
+   */
+  const seen = new Set<string>()
   let read = 0
 
   for (const account of accounts) {
@@ -135,6 +153,8 @@ export async function readBook(context: MarketContext, options: BookOptions): Pr
     if (raws.length >= limit) truncated.push(account)
 
     for (const raw of raws) {
+      if (seen.has(raw.hash)) continue
+      seen.add(raw.hash)
       const sells = asset === null ? raw.asset === quote : raw.asset === asset && raw.wantAsset === quote
       const buys = asset === null ? raw.wantAsset === quote : raw.wantAsset === asset && raw.asset === quote
       // Anything naming neither side of this book belongs to some other one, and
