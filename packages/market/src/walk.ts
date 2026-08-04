@@ -327,12 +327,12 @@ export async function walkAccounts<T>(
   const skipped: string[] = []
   const accounts: string[] = []
   const seen = new Set<string>()
-  for (let index = 0; index < requested.length; index += 1) {
-    if (!Object.hasOwn(requested, index)) {
+  for (let index = 0; index < requested.count; index += 1) {
+    if (!Object.hasOwn(requested.entries, index)) {
       skipped.push(`[missing account at index ${index}]`)
       continue
     }
-    const candidate = requested[index]
+    const candidate = requested.entries[index]
     if (typeof candidate !== 'string') {
       skipped.push(`[non-string account at index ${index}]`)
       continue
@@ -401,12 +401,17 @@ export async function walkAccounts<T>(
  * hint and its actual result are checked. The caller wraps this promise with
  * `untilAborted`, which also keeps a late rejection handled after an abort.
  */
-async function accountsForWalk(source: AccountSource, what: string): Promise<readonly unknown[]> {
-  if (typeof source === 'string') return [source]
+interface AccountEntries {
+  readonly entries: readonly unknown[]
+  /** The one validated length snapshot; untrusted arrays are never asked again. */
+  readonly count: number
+}
+
+async function accountsForWalk(source: AccountSource, what: string): Promise<AccountEntries> {
+  if (typeof source === 'string') return { entries: [source], count: 1 }
   if (!isDirectory(source)) {
     if (!Array.isArray(source)) throw badAccountSource(what, 'it must be an address, an array, or an AccountDirectory')
-    assertWalkSize(source.length, what)
-    return source
+    return snapshotAccountEntries(source, what)
   }
 
   const declaredSize = source.size
@@ -423,12 +428,22 @@ async function accountsForWalk(source: AccountSource, what: string): Promise<rea
   if (!Array.isArray(accounts)) {
     throw badAccountSource(what, 'accounts() must return an actual bounded readonly array')
   }
-  assertWalkSize(accounts.length, what)
-  return accounts
+  return snapshotAccountEntries(accounts, what)
 }
 
-function assertWalkSize(size: number, what: string): void {
+function snapshotAccountEntries(entries: readonly unknown[], what: string): AccountEntries {
+  let rawSize: unknown
+  try {
+    rawSize = entries.length
+  } catch {
+    throw badAccountSource(what, 'its array length could not be read safely')
+  }
+  if (!Number.isSafeInteger(rawSize) || (rawSize as number) < 0) {
+    throw badAccountSource(what, 'its array length must be a non-negative safe whole number')
+  }
+  const size = rawSize as number
   if (size > MAX_ACCOUNTS_PER_WALK) throw tooManyAccounts(size, what)
+  return { entries, count: size }
 }
 
 function tooManyAccounts(size: number, what: string): KeiError {

@@ -19,7 +19,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { KeiError, keyPairFromSeed, randomSeed } from '@keicoin/core'
+import { KeiError, addressFromPublicKey, keyPairFromSeed, randomSeed } from '@keicoin/core'
 import {
   DEFAULT_ACCOUNT_LIMIT,
   DEFAULT_CONCURRENCY,
@@ -191,6 +191,66 @@ describe('walkAccounts — the answer is not a race', () => {
     expect(failure).toMatchObject({
       message: expect.stringContaining(`at most ${MAX_ACCOUNTS_PER_WALK}`),
     })
+  })
+
+  test('an array proxy cannot grow past the one validated length snapshot', async () => {
+    const roster = Array.from({ length: MAX_ACCOUNTS_PER_WALK + 1 }, (_, index) =>
+      addressFromPublicKey(index.toString(16).toUpperCase().padStart(64, '0')),
+    )
+    let lengthReads = 0
+    let reads = 0
+    const source = new Proxy(roster, {
+      get(target, property, receiver) {
+        if (property === 'length') {
+          lengthReads += 1
+          return lengthReads === 1 ? 1 : Reflect.get(target, property, receiver)
+        }
+        return Reflect.get(target, property, receiver)
+      },
+    })
+
+    const walk = await walkAccounts(source, async (account) => {
+      reads += 1
+      return { rows: [account], truncated: false }
+    })
+
+    expect(lengthReads).toBe(1)
+    expect(reads).toBe(1)
+    expect(walk.accounts).toEqual(roster.slice(0, 1))
+    expect(walk.coverage).toMatchObject({ asked: 1, read: 1, complete: true })
+  })
+
+  test.each([
+    ['becomes NaN', () => Number.NaN],
+    [
+      'throws',
+      () => {
+        throw new Error('length was read after validation')
+      },
+    ],
+  ] as const)('an array proxy whose length %s cannot change a validated walk', async (_label, laterLength) => {
+    const roster = await addresses(2)
+    let lengthReads = 0
+    let reads = 0
+    const source = new Proxy(roster, {
+      get(target, property, receiver) {
+        if (property === 'length') {
+          lengthReads += 1
+          return lengthReads === 1 ? Reflect.get(target, property, receiver) : laterLength()
+        }
+        return Reflect.get(target, property, receiver)
+      },
+    })
+
+    const walk = await walkAccounts(source, async (account) => {
+      reads += 1
+      return { rows: [account], truncated: false }
+    })
+
+    expect(lengthReads).toBe(1)
+    expect(reads).toBe(2)
+    expect(walk.accounts).toEqual(roster)
+    expect(walk.coverage).toMatchObject({ asked: 2, read: 2, complete: true })
   })
 
   test('an oversized asynchronous directory refuses before node reads', async () => {
