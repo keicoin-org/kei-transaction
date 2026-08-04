@@ -34,7 +34,7 @@ import {
   finiteMarketNumber,
   rawAmountOf,
 } from './util.js'
-import { accountLimitOf, mergeCoverage, type Coverage, type Covered, type ReadOptions } from './walk.js'
+import { accountLimitOf, mergeCoverage, withCoverage, type Coverage, type Covered, type ReadOptions } from './walk.js'
 
 const DEFAULT_HISTORY_INTERVAL: Duration = '1h'
 const DEFAULT_POLL_INTERVAL: Duration = '2s'
@@ -167,7 +167,10 @@ export interface InstrumentHistory {
   interval: { input: Duration; milliseconds: number }
   requested: RequestedRange
   observed: ObservedRange
-  /** Oldest first. Untimed rows stay present with `at: null`. */
+  /**
+   * Oldest first. Without a requested window, untimed rows stay present with
+   * `at: null`; a window cannot place them, so `time.untimed` retains the count.
+   */
   points: InstrumentPricePoint[]
   candles: Candle[]
   summary: {
@@ -406,7 +409,6 @@ function createInstrument(
       quote,
       asOf: requestedAt,
       ...(window === undefined ? {} : { window }),
-      ...(last === undefined ? {} : { last }),
       ...(limit === undefined ? {} : { limit }),
       signal: historyOptions.signal,
       concurrency: historyOptions.concurrency,
@@ -465,7 +467,6 @@ function createInstrument(
         quote,
         asOf: requestedAt,
         ...(window === undefined ? {} : { window }),
-        ...(last === undefined ? {} : { last }),
         ...(historyLimit === undefined ? {} : { limit: historyLimit }),
         signal,
         concurrency,
@@ -794,8 +795,9 @@ function historyFromTrades(
   trades: Covered<Trade>,
   options: HistoryBuildOptions,
 ): InstrumentHistory {
-  const series = toSeries(trades, { asset: instrument.base, quote: instrument.quote, last: options.last })
-  const byHash = new Map(trades.map((trade) => [trade.hash, trade]))
+  const selected = selectHistoryTrades(trades, instrument, options.requested)
+  const series = toSeries(selected.trades, { asset: instrument.base, quote: instrument.quote, last: options.last })
+  const byHash = new Map(selected.trades.map((trade) => [trade.hash, trade]))
   const points = series.points.map((point): InstrumentPricePoint => {
     const trade = byHash.get(point.hash)
     if (!trade) fail('bad-offer', `Trade ${point.hash} disappeared while one instrument history was being assembled.`)
@@ -807,7 +809,7 @@ function historyFromTrades(
       exact,
     }
   })
-  const candles = toCandles(trades, {
+  const candles = toCandles(selected.trades, {
     asset: instrument.base,
     quote: instrument.quote,
     every: options.interval,
@@ -824,8 +826,9 @@ function historyFromTrades(
   }))
   const observedTimes = points.flatMap((point) => point.at === null ? [] : [point.at])
   const timed = points.filter((point) => !point.estimated && point.at !== null).length
-  const untimed = points.filter((point) => point.at === null).length
-  const estimated = points.length - timed - untimed
+  const pointUntimed = points.filter((point) => point.at === null).length
+  const untimed = pointUntimed + selected.unplacedUntimed
+  const estimated = points.length - timed - pointUntimed
   const coverage = trades.coverage
   const temporalCompleteness: DataCompleteness = untimed === 0 ? 'complete' : 'partial'
   const completeness: DataCompleteness = coverage.complete && temporalCompleteness === 'complete' ? 'complete' : 'partial'
@@ -833,7 +836,7 @@ function historyFromTrades(
 
   return {
     instrument,
-    state: points.length === 0 ? 'empty' : 'available',
+    state: points.length === 0 && selected.unplacedUntimed === 0 ? 'empty' : 'available',
     completeness,
     temporalCompleteness,
     interval: { input: options.intervalInput, milliseconds: options.interval },
@@ -861,12 +864,57 @@ function historyFromTrades(
       timed,
       estimated,
       untimed,
-      note: 'Times are this node\'s first-seen observations, not consensus time. A fresh node may not reproduce them.',
+      note: 'Times are this node\'s observations, not consensus time. Untimed accepted rows are counted but cannot be placed in a requested window or chart.',
     },
     coverage,
     provenance: provenanceOf(context, source.id, source.identified, coverage),
     pagination: paginationLimitation(),
   }
+}
+
+interface SelectedHistoryTrades {
+  trades: Covered<Trade>
+  /** Pair-matched accepted rows that a requested time window cannot classify. */
+  unplacedUntimed: number
+}
+
+/**
+ * Apply the instrument's exact request-time range after the bounded account
+ * walk. This prevents a slow read from moving the lower boundary and lets an
+ * accepted row with no usable time remain explicit without inventing a point.
+ */
+function selectHistoryTrades(
+  trades: Covered<Trade>,
+  instrument: InstrumentIdentity,
+  requested: RequestedRange,
+): SelectedHistoryTrades {
+  if (requested.window === null) return { trades, unplacedUntimed: 0 }
+
+  const selected: Trade[] = []
+  let unplacedUntimed = 0
+  for (const trade of trades) {
+    const oriented = (trade.give.asset === instrument.base && trade.want.asset === instrument.quote)
+      || (trade.want.asset === instrument.base && trade.give.asset === instrument.quote)
+    if (!oriented) continue
+
+    const settledAt = Number.isSafeInteger(trade.settledAt) ? trade.settledAt : null
+    const seenAt = Number.isSafeInteger(trade.seenAt) ? trade.seenAt : null
+    const at = settledAt ?? seenAt
+    if (at === null) {
+      unplacedUntimed += 1
+      continue
+    }
+    if (requested.from !== null && at < requested.from) continue
+    if (at > requested.to) continue
+
+    // If a malformed settled time obscured a usable first-seen time, make the
+    // fallback explicit for downstream series/candle transforms. This is still
+    // the node's real observation; no synthetic timestamp is introduced.
+    selected.push(settledAt === trade.settledAt && seenAt === trade.seenAt
+      ? trade
+      : { ...trade, settledAt, seenAt: seenAt as number })
+  }
+  return { trades: withCoverage(selected, trades.coverage), unplacedUntimed }
 }
 
 function bookFrom(book: Book, instrument: InstrumentIdentity, depth: number): InstrumentBook {

@@ -11,6 +11,7 @@ import {
   type InstrumentUpdate,
   type MarketDataSource,
   type Trade,
+  type TradeOptions,
 } from '@keicoin/market'
 
 import { createInstrumentFactory } from '../src/instrument.js'
@@ -292,6 +293,120 @@ describe('instrument market product surface', () => {
     expect(history.requested.to).toBe(requestedAt)
     expect(history.points.map((point) => point.hash)).toEqual([before.hash])
     expect(history.points.some((point) => point.hash === after.hash)).toBe(false)
+  }, 30_000)
+
+  test('requested windows use seenAt, include exact boundaries, and preserve unplaceable time gaps', async () => {
+    const { seller, sword } = await marketWorld()
+    const coverage = emptyCoverage()
+    const trade = (
+      hash: string,
+      price: number,
+      settledAt: number | null,
+      seenAt: number | null,
+    ): Trade => ({
+      hash: hash.repeat(64),
+      from: seller.address,
+      seller: seller.address,
+      buyer: seller.address,
+      give: { asset: sword, symbol: 'SWORD', name: 'Sword', decimals: 0, amount: 1, raw: '1' },
+      want: { asset: KEI_ASSET, symbol: 'KEI', name: 'Kei', decimals: 0, amount: price, raw: String(price) },
+      price,
+      to: null,
+      expiresAt: null,
+      expired: false,
+      state: 'accepted',
+      mine: false,
+      acceptedBy: seller.address,
+      settledBy: hash.repeat(64),
+      seenAt: seenAt as number,
+      settledAt,
+    })
+    const before = trade('A', 1, 4_999, 4_999)
+    const lowerBoundary = trade('B', 2, 5_000, 5_000)
+    const seenOnly = trade('C', 3, null, 6_000)
+    const upperBoundary = trade('D', 4, 10_000, 10_000)
+    const after = trade('E', 5, null, 10_001)
+    const untimed = trade('F', 6, null, null)
+    let returned = [before, lowerBoundary, seenOnly, upperBoundary, after, untimed]
+    const reads: TradeOptions[] = []
+    const factory = createInstrumentFactory({
+      network: 'mock',
+      now: () => 10_000,
+      async readBook() {
+        return {
+          asset: sword,
+          quote: KEI_ASSET,
+          asks: [],
+          bids: [],
+          bestAsk: null,
+          bestBid: null,
+          spread: null,
+          other: [],
+          coverage,
+        }
+      },
+      async readTrades(options) {
+        reads.push(options)
+        return withCoverage([...returned], coverage)
+      },
+      async offer() { throw new Error('not used') },
+      async accept() { throw new Error('not used') },
+    })
+    const instrument = factory.instrument({ base: sword, quote: KEI_ASSET, source: [seller.address] })
+
+    const history = await instrument.history({ interval: 1_000, range: { window: 5_000 } })
+    expect(reads[0]).toMatchObject({ window: 5_000, asOf: 10_000 })
+    expect(reads[0]).not.toHaveProperty('last')
+    expect(history.requested).toEqual({ window: 5_000, from: 5_000, to: 10_000 })
+    expect(history.state).toBe('available')
+    expect(history.completeness).toBe('partial')
+    expect(history.temporalCompleteness).toBe('partial')
+    expect(history.points.map(({ hash, at, estimated, price }) => ({ hash, at, estimated, price }))).toEqual([
+      { hash: lowerBoundary.hash, at: 5_000, estimated: false, price: 2 },
+      { hash: seenOnly.hash, at: 6_000, estimated: true, price: 3 },
+      { hash: upperBoundary.hash, at: 10_000, estimated: false, price: 4 },
+    ])
+    expect(history.observed).toEqual({ from: 5_000, to: 10_000 })
+    expect(history.time).toMatchObject({ timed: 2, estimated: 1, untimed: 1 })
+    expect(history.summary).toMatchObject({ first: 2, last: 4, low: 2, high: 4, volume: 3, trades: 3 })
+    expect(history.candles.map(({ at, open, close, trades }) => ({ at, open, close, trades }))).toEqual([
+      { at: 5_000, open: 2, close: 2, trades: 1 },
+      { at: 6_000, open: 3, close: 3, trades: 1 },
+      { at: 10_000, open: 4, close: 4, trades: 1 },
+    ])
+    expect(history.coverage).toEqual(coverage)
+    expect(toUnixLine(history)).toEqual([
+      { time: 5, value: 2 },
+      { time: 6, value: 3 },
+      { time: 10, value: 4 },
+    ])
+
+    const latest = await instrument.history({ interval: 1_000, range: { window: 5_000 }, last: 1 })
+    expect(latest.points.map(({ hash }) => hash)).toEqual([upperBoundary.hash])
+    expect(latest.time).toMatchObject({ timed: 1, estimated: 0, untimed: 1 })
+    expect(latest.temporalCompleteness).toBe('partial')
+
+    returned = [untimed]
+    const snapshot = await instrument.snapshot({ history: { interval: 1_000, range: { window: 5_000 } } })
+    expect(snapshot.state).toBe('available')
+    expect(snapshot.completeness).toBe('partial')
+    expect(snapshot.ticker).toMatchObject({ state: 'available', completeness: 'partial', trades: 0, last: null })
+    expect(snapshot.history).toMatchObject({
+      state: 'available',
+      completeness: 'partial',
+      temporalCompleteness: 'partial',
+      points: [],
+      candles: [],
+      observed: { from: null, to: null },
+      time: { timed: 0, estimated: 0, untimed: 1 },
+      coverage,
+    })
+    expect(snapshot.history.summary).toMatchObject({ first: null, last: null, volume: 0, trades: 0 })
+    expect(toUnixLine(snapshot.history)).toEqual([])
+    expect(toUnixCandles(snapshot.history)).toEqual([])
+    expect(snapshot.coverage.history).toEqual(coverage)
+    expect(snapshot.coverage.complete).toBe(true)
+    factory.close()
   }, 30_000)
 
   test('unit-priced asks and bids produce exact total terms and displayed levels cannot weaken acceptance', async () => {
