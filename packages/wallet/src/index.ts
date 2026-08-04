@@ -24,6 +24,7 @@ import {
   AssetFactsCache,
   DEFAULT_ASSET_CACHE_LIMIT,
   DEFAULT_ASSET_CONCURRENCY,
+  MAX_ASSET_CACHE_LIMIT,
   MAX_ASSET_CONCURRENCY,
 } from './assets.js'
 
@@ -87,7 +88,8 @@ export interface WalletOptions {
   /**
    * How many assets' immutable metadata this wallet remembers before evicting
    * the least recently used. Defaults to 2,048 — twice SPEC §7's hard cap of
-   * 1,024 distinct assets per account. Must be a whole number above zero.
+   * 1,024 distinct assets per account. Must be a whole number from 1 through
+   * 8,192; there is no unbounded setting.
    */
   assetCacheLimit?: number
 }
@@ -99,7 +101,7 @@ function positiveInteger(
   maximum?: number,
 ): number {
   if (value === undefined) return fallback
-  if (!Number.isInteger(value) || value <= 0 || (maximum !== undefined && value > maximum)) {
+  if (!Number.isSafeInteger(value) || value <= 0 || (maximum !== undefined && value > maximum)) {
     const range = maximum === undefined ? 'above zero' : `from 1 through ${maximum}`
     fail(
       'bad-wallet-option',
@@ -117,7 +119,12 @@ function byAssetId(a: { asset: AssetId }, b: { asset: AssetId }): number {
 export function createWallet(client: KeiClient, options: WalletOptions = {}): WalletApi {
   const assets = new AssetFactsCache(
     client.node,
-    positiveInteger(options.assetCacheLimit, DEFAULT_ASSET_CACHE_LIMIT, 'assetCacheLimit'),
+    positiveInteger(
+      options.assetCacheLimit,
+      DEFAULT_ASSET_CACHE_LIMIT,
+      'assetCacheLimit',
+      MAX_ASSET_CACHE_LIMIT,
+    ),
     positiveInteger(
       options.assetConcurrency,
       DEFAULT_ASSET_CONCURRENCY,
@@ -187,7 +194,10 @@ export function createWallet(client: KeiClient, options: WalletOptions = {}): Wa
 
   // ------------------------------------------------------------ change events
 
-  const listeners = new Set<(summary: WalletSummary) => void>()
+  interface Subscription {
+    listener: (summary: WalletSummary) => void
+  }
+  const listeners = new Set<Subscription>()
   let unsubscribeUpdates: (() => void) | undefined
   let refreshing = false
   let refreshAgain = false
@@ -199,10 +209,10 @@ export function createWallet(client: KeiClient, options: WalletOptions = {}): Wa
    */
   let generation = 0
 
-  const deliver = (snapshot: WalletSummary): void => {
-    for (const listener of [...listeners]) {
+  const deliver = (snapshot: WalletSummary, audience: readonly Subscription[]): void => {
+    for (const subscription of audience) {
       try {
-        listener(snapshot)
+        subscription.listener(snapshot)
       } catch {
         // A listener that throws is the listener's bug. It must not stop the
         // other panels on the page from rendering, and it must not take down
@@ -230,6 +240,9 @@ export function createWallet(client: KeiClient, options: WalletOptions = {}): Wa
     try {
       do {
         refreshAgain = false
+        // Freeze this pass's audience before its first read. New listeners get
+        // only updates whose refresh began after they subscribed.
+        const audience = [...listeners]
         // A failed refresh is nobody's to catch — no caller awaited it — so it
         // is dropped rather than left as an unhandled rejection, and the
         // follow-up pass still runs. `summary()` itself still rejects for a
@@ -240,7 +253,14 @@ export function createWallet(client: KeiClient, options: WalletOptions = {}): Wa
           () => null,
         )
         if (mine !== generation) return
-        if (snapshot) deliver(snapshot)
+        if (snapshot) {
+          // Decide liveness once, at completion. Subscription identity keeps a
+          // removed instance out even when the same callback was added again.
+          // Taking this second snapshot also preserves delivery to everyone who
+          // was subscribed at completion if one listener removes another while
+          // callbacks are being invoked.
+          deliver(snapshot, audience.filter((subscription) => listeners.has(subscription)))
+        }
       } while (refreshAgain)
     } finally {
       refreshing = false
@@ -258,7 +278,8 @@ export function createWallet(client: KeiClient, options: WalletOptions = {}): Wa
     summary,
     on(event, listener) {
       if (event !== 'change') return () => undefined
-      listeners.add(listener)
+      const subscription: Subscription = { listener }
+      listeners.add(subscription)
       // Every block this wallet writes, and every arrival it collects, can move
       // one of the numbers above. Subscribed to once for the whole wallet,
       // however many panels are mounted on it.
@@ -271,7 +292,7 @@ export function createWallet(client: KeiClient, options: WalletOptions = {}): Wa
       })
 
       return () => {
-        if (!listeners.delete(listener)) return
+        if (!listeners.delete(subscription)) return
         if (listeners.size > 0) return
         // Nobody left to tell. Stop listening to the client, and let any
         // refresh already in flight finish without delivering to anyone.
@@ -284,6 +305,12 @@ export function createWallet(client: KeiClient, options: WalletOptions = {}): Wa
 }
 
 export { WalletPanel } from './panel.js'
+export {
+  DEFAULT_ASSET_CACHE_LIMIT,
+  DEFAULT_ASSET_CONCURRENCY,
+  MAX_ASSET_CACHE_LIMIT,
+  MAX_ASSET_CONCURRENCY,
+} from './assets.js'
 export type {
   WalletPanelCustody,
   WalletPanelHandle,

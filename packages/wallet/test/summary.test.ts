@@ -15,7 +15,17 @@
 import { describe, expect, test } from 'bun:test'
 import type { AccountInfo, AssetId, AssetInfo, Holding, KeiClient } from '@keicoin/core'
 import { KeiError } from '@keicoin/core'
-import { createWallet, WalletPanel, type WalletApi, type WalletOptions, type WalletSummary } from '../src/index.js'
+import {
+  DEFAULT_ASSET_CACHE_LIMIT,
+  DEFAULT_ASSET_CONCURRENCY,
+  MAX_ASSET_CACHE_LIMIT,
+  MAX_ASSET_CONCURRENCY,
+  createWallet,
+  WalletPanel,
+  type WalletApi,
+  type WalletOptions,
+  type WalletSummary,
+} from '../src/index.js'
 import type { WalletPanelKei } from '../src/panel.js'
 import { makeDom } from './support.js'
 
@@ -74,6 +84,8 @@ class TestNode {
   unknown = new Set<AssetId>()
   /** Assets whose lookup rejects. */
   broken = new Set<AssetId>()
+  /** Wrong ids returned by a stale or misbehaving node, keyed by the requested id. */
+  returnedIds = new Map<AssetId, AssetId>()
   kinds = new Map<AssetId, 'token' | 'item'>()
 
   private pending: Array<{ asset: AssetId; done: () => void; resolve: (v: AssetInfo | null) => void; reject: (e: unknown) => void }> = []
@@ -126,7 +138,14 @@ class TestNode {
       call.done()
       if (this.broken.has(call.asset)) call.reject(new KeiError('node-unreachable', 'the node did not answer'))
       else if (this.unknown.has(call.asset)) call.resolve(null)
-      else call.resolve(infoFor({ id: call.asset, kind: this.kinds.get(call.asset) ?? 'token' }))
+      else {
+        call.resolve(
+          infoFor({
+            id: this.returnedIds.get(call.asset) ?? call.asset,
+            kind: this.kinds.get(call.asset) ?? 'token',
+          }),
+        )
+      }
     }
     return batch.length
   }
@@ -175,6 +194,16 @@ function harness(options: WalletOptions = {}): Harness {
       return updates.size
     },
   }
+}
+
+function optionFailure(options: WalletOptions): KeiError {
+  try {
+    harness(options)
+  } catch (error) {
+    expect(error).toBeInstanceOf(KeiError)
+    return error as KeiError
+  }
+  throw new Error('expected createWallet() to reject the wallet options')
 }
 
 /**
@@ -229,14 +258,42 @@ describe('asset lookups are concurrent and bounded', () => {
     }
   })
 
-  test('a bad assetConcurrency or assetCacheLimit is refused, naming the option', () => {
-    for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
-      expect(() => harness({ assetConcurrency: bad })).toThrow(/assetConcurrency must be a whole number from 1 through 32/)
-      expect(() => harness({ assetCacheLimit: bad })).toThrow(/assetCacheLimit must be a whole number above zero/)
-    }
-    expect(() => harness({ assetConcurrency: 33 })).toThrow(/assetConcurrency must be a whole number from 1 through 32/)
-    expect(() => harness({ assetConcurrency: 32 })).not.toThrow()
+  test('the lower, default, and upper option boundaries are accepted', () => {
+    expect(() => harness()).not.toThrow()
+    expect(() => harness({ assetConcurrency: DEFAULT_ASSET_CONCURRENCY })).not.toThrow()
+    expect(() => harness({ assetCacheLimit: DEFAULT_ASSET_CACHE_LIMIT })).not.toThrow()
     expect(() => harness({ assetConcurrency: 1, assetCacheLimit: 1 })).not.toThrow()
+    expect(() => harness({ assetConcurrency: MAX_ASSET_CONCURRENCY })).not.toThrow()
+    expect(() => harness({ assetCacheLimit: MAX_ASSET_CACHE_LIMIT })).not.toThrow()
+  })
+
+  test('invalid option boundaries fail synchronously with bad-wallet-option', () => {
+    for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const concurrency = optionFailure({ assetConcurrency: bad })
+      expect(concurrency.code).toBe('bad-wallet-option')
+      expect(concurrency.message).toContain('assetConcurrency must be a whole number from 1 through 32')
+
+      const cache = optionFailure({ assetCacheLimit: bad })
+      expect(cache.code).toBe('bad-wallet-option')
+      expect(cache.message).toContain(`assetCacheLimit must be a whole number from 1 through ${MAX_ASSET_CACHE_LIMIT}`)
+    }
+
+    const excessiveConcurrency = optionFailure({ assetConcurrency: MAX_ASSET_CONCURRENCY + 1 })
+    expect(excessiveConcurrency.code).toBe('bad-wallet-option')
+    expect(excessiveConcurrency.message).toContain('assetConcurrency')
+
+    for (const bad of [MAX_ASSET_CACHE_LIMIT + 1, Number.MAX_SAFE_INTEGER + 1, Number.MAX_VALUE]) {
+      const cache = optionFailure({ assetCacheLimit: bad })
+      expect(cache.code).toBe('bad-wallet-option')
+      expect(cache.message).toContain(`assetCacheLimit must be a whole number from 1 through ${MAX_ASSET_CACHE_LIMIT}`)
+    }
+  })
+
+  test('the exported defaults and finite maxima are the supported option contract', () => {
+    expect(DEFAULT_ASSET_CONCURRENCY).toBe(8)
+    expect(MAX_ASSET_CONCURRENCY).toBe(32)
+    expect(DEFAULT_ASSET_CACHE_LIMIT).toBe(2_048)
+    expect(MAX_ASSET_CACHE_LIMIT).toBe(8_192)
   })
 
   test('the bound holds across overlapping summaries over disjoint assets', async () => {
@@ -396,6 +453,38 @@ describe('immutable metadata is cached; mutable state never is', () => {
     expect(h.node.assetCalls).toEqual(['A000', 'A001', 'A001'])
   })
 
+  test('mismatched asset metadata rejects, is not cached, and recovers on retry', async () => {
+    const h = harness()
+    h.node.setHoldings(['A000'], '123')
+    h.node.returnedIds.set('A000', 'B000')
+
+    const failure = h.wallet.summary().then(
+      () => new Error('summary resolved with mismatched asset metadata'),
+      (error: unknown) => error,
+    )
+    await drain(h.node)
+    const mismatch = await failure
+
+    expect(mismatch).toBeInstanceOf(KeiError)
+    expect((mismatch as KeiError).code).toBe('asset-info-mismatch')
+    expect((mismatch as KeiError).message).toContain('A000')
+    expect((mismatch as KeiError).message).toContain('B000')
+
+    h.node.returnedIds.delete('A000')
+    const second = h.wallet.summary()
+    await drain(h.node)
+    expect((await second).tokens).toEqual([
+      {
+        asset: 'A000',
+        symbol: 'A000',
+        name: 'Name A000',
+        amount: 1.23,
+        issuer: 'kei_issuer',
+      },
+    ])
+    expect(h.node.assetCalls).toEqual(['A000', 'A000'])
+  })
+
   test('the cache evicts least-recently-used at assetCacheLimit, and re-learns', async () => {
     const h = harness({ assetCacheLimit: 2, assetConcurrency: 1 })
 
@@ -539,6 +628,53 @@ describe('update bursts are coalesced across every listener', () => {
     a.off()
     b.off()
     c.off()
+  })
+
+  test('a listener joining mid-refresh does not receive its pre-subscription snapshot', async () => {
+    const h = harness()
+    h.node.setHoldings(['A000'])
+    const existing = record(h.wallet)
+
+    h.update()
+    await flush()
+    expect(h.node.outstanding).toBe(1)
+
+    const late = record(h.wallet)
+    await drain(h.node)
+    expect(existing.seen).toHaveLength(1)
+    expect(late.seen).toHaveLength(0)
+
+    h.update()
+    await drain(h.node)
+    expect(existing.seen).toHaveLength(2)
+    expect(late.seen).toHaveLength(1)
+    existing.off()
+    late.off()
+  })
+
+  test('unsubscribe and re-subscribe of the same callback cannot revive an old subscription', async () => {
+    const h = harness()
+    h.node.setHoldings(['A000'])
+    const seen: WalletSummary[] = []
+    const listener = (summary: WalletSummary): void => {
+      seen.push(summary)
+    }
+    const anchor = record(h.wallet)
+    const firstOff = h.wallet.on('change', listener)
+
+    h.update()
+    await flush()
+    firstOff()
+    const currentOff = h.wallet.on('change', listener)
+    await drain(h.node)
+
+    expect(anchor.seen).toHaveLength(1)
+    expect(seen).toHaveLength(0)
+    h.update()
+    await drain(h.node)
+    expect(seen).toHaveLength(1)
+    anchor.off()
+    currentOff()
   })
 
   test('a throwing listener does not stop the others, or the next update', async () => {
@@ -731,6 +867,54 @@ describe('the panel never paints an older summary over a newer one', () => {
     expect(handle.element.querySelector('.kei-wallet-panel__value')?.textContent).toBe('3')
     expect(handle.element.querySelector('.kei-wallet-panel__error')).toBeNull()
     handle.unmount()
+  })
+
+  test('a refresh begun before mount cannot repaint a newer initial summary', async () => {
+    const dom = makeDom()
+    const updates = new Set<() => void>()
+    let accountCalls = 0
+    let resolveOld: ((info: AccountInfo) => void) | undefined
+    const oldInfo = new Promise<AccountInfo>((resolve) => {
+      resolveOld = resolve
+    })
+    const account = (kei: number): AccountInfo => ({
+      address: ADDRESS,
+      frontier: '0'.repeat(64),
+      height: 1,
+      balance: (BigInt(kei) * 10n ** 18n).toString(),
+      representative: ADDRESS,
+      receivableCount: 0,
+      issuedCount: 0,
+    })
+    const client = {
+      address: ADDRESS,
+      node: {
+        accountInfo: () => (++accountCalls === 1 ? oldInfo : Promise.resolve(account(2))),
+        holdings: async () => [],
+        assetInfo: async () => null,
+      },
+      on(event: string, listener: () => void) {
+        if (event !== 'update') return () => undefined
+        updates.add(listener)
+        return () => updates.delete(listener)
+      },
+    } as unknown as KeiClient
+    const wallet = createWallet(client)
+    const anchorOff = wallet.on('change', () => undefined)
+
+    for (const update of [...updates]) update()
+    await flush()
+    const handle = WalletPanel.mount(dom.container, { kei: panelKei(wallet) })
+    await flush()
+    expect(handle.element.querySelector('.kei-wallet-panel__value')?.textContent).toBe('2')
+
+    resolveOld?.(account(1))
+    await flush()
+    expect(handle.element.querySelector('.kei-wallet-panel__value')?.textContent).toBe('2')
+    expect(accountCalls).toBe(2)
+
+    handle.unmount()
+    anchorOff()
   })
 })
 
