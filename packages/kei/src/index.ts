@@ -105,8 +105,10 @@ export type {
 export {
   DEFAULT_ACCOUNT_LIMIT,
   DEFAULT_CONCURRENCY,
+  MAX_ACCOUNTS_PER_WALK,
   MAX_CONCURRENCY,
   DEFAULT_DIRECTORY_LIMIT,
+  MAX_DIRECTORY_LIMIT,
   assertMatches,
   bidPrice,
   classify,
