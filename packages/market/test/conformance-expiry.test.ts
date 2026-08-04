@@ -144,6 +144,37 @@ describe('close() means closed', () => {
     expect(counting.calls.process, evidence('calls', counting.report())).toBe(processBefore)
   })
 
+  test('close() during the per-offer read stops before cancellation is submitted', async () => {
+    const counting = new CountingNode(world.node)
+    const gate = new GateNode(counting)
+    const seller = await world.actor('seller', {
+      node: gate,
+      market: { autoCancelExpired: true },
+    })
+    await world.mint(sword, seller, 1)
+    const offer = await seller.market.sell({
+      asset: sword,
+      amount: 1,
+      price: 5,
+      expiresAt: world.clock.at + 5,
+    })
+    // Let the listing read finish, then hold the later per-offer read inside
+    // cancelOfferChecked(). This is the await window the earlier test cannot
+    // cover: close() must still be observed before submitAsset() starts.
+    gate.hold('swapOffer', (hash) => hash === offer.hash)
+    world.clock.tick(100)
+
+    const held = await gate.captured()
+    seller.market.close()
+    const processBefore = counting.calls.process
+    held.release()
+    gate.open('swapOffer')
+
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    expect((await world.node.swapOffer(offer.hash))?.state).toBe('open')
+    expect(counting.calls.process, evidence('calls', counting.report())).toBe(processBefore)
+  })
+
   test('an explicit cancelExpired() call still works after close()', async () => {
     const seller = await world.actor('seller', { market: { autoCancelExpired: true } })
     await world.mint(sword, seller, 1)
