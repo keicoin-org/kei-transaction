@@ -40,7 +40,7 @@ export type MarketErrorCode =
   | 'bad-duration'
   /** Dense candle filling would exceed the public emitted-output limit. */
   | 'too-many-candles'
-  /** An advisory trade time cannot form a safe whole-millisecond candle bucket. */
+  /** An advisory trade time is not a non-negative safe whole number of milliseconds. */
   | 'bad-candle-time'
   /** A generated-candle budget that is not a positive safe integer within the public cap. */
   | 'bad-max-candles'

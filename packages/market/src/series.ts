@@ -278,28 +278,26 @@ function candleBudgetOf(requested: number | undefined): number {
   return requested
 }
 
-const MIN_SAFE_TIME = BigInt(Number.MIN_SAFE_INTEGER)
-const MAX_SAFE_TIME = BigInt(Number.MAX_SAFE_INTEGER)
-
-/** A safe bucket start, using mathematical floor rather than truncation toward zero. */
+/** A safe, non-negative whole-millisecond bucket start. */
 function candleStartOf(at: number, every: number): number {
-  if (!Number.isSafeInteger(at)) {
+  if (!Number.isSafeInteger(at) || at < 0) {
     fail(
       'bad-candle-time',
-      `A candle's advisory time must be a safe whole number of milliseconds — got ${String(at)}. Use a timestamp from ${Number.MIN_SAFE_INTEGER} through ${Number.MAX_SAFE_INTEGER}.`,
+      `A candle's advisory time must be a non-negative safe whole number of milliseconds — got ${String(at)}. Use a timestamp from 0 through ${Number.MAX_SAFE_INTEGER}.`,
     )
   }
   const time = BigInt(at)
   const width = BigInt(every)
-  const quotient = time < 0n ? -((-time + width - 1n) / width) : time / width
-  const start = quotient * width
-  if (start < MIN_SAFE_TIME || start > MAX_SAFE_TIME) {
-    fail(
-      'bad-candle-time',
-      `Advisory time ${at}ms at ${every}ms starts a bucket outside JavaScript's safe whole-millisecond range. Use a timestamp and interval whose bucket start stays from ${Number.MIN_SAFE_INTEGER} through ${Number.MAX_SAFE_INTEGER}.`,
-    )
-  }
+  const start = (time / width) * width
   return Number(start)
+}
+
+/** Refuse every non-null advisory time before `toSeries` makes a sort decision. */
+function validateCandleTimes(trades: readonly Trade[], every: number): void {
+  for (const trade of trades) {
+    const at = trade.settledAt ?? trade.seenAt
+    if (at !== null) candleStartOf(at, every)
+  }
 }
 
 /**
@@ -339,6 +337,7 @@ export function toCandles(trades: readonly Trade[], options: CandleOptions): Can
   // budget is a refusal about the call rather than about the data behind it.
   const every = candleWidthOf(options.every)
   const budget = candleBudgetOf(options.maxCandles)
+  validateCandleTimes(trades, every)
   const series = toSeries(trades, options)
   const carried = coverageOf(trades)
   if (series.points.length === 0) {
