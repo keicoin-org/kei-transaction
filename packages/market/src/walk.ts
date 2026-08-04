@@ -187,9 +187,12 @@ export function withCoverageOn<T extends object, C extends Coverage | null>(
  * the same logical scope. Unequal `asked` counts throw `coverage-mismatch`
  * instead of manufacturing a plausible-looking answer.
  *
- * `read` counts accounts that answered every part. The failed account names
- * make that intersection exact even when different calls missed different
- * accounts; taking only the smallest individual `read` would overstate it.
+ * `read` counts accounts that answered every part. Named failures make that
+ * intersection exact even when different calls missed different accounts.
+ * A valid hand-built coverage may omit names for some unread accounts. One
+ * such incomplete part can still be merged with complete parts, but two
+ * incomplete parts are ambiguous without identities and are rejected rather
+ * than silently upgrading or undercounting the intersection.
  *
  * Used where a single read has to touch two RPCs — "my trades" reads this
  * wallet's offers *and* scans its history for the accepts it wrote — because a
@@ -210,7 +213,18 @@ export function mergeCoverage(...parts: readonly (Coverage | null | undefined)[]
   const truncated = [...new Set(present.flatMap((part) => [...part.truncated]))]
   const skipped = [...new Set(present.flatMap((part) => [...part.skipped]))]
   const failedAccounts = new Set(failed.map((failure) => failure.account))
-  const read = Math.max(0, asked - failedAccounts.size)
+  const unnamedFailures = present.reduce((total, part) => {
+    const namedInPart = new Set(part.failed.map((failure) => failure.account)).size
+    return total + Math.max(0, part.asked - part.read - namedInPart)
+  }, 0)
+  const incompleteParts = present.filter((part) => part.read < asked)
+  if (unnamedFailures > 0 && incompleteParts.length > 1) {
+    throw new KeiError(
+      'coverage-mismatch',
+      'Coverage with unnamed unread accounts cannot be merged across multiple incomplete reads. Preserve account failure identities or keep these coverage values separate.',
+    )
+  }
+  const read = Math.max(0, asked - failedAccounts.size - unnamedFailures)
   return {
     asked,
     read,
