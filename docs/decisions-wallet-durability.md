@@ -178,13 +178,14 @@ anywhere.
 
 ## 8. This is source, docs and tests — no version moves here
 
-No package version and no dependency range changes in this work, and nothing is
-published from it. `@keicoin/wallet` stays at its published `0.4.2` and the
-umbrella keeps `@keicoin/wallet@^0.4.2`; the panel's `custody` is an optional
-field, so the published wallet and this tree's umbrella still satisfy each
-other. Moving the set is a release PR of its own after this merges, the way
-[#32] was followed by [#33] — a version bumped in a feature branch is a version
-that lies for as long as the branch is open.
+This decision PR changed no package version or dependency range and published
+nothing. At that point `@keicoin/wallet` remained at `0.4.2` and the umbrella at
+`@keicoin/wallet@^0.4.2`; the panel's `custody` field was optional, so those
+published artifacts still satisfied each other. The follow-up coordinated
+release later published this work in `@keicoin/wallet@0.5.0` and
+`kei-transaction@0.7.0` on 4 August 2026. Keeping that move in its own release PR,
+the way [#32] was followed by [#33], avoided claiming a version while the
+feature branch was still open.
 
 [#32]: https://github.com/keicoin-org/kei-transaction/pull/32
 [#33]: https://github.com/keicoin-org/kei-transaction/pull/33
