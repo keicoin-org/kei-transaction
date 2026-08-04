@@ -145,6 +145,13 @@ Coverage intentionally stores counts instead of the account roster, so
 equal-sized parts from different rosters must still be kept separate by the
 caller.
 
+When the same account fails in more than one merged read, its `failed` entry
+still appears once. `reason` remains a readable `; `-joined summary and
+`reasons` carries the exact atomic strings in canonical order. Code that merges
+coverage again uses `reasons`, never punctuation in the summary, so arbitrary
+semicolons in a node error cannot make nested merges duplicate or conflate
+failures.
+
 `medianPrice()` remains as a scalar compatibility shortcut. Because a number
 cannot carry provenance, use `price()` whenever the difference between a
 complete and partial roster affects the decision being made.

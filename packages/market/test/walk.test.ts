@@ -264,12 +264,12 @@ describe('walkAccounts — coverage is the honest half', () => {
     expect(coverageOf(withCoverage([], merged))).toEqual(merged)
   })
 
-  test('the same failed account reduces read once and keeps both reasons', () => {
+  test('the same failed account reduces read once and keeps exact atomic reasons', () => {
     const first = {
       ...emptyCoverage(),
       asked: 2,
       read: 1,
-      failed: [{ account: 'kei_a', reason: 'offers failed' }],
+      failed: [{ account: 'kei_a', reason: 'offers; failed' }],
       complete: false,
     }
     const second = {
@@ -283,9 +283,57 @@ describe('walkAccounts — coverage is the honest half', () => {
     const merged = mergeCoverage(first, second)
     expect(merged).toMatchObject({ asked: 2, read: 1, complete: false })
     expect(merged.failed).toEqual([
-      { account: 'kei_a', reason: 'offers failed; history failed' },
+      {
+        account: 'kei_a',
+        reason: 'history failed; offers; failed',
+        reasons: ['history failed', 'offers; failed'],
+      },
     ])
     expect(coverageOf(withCoverage([], merged))).toEqual(merged)
+
+    // The summary's semicolons are prose, never a delimiter we parse. Exact
+    // atoms make re-merging the first part a no-op instead of growing text.
+    expect(mergeCoverage(merged, first)).toEqual(merged)
+  })
+
+  test('nested merges are associative and idempotent for repeated failures', () => {
+    const part = (reason: string): Coverage => ({
+      ...emptyCoverage(),
+      asked: 1,
+      read: 0,
+      failed: [{ account: 'kei_a', reason }],
+      complete: false,
+    })
+    const a = part('offers; timed out')
+    const b = part('history failed')
+    const c = part('claims failed')
+
+    const left = mergeCoverage(mergeCoverage(a, b), c)
+    const right = mergeCoverage(a, mergeCoverage(b, c))
+    expect(left).toEqual(right)
+    expect(left.failed).toEqual([
+      {
+        account: 'kei_a',
+        reason: 'claims failed; history failed; offers; timed out',
+        reasons: ['claims failed', 'history failed', 'offers; timed out'],
+      },
+    ])
+    expect(mergeCoverage(left, a, b, c)).toEqual(left)
+
+    for (const permutation of [
+      [a, b, c],
+      [a, c, b],
+      [b, a, c],
+      [b, c, a],
+      [c, a, b],
+      [c, b, a],
+    ]) {
+      expect(mergeCoverage(...permutation)).toEqual(left)
+    }
+
+    const restored = JSON.parse(JSON.stringify(left)) as Coverage
+    expect(coverageOf(withCoverage([], restored))).toEqual(left)
+    expect(mergeCoverage(restored, a, b, c)).toEqual(left)
   })
 
   test('merging different account cardinalities refuses instead of inventing coverage', () => {
@@ -384,6 +432,56 @@ describe('walkAccounts — coverage is the honest half', () => {
       {
         value: { ...emptyCoverage(), asked: 1, read: 0, failed: [{ account: 'kei_x', reason: 7 }], complete: false },
         message: 'failed[0] must contain string account and reason fields',
+      },
+      {
+        value: {
+          ...emptyCoverage(),
+          asked: 1,
+          read: 0,
+          failed: [{ account: 'kei_x', reason: 'one', reasons: 'one' }],
+          complete: false,
+        },
+        message: 'reasons must be an array of strings',
+      },
+      {
+        value: {
+          ...emptyCoverage(),
+          asked: 1,
+          read: 0,
+          failed: [{ account: 'kei_x', reason: 'one', reasons: ['one'] }],
+          complete: false,
+        },
+        message: 'only for two or more atomic reasons',
+      },
+      {
+        value: {
+          ...emptyCoverage(),
+          asked: 1,
+          read: 0,
+          failed: [{ account: 'kei_x', reason: 'one; one', reasons: ['one', 'one'] }],
+          complete: false,
+        },
+        message: 'must not repeat an atomic reason',
+      },
+      {
+        value: {
+          ...emptyCoverage(),
+          asked: 1,
+          read: 0,
+          failed: [{ account: 'kei_x', reason: 'two; one', reasons: ['two', 'one'] }],
+          complete: false,
+        },
+        message: 'must be sorted in canonical order',
+      },
+      {
+        value: {
+          ...emptyCoverage(),
+          asked: 1,
+          read: 0,
+          failed: [{ account: 'kei_x', reason: 'wrong summary', reasons: ['one', 'two'] }],
+          complete: false,
+        },
+        message: "reason must be the readable '; ' joined summary",
       },
       {
         value: {
@@ -591,6 +689,20 @@ describe('coverage rides along without changing the rows', () => {
       { ...emptyCoverage(), asked: 1, read: 1, failed: [{ account: 'foreign', reason: 'forged' }], complete: false },
       { ...emptyCoverage(), asked: Number.NaN },
       { ...emptyCoverage(), failed: [{ account: 'kei_x' }] },
+      {
+        ...emptyCoverage(),
+        asked: 1,
+        read: 0,
+        failed: [{ account: 'kei_x', reason: 'wrong', reasons: ['one', 'two'] }],
+        complete: false,
+      },
+      {
+        ...emptyCoverage(),
+        asked: 1,
+        read: 0,
+        failed: [{ account: 'kei_x', reason: 'two; one', reasons: ['two', 'one'] }],
+        complete: false,
+      },
       {
         ...emptyCoverage(),
         asked: 1,

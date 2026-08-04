@@ -65,13 +65,26 @@ export const MAX_CONCURRENCY = 32
 export const DEFAULT_ACCOUNT_LIMIT = 100
 
 /** Why a walked read might be missing something, in the only terms it can honestly give. */
+export interface CoverageFailure {
+  account: string
+  /** Human-readable summary. For merged failures this joins the exact `reasons`. */
+  reason: string
+  /**
+   * Canonically sorted exact atomic reasons when more than one read failed for
+   * this account. Omitted for an ordinary single-read failure. Keeping the
+   * atoms separate makes nested merges idempotent without guessing at
+   * punctuation in prose.
+   */
+  reasons?: readonly string[]
+}
+
 export interface Coverage {
   /** Accounts the walk was asked to read, after removing duplicates. */
   asked: number
   /** Accounts that answered. `asked - read` equals the unique entries in `failed`. */
   read: number
   /** Accounts whose read threw, once per unread account, and the sentence it threw. */
-  failed: readonly { account: string; reason: string }[]
+  failed: readonly CoverageFailure[]
   /**
    * Accounts that returned as many rows as this walk asked for, so their chain
    * may hold more. A server that silently caps below the asked limit is
@@ -224,14 +237,22 @@ export function mergeCoverage(...parts: readonly (Coverage | null | undefined)[]
   for (const part of present) {
     for (const failure of part.failed) {
       const reasons = failedByAccount.get(failure.account)
-      if (!reasons) failedByAccount.set(failure.account, [failure.reason])
-      else if (!reasons.includes(failure.reason)) reasons.push(failure.reason)
+      const additions = failure.reasons ?? [failure.reason]
+      if (!reasons) failedByAccount.set(failure.account, [...additions])
+      else {
+        for (const reason of additions) {
+          if (!reasons.includes(reason)) reasons.push(reason)
+        }
+      }
     }
   }
-  const failed = [...failedByAccount].map(([account, reasons]) => ({
-    account,
-    reason: reasons.join('; '),
-  }))
+  const failed: CoverageFailure[] = [...failedByAccount]
+    .sort(([left], [right]) => compareText(left, right))
+    .map(([account, reasons]) => {
+      reasons.sort(compareText)
+      const reason = reasons.join('; ')
+      return reasons.length === 1 ? { account, reason } : { account, reason, reasons }
+    })
   if (failed.length > asked) {
     throw new KeiError(
       'coverage-mismatch',
@@ -431,6 +452,29 @@ function coverageProblem(value: unknown): string | null {
     if (failedAccounts.has(account)) {
       return `failed names account ${account} more than once; each unread account needs one failure entry.`
     }
+    const reasons = (failure as { reasons?: unknown }).reasons
+    if (reasons !== undefined) {
+      if (!Array.isArray(reasons) || reasons.some((entry) => typeof entry !== 'string')) {
+        return `failed[${index}].reasons must be an array of strings when present.`
+      }
+      if (reasons.length < 2) {
+        return `failed[${index}].reasons is only for two or more atomic reasons; omit it for one.`
+      }
+      if (new Set(reasons).size !== reasons.length) {
+        return `failed[${index}].reasons must not repeat an atomic reason.`
+      }
+      if (
+        reasons.some(
+          (entry, reasonIndex) =>
+            reasonIndex > 0 && compareText(reasons[reasonIndex - 1] as string, entry) > 0,
+        )
+      ) {
+        return `failed[${index}].reasons must be sorted in canonical order.`
+      }
+      if (reason !== reasons.join('; ')) {
+        return `failed[${index}].reason must be the readable '; ' joined summary of its exact reasons.`
+      }
+    }
     failedAccounts.add(account)
   }
   const unread = asked - read
@@ -461,6 +505,11 @@ function coverageProblem(value: unknown): string | null {
 
 function isCount(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0
+}
+
+/** Stable UTF-16 code-unit order, independent of host locale. */
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
 }
 
 function concurrencyOf(requested: number | undefined): number {

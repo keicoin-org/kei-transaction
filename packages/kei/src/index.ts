@@ -146,6 +146,7 @@ export type {
   CandleOptions,
   Change,
   Coverage,
+  CoverageFailure,
   Covered,
   DirectoryOptions,
   Expectation,
