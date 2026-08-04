@@ -356,6 +356,41 @@ describe('price series — consensus numbers, advisory order', () => {
     expect(candles[0]?.at).toBe(2)
   })
 
+  test('matched malformed times are refused before ordering or last can hide them', () => {
+    for (const malformed of [Number.NaN, Number.MIN_SAFE_INTEGER]) {
+      const error = caught(() =>
+        toCandles([sale('BAD-TIME', 1, 5, malformed), sale('VALID-TIME', 1, 7, 0)], {
+          asset: 'SWORD',
+          quote: KEI_ASSET,
+          every: 2,
+          fill: false,
+          last: 1,
+        }),
+      )
+      expect(error).toMatchObject({ code: 'bad-candle-time' })
+    }
+  })
+
+  test('a malformed trade in another quote cannot poison the requested pair', () => {
+    const unrelated = trade({
+      hash: 'UNRELATED-QUOTE-TIME',
+      give: leg('SWORD', 1),
+      want: leg('GOLD', 5),
+      settledAt: Number.NaN,
+      seenAt: Number.NaN,
+    })
+
+    const candles = toCandles([unrelated, sale('KEI-TIME', 1, 7, 2)], {
+      asset: 'SWORD',
+      quote: KEI_ASSET,
+      every: 2,
+      fill: true,
+    })
+
+    expect(candles).toHaveLength(1)
+    expect(candles[0]?.at).toBe(2)
+  })
+
   test('fill false stays sparse across a multi-year gap', () => {
     const decade = 10 * 365 * 24 * 60 * 60 * 1_000
     const candles = toCandles([sale('A', 1, 5, 0), sale('B', 1, 7, decade)], {
