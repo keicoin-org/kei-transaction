@@ -263,8 +263,11 @@ taking their loot back. Pass `{ force: true }` when you mean it.
 ## The market
 
 An auction house is usually weeks of work: listings, bids, settlement, price
-history, and a database in front of all of it. Here a listing is one block, and
-settlement is atomic — there is no server and no database to run.
+history, and a database in front of all of it. Here a listing is one block and
+settlement is atomic without application custody. A useful market screen still
+needs an explicit discovery/history source; the built-in bounded account-chain
+adapter is a local baseline, while durable or global history belongs in a
+replaceable materialized provider.
 
 ```js
 // Seller: locks the item, asks 5 Kei
@@ -273,7 +276,7 @@ const offer = await kei.market.sell({ asset: sword, price: 5 })
 // Buyer: one block moves both legs, or neither
 await kei.market.accept(offer)
 
-// Anyone: price history is transaction history, already there
+// One explicitly scoped view of settled ledger facts
 await kei.market.medianPrice(sword, { window: '7d' })
 ```
 
@@ -293,6 +296,33 @@ Above those primitives sit the pieces a market screen actually needs: a bounded
 chain and reports what it could not see, **price series and candles** ready to
 draw, and a **verify-before-signing** check so an index can never become an
 authority.
+
+The instrument surface binds those pieces into one product-shaped call:
+
+```js
+const source = createAccountChainSource({ id: 'main-market', accounts: directory })
+const swords = kei.market.instrument({ base: sword, quote: KEI_ASSET, source })
+
+const snapshot = await swords.snapshot({
+  depth: 20,
+  history: { interval: '1h', range: { window: '30d' } },
+})
+
+renderTicker(snapshot.ticker)
+renderBook(snapshot.book)
+chart.setData(toUnixCandles(snapshot.history))
+
+const stop = swords.subscribe({ every: '2s', signal }, update => render(update))
+await swords.sell({ units: 10, unitPrice: 2 })
+await swords.accept(snapshot.book.bestAsk)
+```
+
+Snapshots are normal serializable objects with exact raw terms, pair identity,
+ticker/book/history, status, completeness, source/time provenance, and an honest
+unsupported-pagination answer for the legacy account-chain adapter. Polls do
+not overlap, retain last-good data through transient failures, and wake after
+instrument writes. Acceptance re-reads chain state and compares every displayed
+term, including raw quantities, before signing.
 
 > **Everything below this line ships in `@keicoin/market@0.4.0`**, published 4
 > August 2026. The original directory, `book()`, `series()`, `candles()` and

@@ -84,9 +84,9 @@ export interface Expectation {
   hash?: string
   seller?: string
   /** What the buyer expects to receive. */
-  give?: { asset?: AssetId | { id: AssetId }; amount?: number }
+  give?: { asset?: AssetId | { id: AssetId }; amount?: number; raw?: string }
   /** What the buyer expects to pay. */
-  want?: { asset?: AssetId | { id: AssetId }; amount?: number }
+  want?: { asset?: AssetId | { id: AssetId }; amount?: number; raw?: string }
   /** The address the listing was reserved for, or null for an open one. */
   to?: string | null
 }
@@ -109,8 +109,10 @@ export function verify(offer: Offer, expected: Expectation): Verification {
   differs('the reserved buyer', expected.to, offer.to)
   differs('what you receive', legAsset(expected.give), offer.give.asset)
   differs('how many you receive', expected.give?.amount, offer.give.amount)
+  differs('the exact raw quantity you receive', expected.give?.raw, offer.give.raw)
   differs('what you pay with', legAsset(expected.want), offer.want.asset)
   differs('how much you pay', expected.want?.amount, offer.want.amount)
+  differs('the exact raw quantity you pay', expected.want?.raw, offer.want.raw)
 
   return { ok: mismatches.length === 0, mismatches }
 }
@@ -270,8 +272,8 @@ export function expectationFrom(offer: Pick<Offer, 'hash' | 'from' | 'give' | 'w
   return {
     hash: offer.hash,
     seller: offer.from,
-    give: { asset: offer.give.asset, amount: offer.give.amount },
-    want: { asset: offer.want.asset, amount: offer.want.amount },
+    give: { asset: offer.give.asset, amount: offer.give.amount, ...(offer.give.raw === undefined ? {} : { raw: offer.give.raw }) },
+    want: { asset: offer.want.asset, amount: offer.want.amount, ...(offer.want.raw === undefined ? {} : { raw: offer.want.raw }) },
     to: offer.to,
   }
 }

@@ -56,6 +56,11 @@ import {
 import { assetIdOf, durationMs } from './util.js'
 import type { AccountSource } from './directory.js'
 import {
+  createInstrumentFactory,
+  type InstrumentApi,
+  type InstrumentOptions,
+} from './instrument.js'
+import {
   accountLimitOf,
   coverageOf,
   emptyCoverage,
@@ -83,6 +88,8 @@ import type {
 } from './types.js'
 
 export interface MarketApi {
+  /** Bind one explicit base/quote/source once, then read and trade it coherently. */
+  instrument(options: InstrumentOptions): InstrumentApi
   /** List an asset for Kei. The common case, and the one §9.3 calls a sale offer. */
   sell(options: SellOptions): Promise<Offer>
   /** The mirror of `sell`: lock Kei, and take the asset from whoever fills it. */
@@ -211,8 +218,8 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     return {
       hash: raw.hash,
       from: raw.from,
-      give: { ...give, amount: giveAmount },
-      want: { ...want, amount: wantAmount },
+      give: { ...give, amount: giveAmount, raw: raw.amount },
+      want: { ...want, amount: wantAmount, raw: raw.wantAmount },
       price: giveAmount === 0 ? 0 : wantAmount / giveAmount,
       to: raw.counterparty,
       expiresAt: raw.expiresAt,
@@ -619,7 +626,27 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     return summarise(matched, id, quote)
   }
 
+  const offer = (offerOptions: OfferOptions): Promise<Offer> => {
+    if (!offerOptions?.give || !offerOptions?.want) {
+      fail(
+        'bad-offer',
+        'market.offer() takes { give: { asset, amount }, want: { asset, amount } }. For a plain sale use market.sell({ asset, price }).',
+      )
+    }
+    return publish(offerOptions.give, offerOptions.want, offerOptions.to, offerOptions)
+  }
+
+  const instrumentFactory = createInstrumentFactory({
+    network: client.node.network,
+    now,
+    readBook: (bookOptions) => readBook(context, { concurrency, ...bookOptions }),
+    readTrades: (tradeOptions) => readTrades(context, { concurrency, ...tradeOptions }),
+    offer,
+    accept,
+  })
+
   return {
+    instrument: instrumentFactory.instrument,
     sell: (sell) =>
       publish(
         { asset: sell.asset, amount: sell.amount ?? 1 },
@@ -634,15 +661,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
         bid.to,
         bid,
       ),
-    offer: (options) => {
-      if (!options?.give || !options?.want) {
-        fail(
-          'bad-offer',
-          'market.offer() takes { give: { asset, amount }, want: { asset, amount } }. For a plain sale use market.sell({ asset, price }).',
-        )
-      }
-      return publish(options.give, options.want, options.to, options)
-    },
+    offer,
     accept,
     cancel: cancelOffer,
     cancelExpired,
@@ -702,6 +721,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     lifeOf: (offer) => classify(offer, { viewer: client.address, now }),
 
     close() {
+      instrumentFactory.close()
       backgroundClosed = true
       sweepEpoch += 1
       if (timer !== undefined) clearTimeout(timer)

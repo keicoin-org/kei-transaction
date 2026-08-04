@@ -21,6 +21,13 @@ export interface OfferLeg {
   name: string
   decimals: number
   amount: number
+  /**
+   * Exact ledger quantity, before decimal display conversion.
+   *
+   * Optional only so hand-authored legacy `Offer` fixtures remain source
+   * compatible. Every offer and trade returned by this package includes it.
+   */
+  raw?: string
 }
 
 export interface Offer {

@@ -1,7 +1,10 @@
 # @keicoin/market
 
-Offers, atomic settlement, and price history — read straight off account chains.
-No listing table, no matching engine, no server.
+Offers and atomic settlement on chain, plus an instrument API over an explicit,
+bounded market-data source. There is no matching engine or signing authority in
+the read model. Useful global or durable discovery and history still require a
+materialized provider; the built-in account-chain adapter is the honest local
+baseline, not a global market.
 
 > Part of [`kei-transaction`](https://www.npmjs.com/package/kei-transaction) — real currencies and items
 > for browser games. **Install `kei-transaction` instead unless you are counting
@@ -25,7 +28,7 @@ const offer = await market.sell({ asset: sword, price: 5 })
 // Buyer: one block moves both legs, or neither
 await market.accept(offer)
 
-// Anyone: price history is transaction history, with read coverage attached
+// One explicitly scoped view of settled ledger facts, with coverage attached
 const price = await market.price(sword, { window: '7d' })
 price?.median
 price?.coverage
@@ -44,6 +47,85 @@ background by default.
 `offers({ from })` and `trades({ from })` read a bounded walk of the accounts
 you name. There is no network-wide listing index (SPEC §9.4): Kei moves and
 records assets, and does not run a matching engine.
+
+## One instrument, enough data to build the screen
+
+Bind the base, quote, and source once. `snapshot()` reads one open-offer page and
+one accepted-trade page per account; ticker, line points, and OHLCV all derive
+from those pages rather than causing another RPC per transform.
+
+```js
+import { KEI_ASSET } from '@keicoin/core'
+import { createAccountChainSource, toUnixCandles, toUnixLine } from '@keicoin/market'
+
+const source = createAccountChainSource({
+  id: 'eu-testnet-catalog',
+  accounts: directory,
+})
+const swordMarket = market.instrument({ base: sword, quote: KEI_ASSET, source })
+
+const snapshot = await swordMarket.snapshot({
+  depth: 20,
+  history: { interval: '1h', range: { window: '30d' } },
+})
+
+renderTicker(snapshot.ticker)
+renderBook(snapshot.book)
+line.setData(toUnixLine(snapshot.history))
+candlesticks.setData(toUnixCandles(snapshot.history))
+```
+
+The result is an ordinary JSON object. It keeps canonical
+`base/quote/quote-per-base` identity, exact raw quantities and rational prices,
+requested and observed ranges, ticker inputs, account coverage, node/time
+provenance, timed/estimated/untimed counts, and independent `empty|available`
+and `complete|partial` axes. The account-chain adapter says
+`pagination.supported: false` and explains why: today's node page has no cursor
+or exhaustion proof. It labels time and durability as node-local. Those are
+product facts, not documentation a response can lose.
+
+Name reusable sources with `createAccountChainSource`. Passing a directory or
+array directly is still explicit, but its provenance is marked anonymous and
+its cross-session venue key is `null` rather than inventing an identity from an
+array length.
+
+`depth` only trims already price-ranked output. It does not cap rows before the
+best price is found. Use `bookLimit` as the separate per-account read budget
+(100 by default); a full page makes coverage partial.
+
+Polling owns its lifecycle too:
+
+```js
+const stop = swordMarket.subscribe(
+  { every: '2s', staleAfter: '10s', signal },
+  update => renderMarket(update),
+)
+
+// opening | live | error | stale
+// error/stale retain update.lastGood and report age
+```
+
+Polls never overlap. Abort and `stop()` suppress later emissions, transient
+failures retain the last good snapshot, and successful instrument `sell`, `bid`,
+or `accept` calls wake the subscription without starting a concurrent read.
+
+Instrument writes use unambiguous unit prices:
+
+```js
+await swordMarket.sell({ units: 10, unitPrice: 2 })
+await swordMarket.bid({ units: 10, unitPrice: '1.8' })
+await swordMarket.accept(snapshot.book.bestAsk)
+```
+
+The total is multiplied as exact decimal text once, then the existing ledger
+primitive validates asset precision. `accept()` only takes an instrument book
+level with exact raw terms; it re-reads the offer and checks hash, seller, both
+asset ids, both display quantities, both raw quantities, reservation, state, and
+pair orientation immediately before signing. A catalog is a place to look,
+never permission to spend.
+
+The low-level `book`, `trades`, `series`, `candles`, `sell`, `bid`, and
+`accept({ expect })` calls remain compatible for callers that need primitives.
 
 ## The headless pieces above that
 

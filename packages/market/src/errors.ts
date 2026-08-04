@@ -44,6 +44,12 @@ export type MarketErrorCode =
   | 'bad-candle-time'
   /** A generated-candle budget that is not a positive safe integer within the public cap. */
   | 'bad-max-candles'
+  /** An instrument poll listener or timing option is not usable. */
+  | 'bad-subscription'
+  /** The market clock did not return a safe whole-number millisecond time. */
+  | 'bad-market-time'
+  /** A displayed level belongs to a different base/quote instrument. */
+  | 'wrong-instrument'
   /** `concurrency` outside the supported integer range. */
   | 'bad-concurrency'
   /** A built-in directory retention limit that is invalid or above its absolute cap. */
@@ -97,6 +103,9 @@ const CODES = new Set<string>([
   'too-many-candles',
   'bad-candle-time',
   'bad-max-candles',
+  'bad-subscription',
+  'bad-market-time',
+  'wrong-instrument',
   'bad-concurrency',
   'bad-directory-limit',
   'too-many-accounts',
