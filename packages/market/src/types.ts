@@ -214,8 +214,8 @@ export interface MarketOptions {
   /** The wallet's clock, for expiry. Replaceable so a test needs no timers. */
   now?: () => number
   /**
-   * Chains read at once by every walk this market makes, unless a call says
-   * otherwise. Default 8 — see `DEFAULT_CONCURRENCY` for why that number.
+   * Per-call default for chains read at once. Overlapping calls each have their
+   * own bound. Integer 1–32; default 8 — see `DEFAULT_CONCURRENCY`.
    */
   concurrency?: number
 }

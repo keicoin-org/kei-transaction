@@ -45,6 +45,15 @@ import { directoryDropped, resolveAccounts, type AccountSource } from './directo
 export const DEFAULT_CONCURRENCY = 8
 
 /**
+ * Highest supported concurrency for one walk.
+ *
+ * A finite ceiling keeps an untrusted option from turning a bounded directory
+ * into an accidental request flood. Callers that need more throughput should
+ * shard deliberately across nodes they operate and can measure.
+ */
+export const MAX_CONCURRENCY = 32
+
+/**
  * Offers or blocks read from one chain before the walk gives up on that chain.
  *
  * Stated here rather than left to the transport, because the transports did not
@@ -107,7 +116,7 @@ export interface ReadOptions {
    * call rejects immediately rather than waiting for them.
    */
   signal?: AbortSignal
-  /** Chains read at once. Default 8 — see `DEFAULT_CONCURRENCY`. */
+  /** Chains read at once by this call. Integer 1–32; default 8. */
   concurrency?: number
 }
 
@@ -211,7 +220,14 @@ export async function walkAccounts<T>(
   read: (account: string) => Promise<AccountRead<T>>,
   options: ReadOptions & { what?: string } = {},
 ): Promise<Walk<T>> {
-  const requested = await resolveAccounts(source)
+  const what = options.what ?? 'This market read'
+  const signal = options.signal
+  throwIfAborted(signal, what)
+  const requested = await untilAborted(
+    Promise.resolve().then(() => resolveAccounts(source)),
+    signal,
+    what,
+  )
   const skipped = requested.filter((address) => !isAddress(address))
   const accounts = [...new Set(requested.filter((address) => isAddress(address)))]
   const dropped = directoryDropped(source)
@@ -311,18 +327,39 @@ type Answer<T> = { ok: true; value: AccountRead<T> } | Failure
 function isCoverage(value: unknown): value is Coverage {
   if (typeof value !== 'object' || value === null) return false
   const candidate = value as Partial<Coverage>
-  return typeof candidate.asked === 'number' && typeof candidate.complete === 'boolean'
+  return (
+    isCount(candidate.asked) &&
+    isCount(candidate.read) &&
+    Array.isArray(candidate.failed) &&
+    candidate.failed.every(
+      (failure) =>
+        typeof failure === 'object' &&
+        failure !== null &&
+        typeof (failure as { account?: unknown }).account === 'string' &&
+        typeof (failure as { reason?: unknown }).reason === 'string',
+    ) &&
+    Array.isArray(candidate.truncated) &&
+    candidate.truncated.every((account) => typeof account === 'string') &&
+    isCount(candidate.dropped) &&
+    Array.isArray(candidate.skipped) &&
+    candidate.skipped.every((account) => typeof account === 'string') &&
+    typeof candidate.complete === 'boolean'
+  )
+}
+
+function isCount(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 0
 }
 
 function concurrencyOf(requested: number | undefined): number {
   if (requested === undefined) return DEFAULT_CONCURRENCY
-  if (!Number.isFinite(requested) || requested < 1) {
+  if (!Number.isInteger(requested) || requested < 1 || requested > MAX_CONCURRENCY) {
     throw new KeiError(
       'bad-concurrency',
-      `concurrency is how many chains to read at once — a whole number of 1 or more, and ${DEFAULT_CONCURRENCY} by default. Got ${String(requested)}.`,
+      `concurrency is how many chains to read at once — a whole number from 1 through ${MAX_CONCURRENCY}, and ${DEFAULT_CONCURRENCY} by default. Got ${String(requested)}.`,
     )
   }
-  return Math.floor(requested)
+  return requested
 }
 
 function throwIfAborted(signal: AbortSignal | undefined, what: string): void {

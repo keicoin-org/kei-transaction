@@ -16,11 +16,13 @@
 import { KeiError } from '@keicoin/core'
 
 /**
- * Every `code` a `@keicoin/market` call throws.
+ * Every `code` originated by the `@keicoin/market` layer.
  *
  * Listed rather than derived, because a caller switching on it wants the set to
  * be a promise rather than a description of today's implementation. Codes are
- * added over time; none is removed or repurposed.
+ * added over time; none is removed or repurposed. A market call can also surface
+ * downstream core, node, or transport errors; `isMarketError` intentionally
+ * returns false for those codes.
  */
 export type MarketErrorCode =
   /** The `asset` given is not an id and is not an object with one. */
@@ -33,7 +35,7 @@ export type MarketErrorCode =
   | 'bad-expiry'
   /** A window or interval that is not `'7d'`-shaped and not a count of ms. */
   | 'bad-duration'
-  /** `concurrency` below one, or not a number. */
+  /** `concurrency` outside the supported integer range. */
   | 'bad-concurrency'
   /** `offer()` without both legs, or an offer argument with no hash in it. */
   | 'bad-offer'

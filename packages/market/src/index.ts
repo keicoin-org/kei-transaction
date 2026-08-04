@@ -18,6 +18,7 @@ export type { Book, BookOptions } from './book.js'
 export {
   DEFAULT_ACCOUNT_LIMIT,
   DEFAULT_CONCURRENCY,
+  MAX_CONCURRENCY,
   coverageOf,
   emptyCoverage,
   isAborted,
