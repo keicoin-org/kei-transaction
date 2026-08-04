@@ -32,6 +32,7 @@ import {
   assetIdOf,
   durationMs,
   finiteMarketNumber,
+  parseMarketTime,
   rawAmountOf,
 } from './util.js'
 import { accountLimitOf, mergeCoverage, withCoverage, type Coverage, type Covered, type ReadOptions } from './walk.js'
@@ -229,7 +230,11 @@ export interface InstrumentSnapshot {
 }
 
 export interface HistoryRangeOptions {
-  /** Node-local observation window, such as `30d`. */
+  /** Inclusive upper bound for this query in node-local milliseconds. */
+  to?: number | Date
+  /** Inclusive lower bound for this query in node-local milliseconds. */
+  from?: number | Date
+  /** Window width backwards from `to` when `from` is omitted. */
   window?: Duration
 }
 
@@ -256,6 +261,15 @@ export interface InstrumentOrderOptions extends ExpiryOptions {
   to?: string
 }
 
+interface ResolvedHistoryRange {
+  /** The requested time window, or null when no explicit lower bound was asked. */
+  window: Duration | null
+  /** Requested lower bound of the time window, or null when only an upper bound exists. */
+  from: number | null
+  /** Requested upper bound of the time window. */
+  to: number
+}
+
 export interface UnixLinePoint {
   time: number
   value: number
@@ -271,11 +285,21 @@ export interface UnixCandle {
   trades: number
 }
 
-/** Common library-neutral epoch-second line rows. Untimed points cannot be drawn. */
+/**
+ * Common library-neutral epoch-second line rows. Untimed points cannot be drawn.
+ * Same-second rows keep a deterministic fractional offset so no timed row is
+ * dropped by renderers that expect unique x-values.
+ */
 export function toUnixLine(history: Pick<InstrumentHistory, 'points'>): UnixLinePoint[] {
+  const collisions = new Map<number, number>()
   return history.points
     .filter((point): point is InstrumentPricePoint & { at: number } => point.at !== null)
-    .map((point) => ({ time: Math.floor(point.at / 1_000), value: point.price }))
+    .map((point) => {
+      const base = point.at / 1_000
+      const same = collisions.get(point.at) ?? 0
+      collisions.set(point.at, same + 1)
+      return { time: same === 0 ? base : base + same / 1_000_000, value: point.price }
+    })
 }
 
 /** Common library-neutral epoch-second OHLCV rows. History metadata stays on the DTO. */
@@ -400,28 +424,27 @@ function createInstrument(
       ? undefined
       : accountLimitOf(historyOptions.limit, 'instrument history limit')
     validateCandleBudget(historyOptions.maxCandles)
-    const window = historyOptions.range?.window
-    const windowMilliseconds = window === undefined ? undefined : durationMs(window, 'history range window')
+    const requested = resolvedHistoryRange(historyOptions, context.now)
     throwIfPreAborted(historyOptions.signal, 'Reading instrument history')
     const trades = await context.readTrades({
       from: bound.accounts,
       asset: base,
       quote,
-      asOf: requestedAt,
-      ...(window === undefined ? {} : { window }),
+      asOf: requested.to,
+      ...(requested.window === null ? {} : { window: requested.window }),
       ...(limit === undefined ? {} : { limit }),
       signal: historyOptions.signal,
       concurrency: historyOptions.concurrency,
     })
-    const requested: RequestedRange = {
-      window: window ?? null,
-      from: windowMilliseconds === undefined ? null : safeSubtract(requestedAt, windowMilliseconds),
-      to: requestedAt,
+    const selected: RequestedRange = {
+      window: requested.window,
+      from: requested.from,
+      to: requested.to,
     }
     return historyFromTrades(context, identity, bound, requestedAt, trades, {
       intervalInput,
       interval,
-      requested,
+      requested: selected,
       last,
       fill: historyOptions.fill,
       maxCandles: historyOptions.maxCandles,
@@ -443,8 +466,7 @@ function createInstrument(
       ? undefined
       : accountLimitOf(snapshotOptions.bookLimit, 'instrument book limit')
     validateCandleBudget(historyOptions.maxCandles)
-    const window = historyOptions.range?.window
-    const windowMilliseconds = window === undefined ? undefined : durationMs(window, 'history range window')
+    const requested = resolvedHistoryRange(historyOptions, context.now)
     const signal = snapshotOptions.signal ?? historyOptions.signal
     const concurrency = snapshotOptions.concurrency ?? historyOptions.concurrency
     throwIfPreAborted(signal, 'Reading an instrument snapshot')
@@ -465,8 +487,8 @@ function createInstrument(
         from: readSource,
         asset: base,
         quote,
-        asOf: requestedAt,
-        ...(window === undefined ? {} : { window }),
+        asOf: requested.to,
+        ...(requested.window === null ? {} : { window: requested.window }),
         ...(historyLimit === undefined ? {} : { limit: historyLimit }),
         signal,
         concurrency,
@@ -476,17 +498,17 @@ function createInstrument(
     // A snapshot is observed when both independent node pages finish, not when
     // the first request starts. The pages share one roster but are not atomic.
     const asOf = marketTime(context.now)
-    const requested: RequestedRange = {
-      window: window ?? null,
-      from: windowMilliseconds === undefined ? null : safeSubtract(requestedAt, windowMilliseconds),
-      to: requestedAt,
+    const selected: RequestedRange = {
+      window: requested.window,
+      from: requested.from,
+      to: requested.to,
     }
 
     const book = bookFrom(rawBook, identity, depth)
     const historical = historyFromTrades(context, identity, bound, asOf, trades, {
       intervalInput,
       interval,
-      requested,
+      requested: selected,
       last,
       fill: historyOptions.fill,
       maxCandles: historyOptions.maxCandles,
@@ -888,7 +910,7 @@ function selectHistoryTrades(
   instrument: InstrumentIdentity,
   requested: RequestedRange,
 ): SelectedHistoryTrades {
-  if (requested.window === null) return { trades, unplacedUntimed: 0 }
+  if (requested.window === null && requested.from === null) return { trades, unplacedUntimed: 0 }
 
   const selected: Trade[] = []
   let unplacedUntimed = 0
@@ -1034,6 +1056,61 @@ function paginationLimitation(): PaginationLimitation {
     supported: false,
     cursor: null,
     reason: 'The account-chain adapter has bounded per-account pages but the current node RPC returns no cursor or exhaustion proof.',
+  }
+}
+
+function resolvedHistoryRange(
+  historyOptions: InstrumentHistoryOptions,
+  now: () => number,
+): ResolvedHistoryRange {
+  const requested = historyOptions.range === undefined ? undefined : historyOptions.range
+  const from = requested?.from === undefined ? undefined : parseMarketTime(requested.from, 'history range.from')
+  const to = requested?.to === undefined ? marketTime(now) : parseMarketTime(requested.to, 'history range.to')
+  if (requested?.from !== undefined && from === undefined) {
+    fail(
+      'bad-market-time',
+      `history range.from must be a safe whole-number millisecond time or a Date; got ${String(requested.from)}.`,
+    )
+  }
+  if (requested?.to !== undefined && to === undefined) {
+    fail('bad-market-time', `history range.to must be a safe whole-number millisecond time or a Date; got ${String(requested.to)}.`)
+  }
+  const window = requested?.window
+  if (requested !== undefined) {
+    if (from !== undefined && window !== undefined) {
+      fail(
+        'bad-duration',
+        'history range.from cannot be used with history range.window. Provide one lower bound: range.from, or window/range.window (derived from range.to).',
+      )
+    }
+    if (requested?.to !== undefined && from !== undefined && to < from) {
+      fail('bad-market-time', 'history range.from cannot be greater than history range.to.')
+    }
+  }
+
+  if (from !== undefined && from > to) {
+    fail('bad-market-time', `history range.from (${String(from)}) cannot be after history range.to (${String(to)}).`)
+  }
+
+  if (from !== undefined) {
+    return {
+      window: null,
+      from,
+      to,
+    }
+  }
+  if (window === undefined) {
+    return {
+      window: null,
+      from: null,
+      to,
+    }
+  }
+  const milliseconds = durationMs(window, 'history range window')
+  return {
+    window,
+    from: safeSubtract(to, milliseconds),
+    to,
   }
 }
 

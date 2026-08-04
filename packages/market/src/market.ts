@@ -33,7 +33,7 @@ import {
   toRaw,
 } from '@keicoin/core'
 
-import { readTrades, summarise, type LegMeta, type MarketContext } from './history.js'
+import { readTrades, resolvedTradeRange, summarise, type LegMeta, type MarketContext } from './history.js'
 import { readBook, type Book, type BookOptions } from './book.js'
 import {
   assertMatches,
@@ -50,6 +50,7 @@ import {
   type Candle,
   type CandleOptions,
   type PriceIndex,
+  type PricePoint,
   type Series,
   type SeriesOptions,
 } from './series.js'
@@ -68,6 +69,7 @@ import {
   mapConcurrent,
   walkAccounts,
   withCoverage,
+  type Coverage,
   type Covered,
 } from './walk.js'
 import type {
@@ -89,19 +91,78 @@ import type {
   TradeOptions,
 } from './types.js'
 
+export interface MarketTicker {
+  /** The charted base asset. */
+  asset: AssetId
+  /** The quote asset for prices in this ticker. */
+  quote: AssetId
+  /** Price of the first tradable point in the selected history, or null when empty. */
+  open: number | null
+  /** Latest price in the selected history, or null when empty. */
+  last: number | null
+  /** Latest minus open, or null when empty. */
+  change: number | null
+  /** Relative change from open to last, or null when open is zero/empty. */
+  changeRatio: number | null
+  /** Median execution price, or null when empty. */
+  median: number | null
+  /** Lowest execution price, or null when empty. */
+  low: number | null
+  /** Highest execution price, or null when empty. */
+  high: number | null
+  /** Traded units in the selected period. */
+  volume: number
+  /** Traded swaps in the selected period. */
+  trades: number
+  coverage: Coverage
+}
+
 type CandleQueryOptions = Omit<CandleOptions, 'every'> &
   Partial<Pick<CandleOptions, 'every'>> &
   { interval?: Duration } &
   TradeOptions
 
 export interface MarketChart {
-  /** Closed-form line data suitable for chart renderers, with untimed points omitted. */
+  /**
+   * Closed-form line data suitable for chart renderers, with untimed points
+   * omitted. Time is node-seconds; same-second rows keep sub-second precision so
+   * every timed row is preserved.
+   */
   line: UnixLinePoint[]
   series: Series
   /** OHLCV candles in raw time units (node-local milliseconds). */
   candles: Covered<Candle>
   /** OHLCV candles in epoch seconds for common chart APIs. */
   unixCandles: UnixCandle[]
+  /** Read coverage shared by the chart payload. */
+  coverage: Coverage
+  /** The same summary data you need for headers, cards, and market rows. */
+  ticker: MarketTicker
+  /** The exact requested window bounds for this chart. */
+  requested: MarketRequestedRange
+  /** Timed series bounds after filtering and ordering. */
+  observed: MarketObservedRange
+  /** Timed versus estimated coverage for the emitted series points. */
+  time: MarketTime
+}
+
+export interface MarketRequestedRange {
+  window: Duration | null
+  from: number | null
+  to: number
+}
+
+export interface MarketObservedRange {
+  from: number | null
+  to: number | null
+}
+
+export interface MarketTime {
+  basis: 'node-first-seen'
+  timed: number
+  estimated: number
+  untimed: number
+  note: string
 }
 
 export interface MarketApi {
@@ -158,6 +219,11 @@ export interface MarketApi {
   candles(options: CandleQueryOptions): Promise<Covered<Candle>>
   /** Market-friendly alias for `candles(...)` when charting an instrument. */
   ohlc(options: CandleQueryOptions): Promise<Covered<Candle>>
+  /**
+   * The fastest path to a market card: one walk that returns the key headline
+   * metrics for a history window.
+   */
+  ticker(options: SeriesOptions & TradeOptions): Promise<MarketTicker>
   /**
    * One call that returns both line and candle views from one trade read.
    *
@@ -804,6 +870,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     },
 
     async chart(chartOptions) {
+      const requested = requestedTradeRange(chartOptions, now)
       const quote = chartOptions.quote === undefined ? KEI_ASSET : assetIdOf(chartOptions.quote)
       const every = resolveEvery(chartOptions)
       const chartQuery = chartOptions as CandleQueryOptions
@@ -815,6 +882,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
         quote,
       })
       const series = toSeries(read, { ...chartOptions, quote })
+      const coverage = coverageOf(read) ?? emptyCoverage()
       const candles = withCoverage(
         toCandles(
           read,
@@ -824,14 +892,32 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
             quote,
           },
         ),
-        coverageOf(read) ?? emptyCoverage(),
+        coverage,
       )
       return {
         series,
         candles,
+        coverage,
         line: toLine(series),
         unixCandles: toUnixCandles(candles),
+        ticker: toTicker(series, coverage),
+        requested,
+        observed: observedRange(series.points),
+        time: timeQuality(series.points),
       }
+    },
+
+    async ticker(tickerOptions) {
+      const quote = tickerOptions.quote === undefined ? KEI_ASSET : assetIdOf(tickerOptions.quote)
+      const read = await readTrades(context, {
+        concurrency,
+        ...tickerOptions,
+        from: tradesSource(tickerOptions.from),
+        asset: tickerOptions.asset,
+        quote,
+      })
+      const series = toSeries(read, { ...tickerOptions, quote })
+      return toTicker(series, coverageOf(read) ?? emptyCoverage())
     },
 
     async prices(priceOptions = {}) {
@@ -863,12 +949,78 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
 }
 
 function toLine(series: Series): UnixLinePoint[] {
-  const rows = series.points
-    .map((point): UnixLinePoint | null =>
-      point.at === null ? null : { time: Math.floor(point.at / 1_000), value: point.price },
-    )
+  const collisions = new Map<number, number>()
+  return series.points
+    .map((point): UnixLinePoint | null => {
+      if (point.at === null) return null
+      const base = point.at / 1_000
+      const same = collisions.get(point.at) ?? 0
+      collisions.set(point.at, same + 1)
+      return {
+        time: same === 0 ? base : base + same / 1_000_000,
+        value: point.price,
+      }
+    })
     .filter((row): row is UnixLinePoint => row !== null)
-  return rows
+}
+
+function requestedTradeRange(options: TradeOptions, now: () => number): MarketRequestedRange {
+  const requested = resolvedTradeRange(options, now)
+  return {
+    window: requested.window,
+    from: requested.from,
+    to: requested.to,
+  }
+}
+
+function observedRange(points: readonly PricePoint[]): MarketObservedRange {
+  let from: number | null = null
+  let to: number | null = null
+  for (const point of points) {
+    if (point.at === null) continue
+    if (from === null || point.at < from) from = point.at
+    if (to === null || point.at > to) to = point.at
+  }
+  return { from, to }
+}
+
+function timeQuality(points: readonly PricePoint[]): MarketTime {
+  let timed = 0
+  let estimated = 0
+  let untimed = 0
+  for (const point of points) {
+    if (point.at === null) {
+      untimed += 1
+      continue
+    }
+    if (point.estimated) estimated += 1
+    else timed += 1
+  }
+  return {
+    basis: 'node-first-seen',
+    timed,
+    estimated,
+    untimed,
+    note: "Times are this node's settledAt/seenAt observations. Untimed rows are kept but cannot be placed in a requested window.",
+  }
+}
+
+function toTicker(series: Series, coverage: Coverage): MarketTicker {
+  const summary = series.summary
+  return {
+    asset: series.asset,
+    quote: series.quote,
+    open: series.first,
+    last: series.last,
+    change: series.change,
+    changeRatio: series.changeRatio,
+    median: summary?.median ?? null,
+    low: summary?.low ?? null,
+    high: summary?.high ?? null,
+    volume: summary?.volume ?? 0,
+    trades: summary?.trades ?? 0,
+    coverage,
+  }
 }
 
 function toUnixCandles(candles: Covered<Candle>): UnixCandle[] {

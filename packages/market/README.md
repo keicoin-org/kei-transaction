@@ -326,11 +326,25 @@ const chart = await market.chart({
   asset: sword,
   from: directory,
   every: '1h',
-  window: '30d',
+  range: { window: '30d' },
+})
+const from = Date.now() - 30 * 24 * 60 * 60 * 1000
+const chartByRange = await market.chart({
+  asset: sword,
+  from: directory,
+  every: '1h',
+  range: { from, to: Date.now() },
 })
 const line = chart.line                      // [{ time: unixSeconds, value: price }]
 const ohlcv = chart.unixCandles            // [{ time: unixSeconds, open, high, low, close, volume, trades }]
-```
+const ticker = chart.ticker                  // { open, last, change, changeRatio, median, ... , coverage }
+const range = chart.requested                // { window, from, to }
+const observed = chart.observed              // { from, to } where points were observed
+const time = chart.time                      // { basis, timed, estimated, untimed, note }
+
+// If the card is all you need, skip the series/candles conversion:
+const tickerOnly = await market.ticker({ asset: sword, from: directory, window: '30d' })
+``` 
 
 `market.chart()` also accepts the same query as `series(...)`/`history(...)`; if
 `every` is omitted it uses `1h` by default.

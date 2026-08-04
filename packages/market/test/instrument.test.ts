@@ -138,7 +138,7 @@ describe('instrument market product surface', () => {
 
     const line = toUnixLine(snapshot.history)
     const candles = toUnixCandles(snapshot.history)
-    expect(line).toEqual([{ time: Math.floor((snapshot.history.points[0]?.at ?? 0) / 1_000), value: 1.25 }])
+    expect(line).toEqual([{ time: (snapshot.history.points[0]?.at ?? 0) / 1_000, value: 1.25 }])
     expect(candles[0]).toMatchObject({ time: Math.floor((snapshot.history.candles[0]?.at ?? 0) / 1_000), close: 1.25 })
 
     const json = JSON.parse(JSON.stringify(snapshot)) as typeof snapshot
@@ -165,6 +165,26 @@ describe('instrument market product surface', () => {
     const partialSnapshot = await partial.snapshot()
     expect(partialSnapshot).toMatchObject({ state: 'available', completeness: 'partial' })
     expect(partialSnapshot.book).toMatchObject({ state: 'available', completeness: 'partial' })
+  })
+
+  test('toUnixLine preserves one line row per trade even when advisory times collide', async () => {
+    const { seller, buyer, sword } = await marketWorld()
+    const sellerInstrument = seller.market.instrument({ base: sword, quote: KEI_ASSET, source: [seller.address] })
+    const buyerInstrument = buyer.market.instrument({ base: sword, quote: KEI_ASSET, source: [seller.address] })
+
+    const first = await sellerInstrument.sell({ units: 1, unitPrice: 3 })
+    const second = await sellerInstrument.sell({ units: 1, unitPrice: 4 })
+    await buyer.market.accept(first)
+    await buyer.market.accept(second)
+
+    const history = await buyerInstrument.history({ interval: 1_000 })
+    const timed = history.points.filter((point): point is typeof point & { at: number } => point.at !== null)
+    expect(timed.length).toBe(2)
+
+    const line = toUnixLine(history)
+    expect(line).toHaveLength(2)
+    expect(line).toHaveLength(timed.length)
+    expect(new Set(line.map((point) => point.time)).size).toBe(line.length)
   })
 
   test('output depth is not a pre-ranking read limit that can hide an older best price', async () => {
@@ -408,6 +428,163 @@ describe('instrument market product surface', () => {
     expect(snapshot.coverage.complete).toBe(true)
     factory.close()
   }, 30_000)
+
+  test('requested windows can use explicit from and to timestamps', async () => {
+    const { seller, sword } = await marketWorld()
+    const coverage = emptyCoverage()
+    const trade = (
+      hash: string,
+      price: number,
+      settledAt: number | null,
+      seenAt: number | null,
+    ): Trade => ({
+      hash: hash.repeat(64),
+      from: seller.address,
+      seller: seller.address,
+      buyer: seller.address,
+      give: { asset: sword, symbol: 'SWORD', name: 'Sword', decimals: 0, amount: 1, raw: '1' },
+      want: { asset: KEI_ASSET, symbol: 'KEI', name: 'Kei', decimals: 0, amount: price, raw: String(price) },
+      price,
+      to: null,
+      expiresAt: null,
+      expired: false,
+      state: 'accepted',
+      mine: false,
+      acceptedBy: seller.address,
+      settledBy: hash.repeat(64),
+      seenAt: seenAt as number,
+      settledAt,
+    })
+    const lowerBoundary = trade('A', 1, 5_000, 5_000)
+    const seenOnly = trade('B', 2, null, 6_000)
+    const upperBoundary = trade('C', 3, null, 10_000)
+    const rejected = trade('D', 4, null, 10_001)
+    let returned = [lowerBoundary, seenOnly, upperBoundary, rejected]
+    const reads: TradeOptions[] = []
+    const factory = createInstrumentFactory({
+      network: 'mock',
+      now: () => 11_000,
+      async readBook() {
+        return {
+          asset: sword,
+          quote: KEI_ASSET,
+          asks: [],
+          bids: [],
+          bestAsk: null,
+          bestBid: null,
+          spread: null,
+          other: [],
+          coverage,
+        }
+      },
+      async readTrades(options) {
+        reads.push(options)
+        return withCoverage([...returned], coverage)
+      },
+      async offer() { throw new Error('not used') },
+      async accept() { throw new Error('not used') },
+    })
+    const instrument = factory.instrument({ base: sword, quote: KEI_ASSET, source: [seller.address] })
+
+    const history = await instrument.history({ interval: 1_000, range: { from: 5_000, to: 10_000 } })
+
+    expect(reads[0]).toMatchObject({ asOf: 10_000 })
+    expect(history.requested).toEqual({ window: null, from: 5_000, to: 10_000 })
+    expect(history.points.map((point) => point.hash)).toEqual([lowerBoundary.hash, seenOnly.hash, upperBoundary.hash])
+    factory.close()
+  })
+
+  test('instrument history accepts Date range bounds', async () => {
+    const { seller, sword } = await marketWorld()
+    const coverage = emptyCoverage()
+    const trade = (
+      hash: string,
+      price: number,
+      settledAt: number | null,
+      seenAt: number | null,
+    ): Trade => ({
+      hash: hash.repeat(64),
+      from: seller.address,
+      seller: seller.address,
+      buyer: seller.address,
+      give: { asset: sword, symbol: 'SWORD', name: 'Sword', decimals: 0, amount: 1, raw: '1' },
+      want: { asset: KEI_ASSET, symbol: 'KEI', name: 'Kei', decimals: 0, amount: price, raw: String(price) },
+      price,
+      to: null,
+      expiresAt: null,
+      expired: false,
+      state: 'accepted',
+      mine: false,
+      acceptedBy: seller.address,
+      settledBy: hash.repeat(64),
+      seenAt: seenAt as number,
+      settledAt,
+    })
+    const lowerBoundary = trade('A', 1, 5_000, 5_000)
+    const upperBoundary = trade('C', 3, null, 10_000)
+    const factory = createInstrumentFactory({
+      network: 'mock',
+      now: () => 11_000,
+      async readBook() {
+        return {
+          asset: sword,
+          quote: KEI_ASSET,
+          asks: [],
+          bids: [],
+          bestAsk: null,
+          bestBid: null,
+          spread: null,
+          other: [],
+          coverage,
+        }
+      },
+      async readTrades() {
+        return withCoverage([lowerBoundary, upperBoundary], coverage)
+      },
+      async offer() { throw new Error('not used') },
+      async accept() { throw new Error('not used') },
+    })
+    const instrument = factory.instrument({ base: sword, quote: KEI_ASSET, source: [seller.address] })
+
+    const history = await instrument.history({
+      interval: 1_000,
+      range: { from: new Date(5_000), to: new Date(10_000) },
+    })
+
+    expect(history.requested).toEqual({ window: null, from: 5_000, to: 10_000 })
+    expect(history.points.map((point) => point.hash)).toEqual([lowerBoundary.hash, upperBoundary.hash])
+    factory.close()
+  })
+
+  test('instrument history rejects a mix of range.from and range.window', async () => {
+    const { seller, sword } = await marketWorld()
+    const instrument = createInstrumentFactory({
+      network: 'mock',
+      now: () => 11_000,
+      async readBook() {
+        return {
+          asset: sword,
+          quote: KEI_ASSET,
+          asks: [],
+          bids: [],
+          bestAsk: null,
+          bestBid: null,
+          spread: null,
+          other: [],
+          coverage: emptyCoverage(),
+        }
+      },
+      async readTrades() { return withCoverage([], emptyCoverage()) },
+      async offer() { throw new Error('not used') },
+      async accept() { throw new Error('not used') },
+    }).instrument({ base: sword, quote: KEI_ASSET, source: [seller.address] })
+
+    const failure = (await instrument
+      .history({ interval: 1_000, range: { from: 5_000, window: 1_000 } })
+      .catch((error: unknown) => error)) as { code?: string }
+
+    expect(failure).toMatchObject({ code: 'bad-duration' })
+  })
 
   test('unit-priced asks and bids produce exact total terms and displayed levels cannot weaken acceptance', async () => {
     const { seller, buyer, sword } = await marketWorld()
