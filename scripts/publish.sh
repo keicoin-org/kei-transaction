@@ -34,9 +34,9 @@ OTP="${1:-${NPM_OTP:-}}"
 
 # Every live registry operation names its target explicitly. A user or project
 # .npmrc (or npm_config_* environment) can silently redirect identity, lookup
-# and publish traffic to another registry; the per-command --registry flag
-# outranks all of those, so whoami, view and publish below can only ever talk
-# to the reviewed public registry.
+# and publish traffic to another registry. Scoped packages consult their scope
+# registry before the global one, so every live command pins both keys at CLI
+# precedence and can only ever talk to the reviewed public registry.
 NPM_REGISTRY='https://registry.npmjs.org/'
 
 cd "$(dirname "$0")/.."
@@ -173,7 +173,7 @@ echo "==> Re-verifying the release head after preflight"
 assert_live_release_head 'immediately before publication'
 
 echo "==> Verifying npm publisher identity"
-if ! npm whoami --registry="$NPM_REGISTRY" >/dev/null; then
+if ! npm whoami --registry="$NPM_REGISTRY" --@keicoin:registry="$NPM_REGISTRY" >/dev/null; then
   echo "release refused: npm authentication is required before publication" >&2
   exit 1
 fi
@@ -190,8 +190,8 @@ for package in $PACKAGES; do
 
   # --prefer-online, because a 404 from before the first publish is cached, and a
   # stale "not published" is the one wrong answer that makes this loop fail.
-  if npm view "$name@$version" version --json --prefer-online --registry="$NPM_REGISTRY" > "$view_output" 2> "$view_error"; then
-    npm view "$name@$version" dist.integrity --json --prefer-online --registry="$NPM_REGISTRY" > "$view_output"
+  if npm view "$name@$version" version --json --prefer-online --registry="$NPM_REGISTRY" --@keicoin:registry="$NPM_REGISTRY" > "$view_output" 2> "$view_error"; then
+    npm view "$name@$version" dist.integrity --json --prefer-online --registry="$NPM_REGISTRY" --@keicoin:registry="$NPM_REGISTRY" > "$view_output"
     registry_integrity=$(node -e "const fs=require('fs');const v=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));if(typeof v!=='string')process.exit(2);process.stdout.write(v)" "$view_output")
     if [ "$registry_integrity" != "$local_integrity" ]; then
       echo "release refused: $name@$version exists with different tarball integrity" >&2
@@ -207,9 +207,9 @@ for package in $PACKAGES; do
 
   echo "==> Publishing $name@$version"
   if [ -n "$OTP" ]; then
-    npm publish "$PACK_TMP/$filename" --access public --registry="$NPM_REGISTRY" --otp "$OTP"
+    npm publish "$PACK_TMP/$filename" --access public --registry="$NPM_REGISTRY" --@keicoin:registry="$NPM_REGISTRY" --otp "$OTP"
   else
-    npm publish "$PACK_TMP/$filename" --access public --registry="$NPM_REGISTRY"
+    npm publish "$PACK_TMP/$filename" --access public --registry="$NPM_REGISTRY" --@keicoin:registry="$NPM_REGISTRY"
   fi
 done
 

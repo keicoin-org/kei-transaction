@@ -255,7 +255,10 @@ exit 0
   test('pins every live registry operation to the public npm registry despite ambient config', async () => {
     // The redirect attempt below is ambient npm configuration; the script must
     // hand each live command the reviewed target explicitly, which outranks it.
-    const result = await publish({ npm_config_registry: 'https://registry.attacker.invalid/' })
+    const result = await publish({
+      npm_config_registry: 'https://registry.attacker.invalid/',
+      'npm_config_@keicoin:registry': 'https://scoped-registry.attacker.invalid/',
+    })
     expect(result.exitCode, result.output).toBe(0)
     const calls = (await npmCalls()).trim().split('\n')
     const live = calls.filter(
@@ -265,8 +268,10 @@ exit 0
     expect(live.length).toBeGreaterThanOrEqual(1 + 2 * packageDirectories.length)
     for (const call of live) {
       expect(call).toContain('--registry=https://registry.npmjs.org/')
+      expect(call).toContain('--@keicoin:registry=https://registry.npmjs.org/')
     }
     expect(result.output).not.toContain('registry.attacker.invalid')
+    expect(result.output).not.toContain('scoped-registry.attacker.invalid')
 
     const redirected = await publish({
       PUBLISH_TEST_MANIFEST_REGISTRY: 'https://registry.attacker.invalid/',
