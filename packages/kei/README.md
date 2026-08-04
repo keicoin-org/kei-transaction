@@ -283,6 +283,13 @@ await kei.wallet.summary()      // { address, kei, tokens, items, pending }
 kei.wallet.on('change', s => {})
 ```
 
+Each summary re-reads mutable balances, holdings, and claims. Immutable asset
+metadata is cached in a bounded LRU and fetched through one wallet-wide
+concurrency gate (eight at once by default, configurable from 1 through 32), so
+an item-heavy inventory takes waves of requests rather than one serial round
+trip per item. Change listeners share one coalesced refresh stream, and token and
+item rows are stable by asset id regardless of node response order.
+
 The seed lives in browser storage and is never transmitted anywhere. Whether a
 player can see it is your decision, declared at setup:
 

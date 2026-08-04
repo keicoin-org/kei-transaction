@@ -653,19 +653,28 @@ published outside that range may as well not exist. The **npm** row above is
 that lesson learned the expensive way, and this section exists so the next
 release is read as a set rather than as nine independent publishes.
 
-### Unreleased — the durability work, source-only
+### Unreleased — coordinated market and wallet release
 
-`kei.custody`, `Kei.start({ requireDurableSeed })`, the `SeedStore` durability
-contract, and the wallet panel's session-only warning are in this tree and in no
-published package. Every version number in this repository is still the one that
-is on npm — `npm view kei-transaction version` reports `0.6.0`, `@keicoin/wallet`
-is `0.4.2` — and no version or dependency range has been moved ahead of a
-publish. The release that carries this work is a separate PR of its own, opened
-after the source lands, in the same order [#32] was followed by [#33]: the
-feature merges first, then one PR moves the whole set together.
+The source is merged; the registry release is tracked in [#53]. Until its
+publish and clean-install verification finish, the latest npm versions remain
+`kei-transaction@0.6.0`, `@keicoin/market@0.2.0`, and
+`@keicoin/wallet@0.4.2`. A release manifest may name the next versions before
+npm accepts them; that is a release candidate, not evidence that they are
+installable.
 
-[#32]: https://github.com/keicoin-org/kei-transaction/pull/32
-[#33]: https://github.com/keicoin-org/kei-transaction/pull/33
+| Package | Planned | Why |
+|---|---:|---|
+| `@keicoin/market` | `0.3.0` | Bounded and abortable aggregate reads, explicit coverage provenance, deterministic precision/race/paging conformance, validated limits and retry timers |
+| `@keicoin/wallet` | `0.5.0` | Durable-seed reporting plus bounded immutable metadata caching and a coalesced, ordered refresh stream |
+| `@keicoin/economy` | `0.2.1` | Dependency-only move to `@keicoin/market@^0.3.0` |
+| `@keicoin/player-economy` | `0.1.1` | Dependency-only move to `@keicoin/market@^0.3.0` |
+| `kei-transaction` | `0.7.0` | The coordinated umbrella range that exposes one copy of the market and wallet releases above |
+
+The order is market and wallet first, the two dependency-only packages next,
+and the umbrella last. The published-release table and website move only after
+an empty-project install proves that npm resolves one copy of every package.
+
+[#53]: https://github.com/keicoin-org/kei-transaction/issues/53
 
 ### `0.6.0` — published 4 August 2026
 

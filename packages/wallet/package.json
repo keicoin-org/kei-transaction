@@ -1,6 +1,6 @@
 {
   "name": "@keicoin/wallet",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "In-game wallet for Kei: mountable balance/inventory/claims panel, plus the headless summary API underneath it.",
   "license": "MIT",
   "author": "Sano",

@@ -1,6 +1,6 @@
 {
   "name": "@keicoin/economy",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Declarative game-economy recipes for Kei: rewards, sinks, and atomic shop/craft exchanges, with a dry run before anything is signed.",
   "license": "MIT",
   "author": "Sano",
@@ -45,6 +45,6 @@
   "dependencies": {
     "@keicoin/claims": "^0.5.0",
     "@keicoin/core": "^0.4.0",
-    "@keicoin/market": "^0.2.0"
+    "@keicoin/market": "^0.3.0"
   }
 }
