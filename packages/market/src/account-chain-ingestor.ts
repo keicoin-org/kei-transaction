@@ -239,6 +239,7 @@ export function createAccountChainIngestor(options: AccountChainIngestorOptions)
               source: id,
               account,
               observedAt,
+              ...(instrument === undefined ? {} : { instrument }),
             })
           } catch (error) {
             failedAccounts.push({ account, reason: messageOf(error) })
@@ -329,7 +330,7 @@ export function createAccountChainIngestor(options: AccountChainIngestorOptions)
 function providerRows(
   value: unknown,
   limit: number,
-  context: { network: string; source: string; account: string; observedAt: number },
+  context: { network: string; source: string; account: string; observedAt: number; instrument?: { base: string; quote: string } },
 ): { offers: StoredMarketOfferInput[]; rejected: RejectedMarketRowInput[]; totalRows: number; bytes: number } {
   if (!Array.isArray(value)) throw badSource('accountSwaps() must return an array')
   const length: unknown = value.length
@@ -359,7 +360,7 @@ function providerRows(
   return { offers, rejected, totalRows: length as number, bytes }
 }
 
-function providerOffer(value: unknown, context: { network: string; source: string; account: string; observedAt: number }): StoredMarketOfferInput {
+function providerOffer(value: unknown, context: { network: string; source: string; account: string; observedAt: number; instrument?: { base: string; quote: string } }): StoredMarketOfferInput {
   const hash = providerHash(ownProviderValue(value, 'hash'), 'offer hash')
   const author = providerAddress(ownProviderValue(value, 'from'), 'offer author')
   const giveAsset = asset(ownProviderValue(value, 'asset'), 'give asset')
@@ -382,6 +383,7 @@ function providerOffer(value: unknown, context: { network: string; source: strin
   if (state === 'open' && (acceptedBy !== null || settledBy !== null || settledAt !== null)) throw badSource('open provider offer carries settlement fields')
   if (state === 'accepted' && (acceptedBy === null || settledBy === null || settledAt === null)) throw badSource('accepted provider offer is missing settlement fields')
   if (state === 'cancelled' && (acceptedBy !== null || settledBy === null || settledAt === null)) throw badSource('cancelled provider offer has inconsistent settlement fields')
+  if (context.instrument !== undefined && (giveAsset !== context.instrument.base || wantAsset !== context.instrument.quote)) throw badSource('provider offer does not match selected instrument')
   return {
     network: context.network,
     hash,

@@ -364,6 +364,27 @@ describe('MarketStore', () => {
     await reverse.materialize({ offers: [], checkpoint: { ...checkpoint(), observedAt: 50, generation: 3, newestHash: 'D'.repeat(64) } })
     expect(await reverse.checkpoint({ network: 'testnet', source: 'node-a', account: ALICE, adapterVersion: 1 })).toMatchObject({ generation: 3, newestHash: 'E'.repeat(64) })
   })
+
+  test('materialization CAS fails fast when it exceeds deadline', async () => {
+    let persisted: MarketStorageEnvelope | null = null
+    let nowMs = 0
+    let compareAndSwapRuns = 0
+    const slowStorage: MarketMemoryStorageAdapter = {
+      capabilities: { durability: 'memory', scope: 'process-memory-reference', atomicCompareAndSwap: true, migrations: [1] },
+      async load() {
+        return persisted
+      },
+      async compareAndSwap(_revision, next) {
+        compareAndSwapRuns += 1
+        await new Promise((resolve) => setTimeout(resolve, 100))
+        persisted = next
+        return true
+      },
+    }
+    const store = createMarketStore({ storage: slowStorage, now: () => (nowMs += 1) })
+    await expect(store.materialize({ offers: [offer()], checkpoint: checkpoint(), deadlineMs: 20 })).rejects.toMatchObject({ code: 'market-deadline' })
+    expect(compareAndSwapRuns).toBe(1)
+  })
 })
 
 describe('account-chain source', () => {
@@ -541,6 +562,43 @@ describe('account-chain source', () => {
     expect(result).toMatchObject({ quarantined: 1, consumed: { resultRows: 1 }, stored: { inserted: 0 } })
     expect((await store.offers({ network: 'testnet' })).rows).toEqual([])
     expect((await store.quarantine())[0]?.reason).toContain('offer hash')
+  })
+
+  test('filters off-instrument provider rows instead of failing materialization', async () => {
+    const storage = createMemoryMarketStorage()
+    const catalog = createMarketCatalog({ storage })
+    const store = createMarketStore({ storage })
+    await catalog.announce(announcement(ALICE, 'alice', 1))
+    const source = createAccountChainIngestor({
+      id: 'node-a',
+      provider: {
+        network: 'testnet',
+        async accountSwaps() {
+          return [{
+            hash: 'D'.repeat(64),
+            from: ALICE,
+            asset: KEI,
+            amount: '1',
+            wantAsset: SWORD,
+            wantAmount: '2',
+            counterparty: null,
+            state: 'open',
+            acceptedBy: null,
+            settledBy: null,
+            height: 1,
+            seenAt: 1,
+            settledAt: null,
+          }]
+        },
+      },
+      catalog,
+      store,
+      now: () => 100,
+    })
+    const result = await source.ingest({ instrument: { base: SWORD, quote: KEI } })
+    expect(result).toMatchObject({ quarantined: 1, stored: { inserted: 0 } })
+    expect(await store.quarantine()).toHaveLength(1)
+    expect((await store.quarantine())[0]?.reason).toContain('instrument')
   })
 
   test('rejects inherited and accessor-backed provider rows without executing getters', async () => {

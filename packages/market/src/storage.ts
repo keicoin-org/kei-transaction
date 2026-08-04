@@ -190,8 +190,9 @@ export async function updateEnvelope<T>(
     // Once an atomic commit starts, await its truthful acknowledgement. A local
     // timeout cannot un-commit it, so racing it would let a late adapter write
     // happen after this SDK falsely returned failure.
-    const committed = await Promise.resolve().then(() =>
-      driver.compareAndSwap(loaded.expectedRevision, cloneEnvelope(next)),
+    const committed = await beforeDeadline(
+      Promise.resolve().then(() => driver.compareAndSwap(loaded.expectedRevision, cloneEnvelope(next))),
+      deadline,
     )
     if (committed === true) return changed.value
     if (committed !== false) throw storageError('compareAndSwap() must resolve to a boolean')
