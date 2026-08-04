@@ -668,7 +668,7 @@ not need replacement tarballs.
 | `@keicoin/work` | `0.4.1` | `0.4.1` | Unchanged |
 | `@keicoin/claims` | `0.5.1` | `0.5.1` | Unchanged |
 | `@keicoin/tokens` | `0.5.2` | `0.5.2` | Unchanged |
-| `@keicoin/market` | `0.3.0` | **`0.4.0`** | Minor. Refuses asset-metadata identity mismatches; bounds long-expiry timers, generated candles, directories, and total account walks; validates custom account sources and matched candle times; preserves safe negative candle buckets; and exports the new bounds and typed error codes |
+| `@keicoin/market` | `0.3.0` | **`0.4.0`** | Minor. Refuses asset-metadata identity mismatches; bounds long-expiry timers, generated candles, directories, and total account walks; validates custom account sources and matched candle times; preserves safe negative candle buckets; ranks book levels by exact cross-multiplied price ratios; and exports the new bounds and typed error codes |
 | `@keicoin/wallet` | `0.5.0` | `0.5.0` | Unchanged; it does not depend on market |
 | `@keicoin/economy` | `0.2.1` | **`0.2.2`** | Patch. Source and exports are unchanged; its market floor moves to `^0.4.0` so the coordinated install cannot retain an older market copy |
 | `@keicoin/player-economy` | `0.1.1` | **`0.1.2`** | Patch. Source and exports are unchanged; its market floor moves to `^0.4.0` for the same single-copy guarantee |
@@ -689,8 +689,9 @@ The release incorporates the corrective sequence in PRs
 [#78](https://github.com/keicoin-org/kei-transaction/pull/78),
 [#79](https://github.com/keicoin-org/kei-transaction/pull/79),
 [#81](https://github.com/keicoin-org/kei-transaction/pull/81),
-[#84](https://github.com/keicoin-org/kei-transaction/pull/84), and
-[#88](https://github.com/keicoin-org/kei-transaction/pull/88). There is no wire,
+[#84](https://github.com/keicoin-org/kei-transaction/pull/84),
+[#88](https://github.com/keicoin-org/kei-transaction/pull/88), and
+[#91](https://github.com/keicoin-org/kei-transaction/pull/91). There is no wire,
 ledger, or consensus change. Publication remains market first, then the two
 dependency-only consumers, then the umbrella; the release script still checks
 the unchanged graph members' reviewed integrities before skipping them.
