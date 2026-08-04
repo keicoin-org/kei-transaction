@@ -3,6 +3,7 @@ import { blake2b, bytesToHex, KeiError, isAddress, utf8 } from '@keicoin/core'
 import {
   loadEnvelope,
   cursorSecretFor,
+  cursorRevisionFor,
   throwIfStopped,
   updateEnvelope,
   type MarketMemoryStorageAdapter,
@@ -140,9 +141,10 @@ export function createMarketCatalog(options: MarketCatalogOptions): MarketCatalo
       const deadline = deadlineOf(query, now, 'Market catalog participant page')
       const { envelope } = await loadEnvelope(storage, deadline)
       throwIfStopped(deadline)
-      const cursor = cursorOf(parsed.cursor, 'participants', envelope.catalogRevision, queryScope('participants', parsed), cursorSecret)
+      const queryScopeValue = queryScope('participants', parsed, cursorRevisionFor(storage))
+      const cursor = cursorOf(parsed.cursor, 'participants', envelope.catalogRevision, queryScopeValue, cursorSecret)
       const rows = participantView(envelope.observations, parsed)
-      return page(rows, parsed, cursor, envelope.catalogRevision, 'participants', queryScope('participants', parsed), cursorSecret, participantKey, deadline)
+      return page(rows, parsed, cursor, envelope.catalogRevision, 'participants', queryScopeValue, cursorSecret, participantKey, deadline)
     },
 
     async instruments(query = {}) {
@@ -150,9 +152,10 @@ export function createMarketCatalog(options: MarketCatalogOptions): MarketCatalo
       const deadline = deadlineOf(query, now, 'Market catalog instrument page')
       const { envelope } = await loadEnvelope(storage, deadline)
       throwIfStopped(deadline)
-      const cursor = cursorOf(parsed.cursor, 'instruments', envelope.catalogRevision, queryScope('instruments', parsed), cursorSecret)
+      const queryScopeValue = queryScope('instruments', parsed, cursorRevisionFor(storage))
+      const cursor = cursorOf(parsed.cursor, 'instruments', envelope.catalogRevision, queryScopeValue, cursorSecret)
       const rows = instrumentView(envelope.observations, parsed)
-      return page(rows, parsed, cursor, envelope.catalogRevision, 'instruments', queryScope('instruments', parsed), cursorSecret, instrumentKey, deadline)
+      return page(rows, parsed, cursor, envelope.catalogRevision, 'instruments', queryScopeValue, cursorSecret, instrumentKey, deadline)
     },
   }
 }
@@ -358,7 +361,7 @@ function encodeCursor(kind: string, revision: number, scope: string, secret: str
   return `${payload}.${cursorIntegrity(secret, payload)}`
 }
 
-function queryScope(kind: 'participants' | 'instruments', query: ParsedParticipantQuery | ParsedInstrumentQuery): string {
+function queryScope(kind: 'participants' | 'instruments', query: ParsedParticipantQuery | ParsedInstrumentQuery, revision: number): string {
   const normalized = kind === 'participants'
     ? {
         kind,
@@ -366,6 +369,7 @@ function queryScope(kind: 'participants' | 'instruments', query: ParsedParticipa
         instrument: 'instrument' in query ? query.instrument ?? null : null,
         limit: query.limit,
         maxResultBytes: query.maxResultBytes,
+        cursorRevision: revision,
       }
     : {
         kind,
@@ -374,6 +378,7 @@ function queryScope(kind: 'participants' | 'instruments', query: ParsedParticipa
         quote: 'quote' in query ? query.quote ?? null : null,
         limit: query.limit,
         maxResultBytes: query.maxResultBytes,
+        cursorRevision: revision,
       }
   return cursorIntegrity('public-query-scope', JSON.stringify(normalized))
 }

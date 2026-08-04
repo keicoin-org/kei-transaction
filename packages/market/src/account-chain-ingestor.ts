@@ -143,10 +143,15 @@ export function createAccountChainIngestor(options: AccountChainIngestorOptions)
 
       while (pages < budget.maxPages && accounts < budget.maxAccounts && requests < budget.maxRequests) {
         stopped(signal, now, deadlineAt)
+        const resultRoom = budget.maxResultRows - resultRows
+        if (resultRoom <= 0) {
+          budgetStop = 'result_limit'
+          break
+        }
         const room = Math.min(
           budget.maxAccounts - accounts,
           budget.maxRequests - requests,
-          Math.max(1, budget.maxResultRows - resultRows),
+          resultRoom,
           256,
         )
         const remaining = remainingMs(now, deadlineAt)

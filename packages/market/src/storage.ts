@@ -105,20 +105,34 @@ const EMPTY: MarketStorageEnvelope = {
   quarantine: [],
 }
 
-const CURSOR_SECRETS = new WeakMap<MarketMemoryStorageAdapter, string>()
+type CursorSecretState = { readonly secret: string; revision: number }
+const CURSOR_STATES = new WeakMap<MarketMemoryStorageAdapter, CursorSecretState>()
 
 /** Process-local signing key shared by catalog/store instances using one adapter. */
 export function cursorSecretFor(adapter: MarketMemoryStorageAdapter): string {
-  const existing = CURSOR_SECRETS.get(adapter)
+  return cursorStateFor(adapter).secret
+}
+
+export function cursorRevisionFor(adapter: MarketMemoryStorageAdapter): number {
+  return cursorStateFor(adapter).revision
+}
+
+function cursorStateFor(adapter: MarketMemoryStorageAdapter): CursorSecretState {
+  const existing = CURSOR_STATES.get(adapter)
   if (existing !== undefined) return existing
-  const secret = randomSeed()
-  CURSOR_SECRETS.set(adapter, secret)
-  return secret
+  const state: CursorSecretState = { secret: randomSeed(), revision: 0 }
+  CURSOR_STATES.set(adapter, state)
+  return state
+}
+
+function cursorResetFor(adapter: MarketMemoryStorageAdapter): void {
+  const state = cursorStateFor(adapter)
+  CURSOR_STATES.set(adapter, { secret: state.secret, revision: state.revision + 1 })
 }
 
 export function createMemoryMarketStorage(): MemoryMarketStorage {
   let value: MarketStorageEnvelope | null = null
-  return {
+  const storage: MemoryMarketStorage = {
     capabilities: { durability: 'memory', scope: 'process-memory-reference', atomicCompareAndSwap: true, migrations: [1] },
     async load() {
       return value === null ? null : cloneEnvelope(value)
@@ -129,9 +143,12 @@ export function createMemoryMarketStorage(): MemoryMarketStorage {
       return true
     },
     clear() {
+      cursorResetFor(storage)
       value = null
     },
   }
+  cursorStateFor(storage)
+  return storage
 }
 
 export interface StorageDeadline {

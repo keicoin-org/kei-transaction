@@ -4,6 +4,7 @@ import { deadlineOf } from './catalog.js'
 import {
   loadEnvelope,
   cursorSecretFor,
+  cursorRevisionFor,
   throwIfStopped,
   updateEnvelope,
   type MarketMemoryStorageAdapter,
@@ -203,6 +204,15 @@ export function createMarketStore(options: MarketStoreOptions): MarketStore {
                 observedAt: checkpoint.observedAt,
                 reason: `immutable-conflict:${offer.hash}`,
               })
+            } else if (merged.overflow) {
+              conflicts += 1
+              quarantine.push({
+                network: offer.network,
+                source: checkpoint.source,
+                account: checkpoint.account,
+                observedAt: checkpoint.observedAt,
+                reason: `provenance-overflow:${offer.hash}`,
+              })
             } else {
               records.set(key, merged.row)
               if (merged.changed) updated += 1
@@ -240,7 +250,7 @@ export function createMarketStore(options: MarketStoreOptions): MarketStore {
       const parsed = offerQueryOf(query)
       const deadline = deadlineOf(query, now, 'Stored market offer page')
       const { envelope } = await loadEnvelope(storage, deadline)
-      const scope = offerQueryScope(parsed)
+      const scope = offerQueryScope(parsed, cursorRevisionFor(storage))
       const after = storeCursorOf(parsed.cursor, envelope.offerRevision, scope, cursorSecret)
       const matching = envelope.offers
         .map(validateStoredOffer)
@@ -454,10 +464,12 @@ function validateRejected(row: StoredRejectedRow): StoredRejectedRow {
   })
 }
 
+type OfferReconcile = { readonly overflow: false; readonly row: StoredOfferRecord; readonly changed: boolean } | { readonly overflow: true }
+
 function reconcileOffer(
   previous: StoredOfferRecord,
   observed: StoredOfferRecord,
-): { row: StoredOfferRecord; changed: boolean } | null {
+): OfferReconcile | null {
   const immutable = ({
     sources: _sources,
     firstObservedAt: _first,
@@ -483,11 +495,14 @@ function reconcileOffer(
       previous.settledAt !== observed.settledAt
     ) return null
   }
+  const sources = [...new Set([...previous.sources, ...observed.sources])].sort(compareText)
+  if (sources.length > 32) return { overflow: true }
   return {
     changed,
+    overflow: false,
     row: {
       ...lifecycle,
-      sources: [...new Set([...previous.sources, ...observed.sources])].sort(compareText),
+      sources,
       firstObservedAt: Math.min(previous.firstObservedAt, observed.firstObservedAt),
       lastObservedAt: Math.max(previous.lastObservedAt, observed.lastObservedAt),
     },
@@ -583,7 +598,7 @@ function storeCursorOf(cursor: string | undefined, revision: number, scope: stri
   return key
 }
 
-function offerQueryScope(query: ReturnType<typeof offerQueryOf>): string {
+function offerQueryScope(query: ReturnType<typeof offerQueryOf>, cursorRevision: number): string {
   return cursorIntegrity('public-query-scope', JSON.stringify({
     network: query.network,
     base: query.base ?? null,
@@ -591,6 +606,7 @@ function offerQueryScope(query: ReturnType<typeof offerQueryOf>): string {
     state: query.state ?? null,
     limit: query.limit,
     maxResultBytes: query.maxResultBytes,
+    cursorRevision,
   }))
 }
 

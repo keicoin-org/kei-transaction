@@ -122,6 +122,17 @@ describe('MarketCatalog', () => {
     expect(loads).toBe(0)
   })
 
+  test('cursor scope includes adapter revision and rejects stale use after clear+replay', async () => {
+    const storage = createMemoryMarketStorage()
+    const catalog = createMarketCatalog({ storage })
+    await catalog.announce(announcement(ALICE, '1', 1))
+    await catalog.announce(announcement(BOB, '2', 2))
+    const page = await catalog.participants({ network: 'testnet', limit: 1 })
+    storage.clear()
+    await catalog.announce(announcement(CAROL, '3', 3))
+    await expect(catalog.participants({ network: 'testnet', limit: 1, cursor: page.nextCursor! })).rejects.toMatchObject({ code: 'bad-market-cursor' })
+  })
+
   test('same observation id cannot silently rewrite immutable discovery facts', async () => {
     const catalog = createMarketCatalog({ storage: createMemoryMarketStorage() })
     await catalog.announce(announcement(ALICE, 'same', 1))
@@ -271,6 +282,45 @@ describe('MarketStore', () => {
     await expect(store.offers({ network: 'testnet', state: 'accepted', limit: 1, cursor })).rejects.toMatchObject({ code: 'bad-market-cursor' })
   })
 
+  test('offer cursors are scoped to adapter revision to protect clear/replay reuse', async () => {
+    const storage = createMemoryMarketStorage()
+    const store = createMarketStore({ storage })
+    await store.materialize({ offers: [offer()], checkpoint: checkpoint() })
+    const first = await store.offers({ network: 'testnet', limit: 1 })
+    storage.clear()
+    await store.materialize({ offers: [offer({ hash: 'E'.repeat(64), observedAt: 30 })], checkpoint: checkpoint() })
+    await expect(store.offers({ network: 'testnet', state: 'open', limit: 1, cursor: first.nextCursor! })).rejects.toMatchObject({ code: 'bad-market-cursor' })
+  })
+
+  test('quarantines provenance overfull offers as canonical provenance overflow', async () => {
+    const storage = createMemoryMarketStorage()
+    const store = createMarketStore({ storage })
+    let inserted = 0
+    let updated = 0
+    let unchanged = 0
+    let conflicts = 0
+    let quarantinedRows = 0
+    for (let index = 0; index < 33; index += 1) {
+      const source = `node-${String(index).padStart(2, '0')}`
+      const result = await store.materialize({
+        offers: [offer({ hash: 'D'.repeat(64), source, observedAt: 20 + index })],
+        checkpoint: { ...checkpoint(), source },
+      })
+      inserted += result.inserted
+      updated += result.updated
+      unchanged += result.unchanged
+      conflicts += result.conflicts
+      quarantinedRows += result.quarantined
+    }
+    expect({ inserted, updated, unchanged, conflicts, quarantinedRows }).toEqual({ inserted: 1, updated: 0, unchanged: 31, conflicts: 1, quarantinedRows: 1 })
+    const quarantined = await store.quarantine()
+    expect(quarantined).toHaveLength(1)
+    expect(quarantined[0]?.reason).toBe(`provenance-overflow:${'D'.repeat(64)}`)
+    const rows = await store.offers({ network: 'testnet', limit: 2 })
+    expect(rows.rows).toHaveLength(1)
+    expect(rows.rows[0]?.provenance.sources).toHaveLength(32)
+  })
+
   test('checkpoint filters are isolated and equal-time generations cannot regress', async () => {
     const store = createMarketStore({ storage: createMemoryMarketStorage() })
     const instrument = { base: SWORD, quote: KEI }
@@ -355,6 +405,59 @@ describe('account-chain source', () => {
     const third = await source.ingest({ cursor: second.cursor!, budget: { maxAccounts: 1, maxRequests: 1 } })
     expect(third.cursor).toBeNull()
     expect(calls).toBe(3)
+  })
+
+  test('result-row budget stop does not request extra catalog pages after exact consumption', async () => {
+    const storage = createMemoryMarketStorage()
+    const catalog = createMarketCatalog({ storage })
+    await catalog.announce(announcement(ALICE, '1', 1))
+    await catalog.announce(announcement(BOB, '2', 2))
+    await catalog.announce(announcement(CAROL, '3', 3))
+
+    let catalogCalls = 0
+    let providerCalls = 0
+    const realCatalog = catalog
+    const source = createAccountChainIngestor({
+      id: 'node-a',
+      provider: {
+        network: 'testnet',
+        async accountSwaps(address) {
+          providerCalls += 1
+          return [{
+            hash: 'D'.repeat(64),
+            from: address,
+            asset: SWORD,
+            amount: '1',
+            wantAsset: KEI,
+            wantAmount: '2',
+            counterparty: null,
+            state: 'open',
+            acceptedBy: null,
+            settledBy: null,
+            height: 1,
+            seenAt: 1,
+            settledAt: null,
+          }]
+        },
+      },
+      catalog: {
+        durability: realCatalog.durability,
+        async announce(input) { return realCatalog.announce(input) },
+        async instruments() { throw new Error('unused') },
+        async participants(input) {
+          catalogCalls += 1
+          return realCatalog.participants(input)
+        },
+      },
+      store: createMarketStore({ storage }),
+      now: () => 100,
+    })
+    const result = await source.ingest({
+      budget: { maxResultRows: 1 },
+    })
+    expect(result.stopReason).toBe('result_limit')
+    expect(result.consumed.resultRows).toBe(1)
+    expect({ catalogCalls, providerCalls }).toEqual({ catalogCalls: 1, providerCalls: 1 })
   })
 
   test('bad budgets and pre-abort stop before catalog or provider work', async () => {
