@@ -273,6 +273,46 @@ describe('a walk is bounded, and a read can be stopped', () => {
       expect(failure.code).toBe('read-aborted')
     }
   })
+
+  test('default trade history aborts while its direct account-history read is still in flight', async () => {
+    const controller = new AbortController()
+    let historySettled = false
+    const hangingHistory = new Proxy(node, {
+      get: (target, property, receiver) =>
+        property === 'accountHistory'
+          ? async (...args: Parameters<KeiNode['accountHistory']>) => {
+              await new Promise((resolve) => setTimeout(resolve, 200))
+              historySettled = true
+              return target.accountHistory(...args)
+            }
+          : Reflect.get(target, property, receiver),
+    }) as unknown as KeiNode
+    const wallet = await reader(hangingHistory)
+
+    const reading = wallet.market.trades({ signal: controller.signal })
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    controller.abort(new Error('history view closed'))
+
+    const failure = (await reading.catch((error: unknown) => error)) as { code?: string; message?: string }
+    expect(failure.code).toBe('read-aborted')
+    expect(failure.message).toContain('history view closed')
+    expect(historySettled).toBe(false)
+  })
+
+  test('every account-walk entry point rejects ambiguous or unbounded limits', async () => {
+    for (const limit of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const reads: (() => Promise<unknown>)[] = [
+        () => bob.market.book({ from: [alice.address], asset: sword, limit }),
+        () => bob.market.offers({ from: [alice.address], limit }),
+        () => bob.market.mine({ limit }),
+        () => bob.market.trades({ from: [alice.address], limit }),
+      ]
+      for (const read of reads) {
+        const failure = (await read().catch((error: unknown) => error)) as { code?: string }
+        expect(failure.code).toBe('bad-limit')
+      }
+    }
+  })
 })
 
 describe('reconcile — the poll a market view runs on a timer', () => {

@@ -35,6 +35,7 @@ import {
   withCoverage,
   type AccountRead,
 } from '@keicoin/market'
+import { accountLimitOf } from '../src/walk.js'
 
 async function addresses(count: number): Promise<string[]> {
   const pairs = await Promise.all(Array.from({ length: count }, () => keyPairFromSeed(randomSeed(), 0)))
@@ -113,7 +114,7 @@ describe('walkAccounts — the answer is not a race', () => {
 
   test('concurrency outside the supported integer range is refused rather than adjusted', async () => {
     const [only] = (await addresses(1)) as [string]
-    for (const concurrency of [0, 1.5, Number.NaN, Number.POSITIVE_INFINITY, MAX_CONCURRENCY + 1]) {
+    for (const concurrency of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, MAX_CONCURRENCY + 1]) {
       const failure = await walkAccounts([only], rows(), { concurrency }).catch(
         (error: unknown) => error,
       )
@@ -128,6 +129,21 @@ describe('walkAccounts — the answer is not a race', () => {
     expect(emptyFailure).toBeInstanceOf(Error)
 
     expect(await mapConcurrent([], async () => 0, { concurrency: MAX_CONCURRENCY })).toEqual([])
+  })
+
+  test('per-account limits are positive safe integers, not timer-style coercions', () => {
+    expect(accountLimitOf(undefined)).toBe(DEFAULT_ACCOUNT_LIMIT)
+    expect(accountLimitOf(1)).toBe(1)
+    for (const limit of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
+      const failure = (() => {
+        try {
+          accountLimitOf(limit)
+        } catch (error) {
+          return error
+        }
+      })()
+      expect(isMarketError(failure, 'bad-limit')).toBe(true)
+    }
   })
 })
 
@@ -204,6 +220,12 @@ describe('walkAccounts — coverage is the honest half', () => {
     const merged = mergeCoverage(whole, partial)
     expect(merged).toMatchObject({ asked: 1, read: 0, complete: false })
     expect(merged.failed).toHaveLength(1)
+  })
+
+  test('merging different complete scopes cannot claim the smaller read covered the larger scope', () => {
+    const one = { ...emptyCoverage(), asked: 1, read: 1 }
+    const two = { ...emptyCoverage(), asked: 2, read: 2 }
+    expect(mergeCoverage(one, two)).toMatchObject({ asked: 2, read: 1, complete: false })
   })
 })
 
@@ -356,10 +378,11 @@ describe('coverage rides along without changing the rows', () => {
     expect(coverageOf(undefined)).toBeNull()
   })
 
-  test('coverageOf refuses partial and malformed lookalikes', () => {
+  test('coverageOf refuses partial, inconsistent, and malformed lookalikes', () => {
     const cases: unknown[] = [
       { asked: 1, complete: true },
       { ...emptyCoverage(), asked: 1.5 },
+      { ...emptyCoverage(), asked: 1, read: 0, complete: true },
       { ...emptyCoverage(), failed: [{ account: 'kei_x' }] },
       { ...emptyCoverage(), truncated: [1] },
       { ...emptyCoverage(), skipped: ['ok', null] },

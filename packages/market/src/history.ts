@@ -31,7 +31,7 @@ import { fromRaw } from '@keicoin/core'
 import type { Offer, PriceSummary, Trade, TradeOptions } from './types.js'
 import { assetIdOf, durationMs } from './util.js'
 import {
-  DEFAULT_ACCOUNT_LIMIT,
+  accountLimitOf,
   coverageOf,
   emptyCoverage,
   isAborted,
@@ -58,12 +58,9 @@ export interface MarketContext {
   toOffer(raw: SwapOffer): Promise<Offer>
 }
 
-/** Offers read per account, and blocks scanned for accepts, unless told otherwise. */
-const DEFAULT_LIMIT = DEFAULT_ACCOUNT_LIMIT
-
 export async function readTrades(context: MarketContext, options: TradeOptions = {}): Promise<Covered<Trade>> {
   const { client } = context
-  const limit = options.limit ?? DEFAULT_LIMIT
+  const limit = accountLimitOf(options.limit, 'trade history limit')
   const asset = options.asset === undefined ? undefined : assetIdOf(options.asset)
   const quote = options.quote === undefined ? undefined : assetIdOf(options.quote)
   const read = {
@@ -155,7 +152,11 @@ async function readOwnPurchases(
   const { client } = context
   const account = client.address
   try {
-    const history = await client.node.accountHistory(account, { limit })
+    const [history = []] = await mapConcurrent(
+      [account],
+      () => client.node.accountHistory(account, { limit }),
+      read,
+    )
     const hashes = new Set<string>()
     for (const block of history) {
       if (block.type !== 'asset' || block.op.kind !== 'swap_accept') continue

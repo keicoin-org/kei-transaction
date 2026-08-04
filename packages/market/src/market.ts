@@ -56,7 +56,7 @@ import {
 import { assetIdOf, durationMs } from './util.js'
 import type { AccountSource } from './directory.js'
 import {
-  DEFAULT_ACCOUNT_LIMIT,
+  accountLimitOf,
   coverageOf,
   emptyCoverage,
   mapConcurrent,
@@ -465,7 +465,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
       what: string
     },
   ): Promise<Covered<Offer>> => {
-    const limit = filter.limit ?? DEFAULT_ACCOUNT_LIMIT
+    const limit = accountLimitOf(filter.limit, 'listing limit')
     const read = { signal: filter.signal, concurrency: filter.concurrency ?? concurrency, what: filter.what }
 
     const walk = await walkAccounts(

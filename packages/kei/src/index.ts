@@ -104,6 +104,7 @@ export type {
 export {
   DEFAULT_ACCOUNT_LIMIT,
   DEFAULT_CONCURRENCY,
+  MAX_CONCURRENCY,
   DEFAULT_DIRECTORY_LIMIT,
   assertMatches,
   bidPrice,
