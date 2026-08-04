@@ -243,6 +243,15 @@ chain and reports what it could not see, **price series and candles** ready to
 draw, and a **verify-before-signing** check so an index can never become an
 authority.
 
+> **Everything above this line is installable; everything below it is not yet.**
+> The published `@keicoin/market` is `0.1.1`, which has `sell`, `bid`, `offer`,
+> `accept`, `cancel`, `offers`, `trades`, `medianPrice` and `price`. The
+> directory, `book()`, `series()`, `candles()` and `accept(offer, { expect })`
+> are `0.2.0`, and this tree is the only place they exist. Note the pin as well:
+> `kei-transaction@0.5.0` depends on `@keicoin/market@^0.1.1`, which cannot
+> resolve to `0.2.0` — publishing the market alone would not put these in an
+> install until the umbrella's range moves with it.
+
 ```js
 const directory = createDirectory()         // or your own { accounts() }
 directory.watch(sellerAddress)
@@ -490,7 +499,7 @@ The M0–M10 ladder was retired on 3 August 2026 for four concurrent tracks
 | **The chain** | A real Kei node enforcing the SPEC §5.6 / §7 ledger rules, including native `commit`/`claim`/`commit_close` in its pinned CI gate. Native `swap_offer`/`swap_accept`/`swap_cancel` are merged too; the reference mock remains for hermetic tests |
 | **The network** | One public, rate-limited, best-effort Hetzner testnet node. `Kei.start()` selects it by default; `Kei.mock()` is explicit |
 | **The demo** | [Button](../button) — playable single-player, every number on the chain and none in a database |
-| **The market** | `@keicoin/market@0.1.1` — offers, atomic settlement, price history, all read from the chain. Published, and on its own version line rather than the SDK set's because it is the newest package here and has the least mileage. This tree is at `0.2.0`, unpublished |
+| **The market** | `@keicoin/market@0.1.1` — offers, atomic settlement, price history, all read from the chain. Published, and on its own version line rather than the SDK set's because it is the newest package here and has the least mileage. This tree is at `0.2.0` — the directory, `book()`, `series()`, `candles()` and `accept(offer, { expect })` — and that is unpublished. The umbrella pins `^0.1.1`, so that range has to move too before an install would see it |
 | **The wallet panel** | `WalletPanel.mount()` is real and tested end to end, with the SPEC §6.6 seed-reveal friction |
 | **Recipes** | `@keicoin/economy@0.1.0` — declare a reward, a sink, or a shop once, dry-run it, and run only the half this key may sign. It adds no consensus rules: every block it writes is one the SDK could already write by hand. Published, and reachable as `kei.economy` from an install |
 | **Player shops** | `@keicoin/player-economy@0.1.0` — `kei.shop`, the player's half of the same idea: list, browse, buy, cancel and gift from the player's own key, with nothing stocked or approved by the game. **Unpublished**, and the published umbrella does not depend on it, so `kei.shop` is absent from an npm install and present only in a checkout |
