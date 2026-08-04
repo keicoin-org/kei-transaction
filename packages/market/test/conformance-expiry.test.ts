@@ -16,7 +16,7 @@
  *   the timer — `sweepInterval` is the retry cadence.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import { type AssetId } from '@keicoin/core'
 import { createMarket, isMarketError } from '@keicoin/market'
 
@@ -55,6 +55,8 @@ describe('sweepInterval is validated at the public boundary', () => {
       counting.reset()
 
       let failure: unknown
+      let scheduled = 0
+      const timer = spyOn(globalThis, 'setTimeout')
       try {
         createMarket(actor.client, {
           autoCancelExpired: true,
@@ -63,9 +65,13 @@ describe('sweepInterval is validated at the public boundary', () => {
         })
       } catch (error) {
         failure = error
+      } finally {
+        scheduled = timer.mock.calls.length
+        timer.mockRestore()
       }
 
       expect(isMarketError(failure, 'bad-sweep-interval')).toBe(true)
+      expect(scheduled).toBe(0)
       expect((failure as Error).message).toBe(
         `sweepInterval must be a whole number of milliseconds from 1 through 2147483647; got ${String(interval)}. Omit it for the 30000 ms default.`,
       )
