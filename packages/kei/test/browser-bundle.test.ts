@@ -24,6 +24,13 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 const packageRoot = resolve(import.meta.dir, '..')
+const MAX_DIAGNOSTIC_OUTPUT = 64 * 1024
+
+function boundedDiagnostic(stdout: string, stderr: string): string {
+  const output = `${stdout}\n${stderr}`
+  if (output.length <= MAX_DIAGNOSTIC_OUTPUT) return output
+  return `[build output truncated to last ${MAX_DIAGNOSTIC_OUTPUT} characters]\n${output.slice(-MAX_DIAGNOSTIC_OUTPUT)}`
+}
 
 describe('kei-transaction browser bundling (M4)', () => {
   test('bundles for a browser target', async () => {
@@ -33,8 +40,12 @@ describe('kei-transaction browser bundling (M4)', () => {
         ['bun', 'build', resolve(packageRoot, 'src/index.ts'), '--target', 'browser', '--outdir', outdir],
         { cwd: packageRoot, stdout: 'pipe', stderr: 'pipe' },
       )
-      const exitCode = await proc.exited
-      expect(exitCode).toBe(0)
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ])
+      expect(exitCode, boundedDiagnostic(stdout, stderr)).toBe(0)
     } finally {
       await rm(outdir, { recursive: true, force: true })
     }
