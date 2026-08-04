@@ -225,6 +225,9 @@ export async function walkAccounts<T>(
   const what = options.what ?? 'This market read'
   const signal = options.signal
   throwIfAborted(signal, what)
+  // Validate caller-controlled fan-out before touching an async directory. A
+  // directory can be remote or never settle; an invalid bound must not call it.
+  const concurrency = concurrencyOf(options.concurrency)
   const requested = await untilAborted(
     Promise.resolve().then(() => resolveAccounts(source)),
     signal,
@@ -234,7 +237,7 @@ export async function walkAccounts<T>(
   const accounts = [...new Set(requested.filter((address) => isAddress(address)))]
   const dropped = directoryDropped(source)
 
-  const answers = await mapConcurrent(
+  const answers = await mapConcurrentWith(
     accounts,
     async (account): Promise<Answer<T>> => {
       try {
@@ -244,7 +247,9 @@ export async function walkAccounts<T>(
         return { ok: false, reason: error instanceof Error ? error.message : String(error) }
       }
     },
-    options,
+    concurrency,
+    signal,
+    what,
   )
 
   const failed: { account: string; reason: string }[] = []
@@ -295,6 +300,17 @@ export async function mapConcurrent<I, O>(
   const signal = options.signal
   throwIfAborted(signal, what)
   const concurrency = concurrencyOf(options.concurrency)
+  return mapConcurrentWith(items, worker, concurrency, signal, what)
+}
+
+/** Execute with an already-validated bound so directory walks validate exactly once. */
+async function mapConcurrentWith<I, O>(
+  items: readonly I[],
+  worker: (item: I, index: number) => Promise<O>,
+  concurrency: number,
+  signal: AbortSignal | undefined,
+  what: string,
+): Promise<O[]> {
   if (items.length === 0) return []
 
   const lanes = Math.min(concurrency, items.length)
