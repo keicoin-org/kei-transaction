@@ -25,8 +25,10 @@ const offer = await market.sell({ asset: sword, price: 5 })
 // Buyer: one block moves both legs, or neither
 await market.accept(offer)
 
-// Anyone: price history is transaction history, already there
-await market.medianPrice(sword, { window: '7d' })
+// Anyone: price history is transaction history, with read coverage attached
+const price = await market.price(sword, { window: '7d' })
+price?.median
+price?.coverage
 ```
 
 Only the offerer ever locks anything, and it is their own asset — the same
@@ -84,6 +86,50 @@ reads as "the market closed".
 `coverage` is the part worth using. A book over a roster is a *floor*, never a
 census, and `complete: false` says which of the four reasons applies. Leave
 `asset` out for the whole shelf against one currency.
+
+### Bounded, cancellable reads
+
+Every API that walks account chains accepts the same controls:
+
+```js
+const controller = new AbortController()
+const trades = await market.trades({
+  from: directory,
+  concurrency: 8,
+  signal: controller.signal,
+})
+
+trades.coverage  // the same asked/read/failed/truncated contract as a book
+controller.abort()
+```
+
+The default is eight concurrent chains and can be set once with
+`createMarket(client, { concurrency })` or overridden per call. Results keep
+request order even when responses arrive out of order. Aborting rejects with
+the typed `read-aborted` market error, stops new chain reads from starting, and
+does not claim to cancel a node request already in flight.
+
+`offers()`, `mine()` and `trades()` remain arrays; their non-enumerable
+`coverage` property does not change iteration or JSON output. Array transforms
+such as `.map()` return a new plain array, so read coverage before transforming
+or use `coverageOf(rows)`. Series, candles, price summaries and price indexes
+carry the same provenance so a chart cannot silently present a partial walk as
+a complete market.
+
+`medianPrice()` remains as a scalar compatibility shortcut. Because a number
+cannot carry provenance, use `price()` whenever the difference between a
+complete and partial roster affects the decision being made.
+
+Catch stable refusal codes without parsing player-facing prose:
+
+```js
+try {
+  await market.accept(offer)
+} catch (error) {
+  if (isMarketError(error, 'offer-taken', 'offer-cancelled')) showNextListing()
+  else throw error
+}
+```
 
 ### Price history a chart can draw
 

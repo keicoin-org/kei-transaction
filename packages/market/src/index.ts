@@ -13,13 +13,30 @@ export {
 export type { AccountDirectory, AccountSource, DirectoryOptions, MutableDirectory } from './directory.js'
 
 export { DEFAULT_BOOK_LIMIT, bidPrice, readBook } from './book.js'
-export type { Book, BookOptions, Coverage } from './book.js'
+export type { Book, BookOptions } from './book.js'
+
+export {
+  DEFAULT_ACCOUNT_LIMIT,
+  DEFAULT_CONCURRENCY,
+  coverageOf,
+  emptyCoverage,
+  isAborted,
+  mapConcurrent,
+  mergeCoverage,
+  walkAccounts,
+  withCoverage,
+} from './walk.js'
+export type { AccountRead, Coverage, Covered, ReadOptions, Walk } from './walk.js'
+
+export { isMarketError } from './errors.js'
+export type { MarketErrorCode } from './errors.js'
 
 export { priceIndex, toCandles, toSeries } from './series.js'
 export type {
   Candle,
   CandleOptions,
   Ordering,
+  PriceIndex,
   PriceIndexOptions,
   PricePoint,
   Series,
@@ -40,6 +57,7 @@ export type {
   Expectation,
   LifeOptions,
   OfferLife,
+  ReconcileOptions,
   Reconciliation,
   Verification,
 } from './lifecycle.js'

@@ -26,6 +26,7 @@ import { KeiError, fail } from '@keicoin/core'
 import type { MarketContext } from './history.js'
 import type { Offer } from './types.js'
 import { assetIdOf } from './util.js'
+import { isAborted, mapConcurrent, type ReadOptions } from './walk.js'
 
 /**
  * A listing's state in the terms a view needs, rather than the ledger's.
@@ -51,6 +52,9 @@ export interface LifeOptions {
   viewer?: string
   now?: () => number
 }
+
+/** `LifeOptions`, plus the two every read in this package takes. */
+export interface ReconcileOptions extends LifeOptions, ReadOptions {}
 
 export function classify(offer: Offer, options: LifeOptions = {}): OfferLife {
   if (offer.state === 'accepted') return 'taken'
@@ -140,6 +144,15 @@ export interface Reconciliation {
   changed: readonly Change[]
   /** Hashes the node has never heard of. A typo, or a different network. */
   unknown: readonly string[]
+  /**
+   * Hashes whose re-read threw, and the sentence it threw.
+   *
+   * These are deliberately *not* in `gone`. A listing whose state could not be
+   * read has not been shown to have moved, and a poll that treats an unreachable
+   * node as "sold" removes a player's own stall from their screen. Leave them on
+   * display, and try again next round.
+   */
+  failed: readonly { hash: string; reason: string }[]
 }
 
 /**
@@ -149,35 +162,69 @@ export interface Reconciliation {
  * "somebody bought it three seconds ago" turns into a failed accept block. It
  * reads one offer per hash — cheap, and the only correct way, since an offer's
  * state lives in the lock it created rather than in any one chain's history.
+ *
+ * One read per hash *sequentially*, though, is a poll whose cost is the size of
+ * the screen: fifty listings on a 40 ms link was two seconds every two seconds.
+ * The reads are independent, so they run `concurrency` at a time and the report
+ * comes back in the snapshot's own order regardless of who answered first.
  */
 export async function reconcileOffers(
   context: MarketContext,
   snapshot: Iterable<string | Offer>,
-  options: LifeOptions = {},
+  options: ReconcileOptions = {},
 ): Promise<Reconciliation> {
   const viewer = options.viewer ?? context.client.address
   const life = (offer: Offer): OfferLife =>
     classify(offer, { viewer, ...(options.now ? { now: options.now } : { now: context.now }) })
+
+  const entries: { hash: string; entry: string | Offer }[] = []
+  const seen = new Set<string>()
+  for (const entry of snapshot) {
+    const hash = (typeof entry === 'string' ? entry : entry?.hash)?.toUpperCase()
+    if (!hash || seen.has(hash)) continue
+    seen.add(hash)
+    entries.push({ hash, entry })
+  }
+
+  const read = {
+    signal: options.signal,
+    concurrency: options.concurrency,
+    what: 'Reconciling listings',
+  }
+  const answers = await mapConcurrent(
+    entries,
+    async ({ hash }): Promise<{ offer: Offer } | { missing: true } | { reason: string }> => {
+      try {
+        const raw = await context.client.node.swapOffer(hash)
+        if (!raw) return { missing: true }
+        return { offer: await context.toOffer(raw) }
+      } catch (error) {
+        if (isAborted(error)) throw error
+        return { reason: error instanceof Error ? error.message : String(error) }
+      }
+    },
+    read,
+  )
 
   const live: Offer[] = []
   const stale: Offer[] = []
   const gone: { hash: string; life: OfferLife; reason: string }[] = []
   const changed: Change[] = []
   const unknown: string[] = []
-  // A snapshot assembled from several reads repeats itself; one listing is
-  // one row and one `swap_info` call however many times it was mentioned.
-  const seen = new Set<string>()
+  const failed: { hash: string; reason: string }[] = []
 
-  for (const entry of snapshot) {
-    const hash = (typeof entry === 'string' ? entry : entry?.hash)?.toUpperCase()
-    if (!hash || seen.has(hash)) continue
-    seen.add(hash)
-    const raw = await context.client.node.swapOffer(hash)
-    if (!raw) {
+  for (let index = 0; index < entries.length; index += 1) {
+    const { hash, entry } = entries[index] as { hash: string; entry: string | Offer }
+    const answer = answers[index] as { offer: Offer } | { missing: true } | { reason: string }
+    if ('reason' in answer) {
+      failed.push({ hash, reason: answer.reason })
+      continue
+    }
+    if ('missing' in answer) {
       unknown.push(hash)
       continue
     }
-    const offer = await context.toOffer(raw)
+    const offer = answer.offer
     const now = life(offer)
     const was = typeof entry === 'string' ? null : life(entry)
     if (was !== now) changed.push({ hash, was, now, offer })
@@ -206,7 +253,7 @@ export async function reconcileOffers(
     }
   }
 
-  return { live, stale, gone, changed, unknown }
+  return { live, stale, gone, changed, unknown, failed }
 }
 
 /** True for the two refusals that mean "somebody else got there first". */

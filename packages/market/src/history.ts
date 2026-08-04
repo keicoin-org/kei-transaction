@@ -15,14 +15,33 @@
  * Everything derived from chain data alone — the median, the range, the volume,
  * the count — is identical on every node. The window that selects the trades is
  * not, and a restarted node forgets it.
+ *
+ * The second honest limit is *which chains answered*. A price built from four
+ * sellers when five were asked is not wrong, but it is not the number the caller
+ * thinks it is, and until now this walk swallowed the difference: a chain that
+ * threw was skipped in silence, so a summary could quietly describe half a
+ * market. It still skips — a chart that vanishes on one timeout is worse — but
+ * the trades now carry the same `Coverage` the book has always returned, so
+ * `price()` and chart views can label a partial read instead of stating it flat.
  */
 
 import type { AssetId, KeiClient, SwapOffer } from '@keicoin/core'
 import { fromRaw } from '@keicoin/core'
 
-import { resolveAccounts } from './directory.js'
 import type { Offer, PriceSummary, Trade, TradeOptions } from './types.js'
 import { assetIdOf, durationMs } from './util.js'
+import {
+  DEFAULT_ACCOUNT_LIMIT,
+  coverageOf,
+  emptyCoverage,
+  isAborted,
+  mapConcurrent,
+  mergeCoverage,
+  walkAccounts,
+  withCoverage,
+  type Coverage,
+  type Covered,
+} from './walk.js'
 
 export interface LegMeta {
   asset: AssetId
@@ -40,41 +59,38 @@ export interface MarketContext {
 }
 
 /** Offers read per account, and blocks scanned for accepts, unless told otherwise. */
-const DEFAULT_LIMIT = 100
+const DEFAULT_LIMIT = DEFAULT_ACCOUNT_LIMIT
 
-export async function readTrades(context: MarketContext, options: TradeOptions = {}): Promise<Trade[]> {
+export async function readTrades(context: MarketContext, options: TradeOptions = {}): Promise<Covered<Trade>> {
   const { client } = context
   const limit = options.limit ?? DEFAULT_LIMIT
   const asset = options.asset === undefined ? undefined : assetIdOf(options.asset)
   const quote = options.quote === undefined ? undefined : assetIdOf(options.quote)
+  const read = {
+    signal: options.signal,
+    concurrency: options.concurrency,
+    what: 'Reading trade history',
+  }
 
   const found = new Map<string, SwapOffer>()
-  const accounts =
-    options.from === undefined ? [client.address] : await resolveAccounts(options.from)
 
-  for (const account of accounts) {
-    try {
-      for (const raw of await client.node.accountSwaps(account, { limit, state: 'accepted' })) {
-        found.set(raw.hash, raw)
-      }
-    } catch {
-      // One unreachable chain is a gap in the history rather than the end of it.
-      // A price summary missing a seller's trades is wrong by omission; one that
-      // throws is a chart that disappears whenever a node call times out.
-      continue
-    }
-  }
+  const walk = await walkAccounts(
+    options.from ?? [client.address],
+    async (account) => {
+      const raws = await client.node.accountSwaps(account, { limit, state: 'accepted' })
+      return { rows: raws, truncated: raws.length >= limit }
+    },
+    read,
+  )
+  for (const raw of walk.rows) found.set(raw.hash, raw)
 
   // A trade this wallet was the *buyer* in is an accept block on its own chain
   // and an offer on somebody else's, so it is invisible to the walk above. It is
   // still this wallet's history, and asking for "my trades" should return it.
-  if (options.from === undefined) {
-    for (const block of await client.node.accountHistory(client.address, { limit })) {
-      if (block.type !== 'asset' || block.op.kind !== 'swap_accept') continue
-      const raw = await client.node.swapOffer(block.op.offer)
-      if (raw && raw.state === 'accepted') found.set(raw.hash, raw)
-    }
-  }
+  const bought = options.from === undefined ? await readOwnPurchases(context, limit, read) : null
+
+  for (const raw of bought?.rows ?? []) found.set(raw.hash, raw)
+  const coverage = mergeCoverage(walk.coverage, bought?.coverage)
 
   const since =
     options.window === undefined ? undefined : context.now() - durationMs(options.window, 'window')
@@ -93,31 +109,85 @@ export async function readTrades(context: MarketContext, options: TradeOptions =
   matched.sort((a, b) => (b.settledAt ?? 0) - (a.settledAt ?? 0) || a.hash.localeCompare(b.hash))
   const trimmed = options.last === undefined ? matched : matched.slice(0, Math.max(0, options.last))
 
-  const trades: Trade[] = []
-  for (const raw of trimmed) {
-    const [give, want] = await Promise.all([context.meta(raw.asset), context.meta(raw.wantAsset)])
-    const giveAmount = fromRaw(BigInt(raw.amount), give.decimals)
-    const wantAmount = fromRaw(BigInt(raw.wantAmount), want.decimals)
-    trades.push({
-      hash: raw.hash,
-      from: raw.from,
-      seller: raw.from,
-      buyer: String(raw.acceptedBy),
-      give: { ...give, amount: giveAmount },
-      want: { ...want, amount: wantAmount },
-      price: giveAmount === 0 ? 0 : wantAmount / giveAmount,
-      to: raw.counterparty,
-      expiresAt: raw.expiresAt,
-      expired: raw.expiresAt !== null && raw.expiresAt <= context.now(),
-      state: 'accepted',
-      mine: raw.from === client.address || raw.acceptedBy === client.address,
-      acceptedBy: raw.acceptedBy,
-      settledBy: raw.settledBy,
-      seenAt: raw.seenAt,
-      settledAt: raw.settledAt,
-    })
+  const trades = await mapConcurrent(
+    trimmed,
+    async (raw): Promise<Trade> => {
+      const [give, want] = await Promise.all([context.meta(raw.asset), context.meta(raw.wantAsset)])
+      const giveAmount = fromRaw(BigInt(raw.amount), give.decimals)
+      const wantAmount = fromRaw(BigInt(raw.wantAmount), want.decimals)
+      return {
+        hash: raw.hash,
+        from: raw.from,
+        seller: raw.from,
+        buyer: String(raw.acceptedBy),
+        give: { ...give, amount: giveAmount },
+        want: { ...want, amount: wantAmount },
+        price: giveAmount === 0 ? 0 : wantAmount / giveAmount,
+        to: raw.counterparty,
+        expiresAt: raw.expiresAt,
+        expired: raw.expiresAt !== null && raw.expiresAt <= context.now(),
+        state: 'accepted',
+        mine: raw.from === client.address || raw.acceptedBy === client.address,
+        acceptedBy: raw.acceptedBy,
+        settledBy: raw.settledBy,
+        seenAt: raw.seenAt,
+        settledAt: raw.settledAt,
+      }
+    },
+    read,
+  )
+  return withCoverage(trades, coverage)
+}
+
+/**
+ * The accepts this wallet wrote, resolved back to the offers they settled.
+ *
+ * One history read plus one `swap_offer` per accept found — which was a
+ * sequential chain of up to `limit` round trips and is now bounded fan-out. A
+ * history that came back full is reported as truncated for the same reason a
+ * full page of offers is: the chain may hold more purchases than were read.
+ */
+async function readOwnPurchases(
+  context: MarketContext,
+  limit: number,
+  read: { signal?: AbortSignal; concurrency?: number; what: string },
+): Promise<{ rows: SwapOffer[]; coverage: Coverage }> {
+  const { client } = context
+  const account = client.address
+  try {
+    const history = await client.node.accountHistory(account, { limit })
+    const hashes = new Set<string>()
+    for (const block of history) {
+      if (block.type !== 'asset' || block.op.kind !== 'swap_accept') continue
+      hashes.add(block.op.offer)
+    }
+    const offers = await mapConcurrent([...hashes], (hash) => client.node.swapOffer(hash), read)
+    const truncated = history.length >= limit ? [account] : []
+    return {
+      rows: offers.filter((raw): raw is SwapOffer => raw !== null && raw.state === 'accepted'),
+      coverage: {
+        ...emptyCoverage(),
+        asked: 1,
+        read: 1,
+        truncated,
+        complete: truncated.length === 0,
+      },
+    }
+  } catch (error) {
+    if (isAborted(error)) throw error
+    // Same bargain as an unreachable seller's chain: the trades this wallet made
+    // as a buyer are missing from the answer, and the answer says so.
+    return {
+      rows: [],
+      coverage: {
+        ...emptyCoverage(),
+        asked: 1,
+        read: 0,
+        failed: [{ account, reason: error instanceof Error ? error.message : String(error) }],
+        complete: false,
+      },
+    }
   }
-  return trades
 }
 
 /**
@@ -159,5 +229,6 @@ export function summarise(trades: readonly Trade[], asset: AssetId, quote: Asset
     high: sorted[sorted.length - 1] as number,
     trades: prices.length,
     volume,
+    coverage: coverageOf(trades),
   }
 }

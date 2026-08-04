@@ -21,51 +21,29 @@
  * three were previously indistinguishable from "nobody is selling". Coverage is
  * returned alongside the rows so a view can say *this is a floor* rather than
  * imply a census — which is what `carpet-markets` had to say in a comment
- * because the data could not say it.
+ * because the data could not say it. That honesty now rides on every walked
+ * read in this package rather than on this one; `Coverage` lives in `walk.ts`.
  */
 
-import type { AssetId } from '@keicoin/core'
-import { KEI_ASSET, fail, isAddress } from '@keicoin/core'
+import type { AssetId, SwapOffer } from '@keicoin/core'
+import { KEI_ASSET, fail } from '@keicoin/core'
 
 import type { MarketContext } from './history.js'
-import { directoryDropped, resolveAccounts, type AccountSource } from './directory.js'
+import type { AccountSource } from './directory.js'
 import type { Offer } from './types.js'
 import { assetIdOf } from './util.js'
+import {
+  DEFAULT_ACCOUNT_LIMIT,
+  mapConcurrent,
+  walkAccounts,
+  type Coverage,
+  type ReadOptions,
+} from './walk.js'
 
 /** Offers read per account before the walk gives up on that chain. */
-export const DEFAULT_BOOK_LIMIT = 100
+export const DEFAULT_BOOK_LIMIT = DEFAULT_ACCOUNT_LIMIT
 
-/** Why a book might be missing something, in the only terms it can honestly give. */
-export interface Coverage {
-  /** Accounts the walk was asked to read. */
-  asked: number
-  /** Accounts that answered. */
-  read: number
-  /** Accounts whose read threw, and the sentence it threw. */
-  failed: readonly { account: string; reason: string }[]
-  /**
-   * Accounts that returned a full page — as many rows as this walk asked for —
-   * so their chain may hold more.
-   *
-   * Full means *the asked limit*, which is the only yardstick the wire gives:
-   * `account_swaps` returns rows and nothing else, so a server that silently
-   * caps `count` below what was asked returns a short page this walk cannot
-   * tell from a complete one. Against such a node, `truncated` under-reports
-   * and `complete` may overstate. Keeping the asked limit at or below the
-   * server's cap is what makes this field trustworthy.
-   */
-  truncated: readonly string[]
-  /** Accounts a bounded directory evicted before this walk (see `directory.ts`). */
-  dropped: number
-  /** Addresses in `from` that are not addresses. Skipped rather than thrown on. */
-  skipped: readonly string[]
-  /**
-   * True only when every account asked answered in full and nothing was
-   * evicted. False is the normal case for any market with a roster in it, and
-   * it means "there may be more", never "these rows are wrong".
-   */
-  complete: boolean
-}
+export type { Coverage }
 
 export interface Book {
   /** What the book is about, or null when it is every asset against `quote`. */
@@ -85,7 +63,7 @@ export interface Book {
   coverage: Coverage
 }
 
-export interface BookOptions {
+export interface BookOptions extends ReadOptions {
   /** Whose chains to read: one address, a list, or a directory (SPEC §9.1). */
   from: AccountSource
   /**
@@ -119,56 +97,50 @@ export async function readBook(context: MarketContext, options: BookOptions): Pr
   const includeExpired = options.includeExpired === true
   const includeMine = options.includeMine !== false
 
-  const requested = await resolveAccounts(options.from)
-  const skipped = requested.filter((address) => !isAddress(address))
-  const accounts = [...new Set(requested.filter((address) => isAddress(address)))]
+  // One unreachable chain is a gap in the book, not the end of the read. A page
+  // that blanks whenever a single node call times out reads as "the market
+  // closed", which is the one thing it is definitely not — so the walk collects
+  // failures rather than throwing them, and reports them below.
+  const walk = await walkAccounts(
+    options.from,
+    async (account) => {
+      const raws = await context.client.node.accountSwaps(account, { limit, state: 'open' })
+      return { rows: raws, truncated: raws.length >= limit }
+    },
+    { signal: options.signal, concurrency: options.concurrency, what: 'Reading the book' },
+  )
 
-  const failed: { account: string; reason: string }[] = []
-  const truncated: string[] = []
+  // Sorting the raw blocks into sides is arithmetic on strings, so it happens
+  // before anything is converted: an offer naming neither side of this book
+  // belongs to some other one, and a walk that returns it is a walk nobody can
+  // use. Converting costs an asset-metadata read, so it only runs on survivors.
+  const sorted: { raw: SwapOffer; side: Side }[] = []
+  const seen = new Set<string>()
+  for (const raw of walk.rows) {
+    if (seen.has(raw.hash)) continue
+    seen.add(raw.hash)
+    const sells = asset === null ? raw.asset === quote : raw.asset === asset && raw.wantAsset === quote
+    const buys = asset === null ? raw.wantAsset === quote : raw.wantAsset === asset && raw.asset === quote
+    if (!sells && !buys && asset !== null && raw.asset !== asset && raw.wantAsset !== asset) continue
+    if (!sells && !buys && asset === null) continue
+    sorted.push({ raw, side: sells ? 'ask' : buys ? 'bid' : 'other' })
+  }
+
+  const converted = await mapConcurrent(
+    sorted,
+    async (entry) => ({ side: entry.side, offer: await context.toOffer(entry.raw) }),
+    { signal: options.signal, concurrency: options.concurrency, what: 'Reading the book' },
+  )
+
   const asks: Offer[] = []
   const bids: Offer[] = []
   const other: Offer[] = []
-  /**
-   * An offer hash is the offer's id, so one hash is one row whatever the
-   * pages said. An honest node never repeats a row — an offer lives on
-   * exactly one chain — but this walk merges pages from a source it does not
-   * trust, and a read model that pads its pages must only ever be able to
-   * hide rows, never multiply them (SPEC §9.4).
-   */
-  const seen = new Set<string>()
-  let read = 0
-
-  for (const account of accounts) {
-    let raws
-    try {
-      raws = await context.client.node.accountSwaps(account, { limit, state: 'open' })
-    } catch (error) {
-      // One unreachable chain is a gap in the book, not the end of the read. A
-      // page that blanks whenever a single node call times out reads as "the
-      // market closed", which is the one thing it is definitely not.
-      failed.push({ account, reason: error instanceof Error ? error.message : String(error) })
-      continue
-    }
-    read += 1
-    if (raws.length >= limit) truncated.push(account)
-
-    for (const raw of raws) {
-      if (seen.has(raw.hash)) continue
-      seen.add(raw.hash)
-      const sells = asset === null ? raw.asset === quote : raw.asset === asset && raw.wantAsset === quote
-      const buys = asset === null ? raw.wantAsset === quote : raw.wantAsset === asset && raw.asset === quote
-      // Anything naming neither side of this book belongs to some other one, and
-      // a walk that returns it is a walk nobody can use.
-      if (!sells && !buys && asset !== null && raw.asset !== asset && raw.wantAsset !== asset) continue
-      if (!sells && !buys && asset === null) continue
-
-      const offer = await context.toOffer(raw)
-      if (offer.expired && !includeExpired) continue
-      if (offer.mine && !includeMine) continue
-      if (sells) asks.push(offer)
-      else if (buys) bids.push(offer)
-      else other.push(offer)
-    }
+  for (const { side, offer } of converted) {
+    if (offer.expired && !includeExpired) continue
+    if (offer.mine && !includeMine) continue
+    if (side === 'ask') asks.push(offer)
+    else if (side === 'bid') bids.push(offer)
+    else other.push(offer)
   }
 
   // Cheapest per unit first, which is the order a buyer wants and the one
@@ -198,21 +170,11 @@ export async function readBook(context: MarketContext, options: BookOptions): Pr
     // better than subtracting two unrelated numbers.
     spread: asset !== null && bestAsk && bestBid ? bestAsk.price - bidPrice(bestBid) : null,
     other,
-    coverage: {
-      asked: accounts.length,
-      read,
-      failed,
-      truncated,
-      dropped: directoryDropped(options.from),
-      skipped,
-      complete:
-        failed.length === 0 &&
-        truncated.length === 0 &&
-        skipped.length === 0 &&
-        directoryDropped(options.from) === 0,
-    },
+    coverage: walk.coverage,
   }
 }
+
+type Side = 'ask' | 'bid' | 'other'
 
 /**
  * What a bid is worth per unit of the asset, in quote units.
