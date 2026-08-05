@@ -60,6 +60,15 @@ export interface Funds {
   projectedRaw: bigint
   /** True while anything is on its way or halfway out. */
   settling: boolean
+  /**
+   * Whether the chain half of this was actually read.
+   *
+   * `'failed'` means the node did not answer, so every chain number above is a
+   * placeholder and not a fact about this wallet. A view can render that as
+   * "balance unavailable" instead of a confident zero, and nothing may state
+   * one of these numbers as a reason for refusing to write.
+   */
+  read: 'ok' | 'failed'
 }
 
 /** The chain half: what a read of the node actually returned. */
@@ -123,6 +132,8 @@ export interface FundsInput {
   decimals: number
   chain: ChainFunds
   pending: Iterable<Pending>
+  /** Defaults to `'ok'`: a caller that read the chain has nothing to declare. */
+  read?: 'ok' | 'failed'
 }
 
 export function toFunds(input: FundsInput): Funds {
@@ -155,10 +166,17 @@ export function toFunds(input: FundsInput): Funds {
     projected: fromRaw(projectedFloored, decimals),
     projectedRaw: projectedFloored,
     settling,
+    read: input.read ?? 'ok',
   }
 }
 
-/** Whether an amount can be spent now, which is not the same as afterwards. */
+/**
+ * Whether an amount can be spent now, which is not the same as afterwards.
+ *
+ * False for a purse whose `read` failed, because an unread balance funds
+ * nothing — but false here is "not known to be spendable", so a caller must not
+ * turn it into a sentence about what the wallet holds.
+ */
 export function canSpend(funds: Funds, raw: bigint): boolean {
   return raw > 0n && raw <= funds.spendableRaw
 }

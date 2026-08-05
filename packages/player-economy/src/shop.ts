@@ -286,19 +286,29 @@ export function createPlayerEconomy(
     return { confirmedRaw, incomingRaw, arrivals: waiting.length }
   }
 
-  const funds = async (asset?: string | { id: AssetId }): Promise<Funds> => {
+  /**
+   * The purse, plus why it is blank when it is.
+   *
+   * A read that throws blanks a purse rather than rejecting: zero with
+   * `settling` false is wrong in a way a view can see, and a thrown promise is
+   * wrong in a way it cannot. But `funds()` is also the precondition check for
+   * every write in this file, and there a blank purse becomes a sentence
+   * asserting what the wallet holds — which nobody measured. So the reason is
+   * carried out alongside the numbers, and a write path refuses on it instead.
+   */
+  const readFunds = async (
+    asset?: string | { id: AssetId },
+  ): Promise<{ purse: Funds; unread: unknown }> => {
     const id = asset === undefined ? currencyId : catalogue.assetOf(asset)
     const facts = id === currencyId ? await currency() : await factsFor(id)
-    let chain: ChainFunds
+    let chain: ChainFunds = NO_CHAIN_FUNDS
+    let unread: unknown = null
     try {
       chain = await chainFunds(id)
-    } catch {
-      // A funds read that throws blanks a purse. Zero with `settling` false is
-      // wrong in a way a view can see; a thrown promise is wrong in a way it
-      // cannot. Neither is a spend, and `canSpend` refuses both.
-      chain = NO_CHAIN_FUNDS
+    } catch (cause) {
+      unread = cause ?? new Error('the node did not answer')
     }
-    return toFunds({
+    const purse = toFunds({
       asset: id,
       symbol: facts.symbol,
       // The world's word for it, so a purse reads "Iron Sword" rather than the
@@ -307,7 +317,33 @@ export function createPlayerEconomy(
       decimals: facts.decimals,
       chain,
       pending: inFlight,
+      ...(unread === null ? {} : { read: 'failed' as const }),
     })
+    return { purse, unread }
+  }
+
+  const funds = async (asset?: string | { id: AssetId }): Promise<Funds> => (await readFunds(asset)).purse
+
+  /**
+   * The purse a write is allowed to argue with.
+   *
+   * `canSpend` is right to refuse a blank purse, but "you have 0" is a claim
+   * about the wallet, and a failed read is a claim about the node. SPEC §6.1
+   * makes the difference the contract: an error has to state a fix the reader
+   * can act on, and "acquire some swords" is the wrong errand for somebody
+   * holding three of them.
+   */
+  const spendableFunds = async (asset: string | { id: AssetId } | undefined, attempt: string): Promise<Funds> => {
+    const { purse, unread } = await readFunds(asset)
+    if (unread !== null) {
+      fail(
+        'funds-unreadable',
+        `This wallet's ${purse.title} balance could not be read, so ${attempt} was not attempted and nothing was signed. ${
+          unread instanceof Error ? unread.message : String(unread)
+        } Retry once that read succeeds — this says nothing about what the wallet holds.`,
+      )
+    }
+    return purse
   }
 
   const asListing = (offer: Offer, money: Currency): Listing | null => {
@@ -415,7 +451,7 @@ export function createPlayerEconomy(
     // whole reason `each` exists as an option.
     const totalRaw = priceRaw(request, qty, money, ware)
 
-    const held = await funds(asset)
+    const held = await spendableFunds(asset, `listing ${qty} ${ware.title}`)
     if (held.spendableRaw < qtyRaw) {
       const locked = (await mine()).filter((listing) => listing.asset === asset)
       const hint =
@@ -505,7 +541,7 @@ export function createPlayerEconomy(
     }
 
     const priceRawShown = shown ? toRaw(String(shown.price), money.decimals, 'The listing price') : null
-    const purse = await funds(money.asset)
+    const purse = await spendableFunds(money.asset, shown ? `buying ${shown.title}` : `taking offer ${hash.slice(0, 12)}…`)
     if (priceRawShown !== null && purse.spendableRaw < priceRawShown) {
       fail(
         'insufficient-balance',
@@ -618,7 +654,7 @@ export function createPlayerEconomy(
 
     if (request.kei !== undefined) {
       const amountRaw = toRaw(request.kei, KEI_DECIMALS, 'The Kei to give')
-      const purse = await funds(KEI_ASSET)
+      const purse = await spendableFunds(KEI_ASSET, `this gift of ${fromRaw(amountRaw, KEI_DECIMALS)} Kei`)
       if (purse.spendableRaw < amountRaw) {
         fail(
           'insufficient-balance',
@@ -645,7 +681,7 @@ export function createPlayerEconomy(
     if (amountRaw <= 0n) {
       fail('bad-amount', `A gift of ${label} is at least one unit — got ${String(request.amount)}.`)
     }
-    const held = await funds(asset)
+    const held = await spendableFunds(asset, `this gift of ${fromRaw(amountRaw, facts.decimals)} ${label}`)
     if (held.spendableRaw < amountRaw) {
       fail(
         'insufficient-balance',
