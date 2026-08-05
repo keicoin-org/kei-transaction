@@ -88,6 +88,26 @@ export {
   verifyProof,
 } from './merkle.js'
 
+export {
+  MAX_CHALLENGE_CONTEXT_ENTRIES,
+  MAX_CHALLENGE_CONTEXT_KEY,
+  MAX_CHALLENGE_CONTEXT_VALUE,
+  MAX_CHALLENGE_DOMAIN,
+  createNonceStore,
+  ownershipChallengeHash,
+  parseOwnershipChallenge,
+  randomChallengeNonce,
+  verifyOwnershipProof,
+} from './ownership.js'
+export type {
+  ChallengeContextValue,
+  NonceStore,
+  OwnershipChallenge,
+  OwnershipChallengeMessage,
+  OwnershipExpectation,
+  OwnershipProof,
+} from './ownership.js'
+
 export type {
   AccountInfo,
   AssetInfo,
