@@ -38,7 +38,14 @@ export interface Catalogue {
    * that sends somebody looking through source for the right spelling.
    */
   assetOf(item: string | { id: AssetId }): AssetId
-  /** A ware for an asset, invented from the id when the world never declared one. */
+  /**
+   * A ware for an asset, invented from the id when the world never declared one.
+   *
+   * A catalogue never reads a chain, so the id is the best it can invent — and a
+   * 64-hex id is not a title a player can read. Anything holding the asset's
+   * facts should fall back to the on-chain `name` first and reach the id only
+   * when the chain carries neither name nor symbol; that is what the shop does.
+   */
   describe(asset: AssetId): Ware
   add(ware: WareSpec): Ware
 }

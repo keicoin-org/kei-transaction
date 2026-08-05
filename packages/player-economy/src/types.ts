@@ -25,7 +25,8 @@ export interface Currency {
  * One thing on a shelf: a `swap_offer` block on its seller's own chain.
  *
  * Everything here was read off the chain. `key` and `title` are the only fields
- * that came from the local catalogue, and they name nothing the ledger checks.
+ * the local catalogue gets a say in, and they name nothing the ledger checks —
+ * without one they fall back to the asset's own on-chain symbol and name.
  */
 export interface Listing {
   /** The offer block's hash, which is its id (SPEC §9.3). */
@@ -33,8 +34,9 @@ export interface Listing {
   seller: string
   /** Written by this wallet, so it can be cancelled and cannot be accepted. */
   mine: boolean
-  /** The catalogue key, or the asset id when this world never declared one. */
+  /** The catalogue key, or the asset's on-chain symbol when none was declared. */
   key: string
+  /** What a player reads. The catalogue's title, or the asset's on-chain name. */
   title: string
   asset: AssetId
   /** How many units the lot holds. */
