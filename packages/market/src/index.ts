@@ -1,5 +1,33 @@
 export { createMarket } from './market.js'
-export type { MarketApi, MarketChart, MarketObservedRange, MarketRequestedRange, MarketTime, MarketTicker } from './market.js'
+export type {
+  MarketApi,
+  MarketChart,
+  MarketObservedRange,
+  MarketRequestedRange,
+  MarketTime,
+  MarketTicker,
+  StoredMarketOptions,
+} from './market.js'
+
+export { createStoredHistory } from './stored-history.js'
+export type {
+  ExactAmount,
+  ExactRatio,
+  ExactUnitPrice,
+  StoredAssetIdentity,
+  StoredAssetLookup,
+  StoredCandle,
+  StoredHistory,
+  StoredHistoryApi,
+  StoredHistoryOptions,
+  StoredHistoryPagination,
+  StoredHistoryQuery,
+  StoredInstrumentIdentity,
+  StoredPriceSummary,
+  StoredTimeQuality,
+  StoredTradePoint,
+  StoredTrades,
+} from './stored-history.js'
 export { summarise } from './history.js'
 export type { LegMeta, MarketContext } from './history.js'
 export { assetIdOf, durationMs } from './util.js'
@@ -63,6 +91,8 @@ export type {
   StoredMarketOfferInput,
   StoredOfferPage,
   StoredOfferQuery,
+  StoredTradePage,
+  StoredTradeQuery,
 } from './store.js'
 
 export { DEFAULT_MARKET_READ_BUDGET, createAccountChainIngestor } from './account-chain-ingestor.js'

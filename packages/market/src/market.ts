@@ -62,6 +62,8 @@ import {
   type InstrumentOptions,
 } from './instrument.js'
 import type { UnixCandle, UnixLinePoint } from './instrument.js'
+import { createStoredHistory, type StoredHistoryApi } from './stored-history.js'
+import type { MarketStore } from './store.js'
 import {
   accountLimitOf,
   coverageOf,
@@ -165,9 +167,26 @@ export interface MarketTime {
   note: string
 }
 
+export interface StoredMarketOptions {
+  /** A durable or memory store an ingestor has been filling. See `createMarketStore`. */
+  store: MarketStore
+  base: AssetId | { id: AssetId }
+  /** What the chart is priced in. Default Kei. */
+  quote?: AssetId | { id: AssetId }
+}
+
 export interface MarketApi {
   /** Bind one explicit base/quote/source once, then read and trade it coherently. */
   instrument(options: InstrumentOptions): InstrumentApi
+  /**
+   * An item's price history off a store, exactly, with a resumable cursor.
+   *
+   * This is the charting path for an application that ingests once and draws
+   * many times: the raw quantities and an exact quote-per-base ratio survive,
+   * `display` fields are the only lossy numbers, and the network and asset names
+   * come from this client. `series()` and `candles()` remain the live read.
+   */
+  stored(options: StoredMarketOptions): StoredHistoryApi
   /** List an asset for Kei. The common case, and the one §9.3 calls a sale offer. */
   sell(options: SellOptions): Promise<Offer>
   /** The mirror of `sell`: lock Kei, and take the asset from whoever fills it. */
@@ -787,6 +806,21 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
 
   return {
     instrument: instrumentFactory.instrument,
+    stored(storedOptions) {
+      if (!storedOptions || storedOptions.store === undefined || storedOptions.store === null) {
+        fail('no-accounts', 'market.stored() needs { store }: the exact history is read from what an ingestor materialized, not from a live walk.')
+      }
+      return createStoredHistory({
+        store: storedOptions.store,
+        network: client.node.network,
+        base: storedOptions.base,
+        quote: storedOptions.quote ?? KEI_ASSET,
+        // The client's own asset cache, so a chart is labelled with the names
+        // the chain carries rather than the ids the store keeps (#130).
+        assets: (asset) => meta(asset),
+        now,
+      })
+    },
     sell: (sell) =>
       publish(
         { asset: sell.asset, amount: sell.amount ?? 1 },

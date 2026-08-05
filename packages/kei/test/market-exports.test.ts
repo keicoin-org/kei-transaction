@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   createAccountChainIngestor as createMarketAccountChainIngestor,
   createAccountChainSource as createMarketAccountChainSource,
+  createStoredHistory as createMarketStoredHistory,
   DEFAULT_MARKET_RETENTION as MARKET_DEFAULT_RETENTION,
   DEFAULT_SUBSCRIPTION_READ_TIMEOUT as MARKET_DEFAULT_SUBSCRIPTION_READ_TIMEOUT,
   MARKET_STORAGE_SCHEMA_VERSION as MARKET_SCHEMA_VERSION,
@@ -14,6 +15,7 @@ import {
 import {
   createAccountChainIngestor,
   createAccountChainSource,
+  createStoredHistory,
   DEFAULT_MARKET_RETENTION,
   DEFAULT_SUBSCRIPTION_READ_TIMEOUT,
   MARKET_STORAGE_SCHEMA_VERSION,
@@ -27,7 +29,9 @@ import {
   type AccountChainIngestor,
   type MarketDataSource,
   type MarketStorageAdapter,
+  type StoredHistory,
   type StoredMarketCoverage,
+  type StoredTradePoint,
 } from '../src/index.js'
 
 describe('market bounds umbrella exports', () => {
@@ -64,5 +68,12 @@ describe('market bounds umbrella exports', () => {
     const typesCompile = <T>(_value?: T): true => true
     expect(typesCompile<MarketStorageAdapter>()).toBe(true)
     expect(typesCompile<StoredMarketCoverage>()).toBe(true)
+  })
+
+  test('exposes the exact stored-history surface', () => {
+    expect(createStoredHistory).toBe(createMarketStoredHistory)
+    const typesCompile = <T>(_value?: T): true => true
+    expect(typesCompile<StoredHistory>()).toBe(true)
+    expect(typesCompile<StoredTradePoint>()).toBe(true)
   })
 })
