@@ -56,6 +56,7 @@ export { KeiClient, claimStoreAdmissionHash } from './client.js'
 export type { BlockDraft, ClientConfig, ClientEvents, PaymentEvent, RevealPolicy, Role } from './client.js'
 
 export { blake2b, signHash, verifyHash } from './crypto.js'
+export { safeEndpoint } from './endpoint.js'
 export { KeiError, containsSecret, fail, registerSecret, scrub } from './errors.js'
 export { Emitter } from './events.js'
 export type { Listener } from './events.js'

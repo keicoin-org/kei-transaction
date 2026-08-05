@@ -12,6 +12,15 @@ Set `WORK_SERVER_TOKEN` to require `Authorization: Bearer …`. Clients point
 `workServer` at the printed URL; requests use the same `work_generate` JSON API
 in local, test, and production deployments.
 
+The token belongs in a header, not in the URL — a URL is what an error message
+names, and a header is not:
+
+```js
+const kei = await Kei.start({
+  workServer: { url: 'https://work.example/', headers: { authorization: `Bearer ${token}` } },
+})
+```
+
 > Part of [`kei-transaction`](https://www.npmjs.com/package/kei-transaction) — real currencies and items
 > for browser games. **Install `kei-transaction` instead unless you are counting
 > bytes**; these sub-packages exist for bundle size, not as a puzzle you have to
