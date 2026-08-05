@@ -4,10 +4,20 @@ export { summarise } from './history.js'
 export type { LegMeta, MarketContext } from './history.js'
 export { assetIdOf, durationMs } from './util.js'
 
-export { createMemoryMarketStorage } from './storage.js'
+export {
+  DEFAULT_MARKET_RETENTION,
+  MARKET_STORAGE_SCHEMA_VERSION,
+  MAX_MARKET_RETENTION,
+  createMemoryMarketStorage,
+} from './storage.js'
 export type {
-  MarketMemoryStorageCapabilities,
+  MarketDurability,
   MarketMemoryStorageAdapter,
+  MarketMemoryStorageCapabilities,
+  MarketRetention,
+  MarketRetentionReport,
+  MarketStorageAdapter,
+  MarketStorageCapabilities,
   MarketStorageEnvelope,
   MemoryMarketStorage,
 } from './storage.js'
@@ -48,6 +58,7 @@ export type {
   MaterializedPageReceipt,
   RejectedMarketRowInput,
   SourceCheckpointInput,
+  StoredMarketCoverage,
   StoredMarketOffer,
   StoredMarketOfferInput,
   StoredOfferPage,

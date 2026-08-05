@@ -6,6 +6,7 @@ import {
   createMarketStore,
   createMemoryMarketStorage,
   isMarketError,
+  MARKET_STORAGE_SCHEMA_VERSION,
   type MarketMemoryStorageAdapter,
   type MarketStorageEnvelope,
   type StoredMarketOfferInput,
@@ -108,7 +109,7 @@ describe('MarketCatalog', () => {
 
     let loads = 0
     const hostile: MarketMemoryStorageAdapter = {
-      capabilities: { durability: 'memory', scope: 'process-memory-reference', atomicCompareAndSwap: true, migrations: [1] },
+      capabilities: { durability: 'memory', scope: 'process-memory-reference', atomicCompareAndSwap: true, migrations: [1, MARKET_STORAGE_SCHEMA_VERSION] },
       async load() {
         loads += 1
         throw new Error('touched')
@@ -170,15 +171,23 @@ describe('MarketCatalog', () => {
 
   test('a maximum revision is rejected before commit and leaves the prior snapshot readable', async () => {
     const snapshot: MarketStorageEnvelope = {
-      schema: 'kei-market-storage', version: 1,
+      schema: 'kei-market-storage', version: MARKET_STORAGE_SCHEMA_VERSION,
       revision: Number.MAX_SAFE_INTEGER,
       catalogRevision: Number.MAX_SAFE_INTEGER,
       offerRevision: 0,
+      cursorKey: 'a'.repeat(32),
       observations: [], offers: [], checkpoints: [], quarantine: [],
+      retention: {
+        foldedObservations: 0,
+        droppedObservations: 0,
+        droppedOffers: 0,
+        droppedCheckpoints: 0,
+        droppedQuarantine: 0,
+      },
     }
     let commits = 0
     const storage: MarketMemoryStorageAdapter = {
-      capabilities: { durability: 'memory', scope: 'process-memory-reference', atomicCompareAndSwap: true, migrations: [1] },
+      capabilities: { durability: 'memory', scope: 'process-memory-reference', atomicCompareAndSwap: true, migrations: [1, MARKET_STORAGE_SCHEMA_VERSION] },
       async load() { return snapshot },
       async compareAndSwap() { commits += 1; return true },
     }
@@ -220,7 +229,7 @@ describe('MarketStore', () => {
     let persisted: MarketStorageEnvelope | null = null
     let refuse = true
     const reference: MarketMemoryStorageAdapter = {
-      capabilities: { durability: 'memory', scope: 'process-memory-reference', atomicCompareAndSwap: true, migrations: [1] },
+      capabilities: { durability: 'memory', scope: 'process-memory-reference', atomicCompareAndSwap: true, migrations: [1, MARKET_STORAGE_SCHEMA_VERSION] },
       async load() {
         return persisted
       },
@@ -267,7 +276,7 @@ describe('MarketStore', () => {
   test('invalid pages are rejected before storage and pre-aborted operations do no work', async () => {
     let loads = 0
     const driver: MarketMemoryStorageAdapter = {
-      capabilities: { durability: 'memory', scope: 'process-memory-reference', atomicCompareAndSwap: true, migrations: [1] },
+      capabilities: { durability: 'memory', scope: 'process-memory-reference', atomicCompareAndSwap: true, migrations: [1, MARKET_STORAGE_SCHEMA_VERSION] },
       async load() {
         loads += 1
         return null
@@ -370,7 +379,7 @@ describe('MarketStore', () => {
     let nowMs = 0
     let compareAndSwapRuns = 0
     const slowStorage: MarketMemoryStorageAdapter = {
-      capabilities: { durability: 'memory', scope: 'process-memory-reference', atomicCompareAndSwap: true, migrations: [1] },
+      capabilities: { durability: 'memory', scope: 'process-memory-reference', atomicCompareAndSwap: true, migrations: [1, MARKET_STORAGE_SCHEMA_VERSION] },
       async load() {
         return persisted
       },
@@ -589,7 +598,7 @@ describe('account-chain source', () => {
       id: 'node-a',
       provider: { network: 'testnet', async accountSwaps() { providerReads += 1; return [] } },
       catalog: { durability: 'memory', async announce() { throw new Error('unused') }, async participants() { catalogReads += 1; throw new Error('touched') }, async instruments() { throw new Error('unused') } },
-      store: { durability: 'memory', async materialize() { throw new Error('touched') }, async offers() { throw new Error('unused') }, async checkpoint() { return null }, async quarantine() { return [] } },
+      store: { durability: 'memory', async materialize() { throw new Error('touched') }, async offers() { throw new Error('unused') }, async checkpoint() { return null }, async quarantine() { return [] }, async coverage() { throw new Error('unused') } },
     })
     await expect(source.ingest({ budget: { maxRequests: Number.NaN } })).rejects.toMatchObject({ code: 'bad-market-budget' })
     const controller = new AbortController()

@@ -2,11 +2,13 @@ import { blake2b, bytesToHex, KeiError, isAddress, utf8 } from '@keicoin/core'
 
 import {
   loadEnvelope,
-  cursorSecretFor,
-  cursorRevisionFor,
+  retentionOf,
   throwIfStopped,
   updateEnvelope,
-  type MarketMemoryStorageAdapter,
+  type MarketDurability,
+  type MarketRetention,
+  type MarketRetentionReport,
+  type MarketStorageAdapter,
   type StorageDeadline,
   type StoredParticipantObservation,
 } from './storage.js'
@@ -35,7 +37,7 @@ export interface ParticipantAnnouncement {
 export interface AnnouncementReceipt {
   readonly inserted: boolean
   readonly revision: number
-  readonly durability: 'memory'
+  readonly durability: MarketDurability
 }
 
 export interface MarketParticipant {
@@ -44,6 +46,12 @@ export interface MarketParticipant {
   readonly firstObservedAt: number
   readonly lastObservedAt: number
   readonly observationCount: number
+  /**
+   * How many of `observationCount` no longer have their own announcement id,
+   * because retention folded them. Their times, sources, and pairs are exact;
+   * re-announcing a folded id counts again rather than deduplicating.
+   */
+  readonly compactedObservations: number
   readonly sources: readonly string[]
   readonly instruments: readonly MarketInstrumentIdentity[]
 }
@@ -62,6 +70,12 @@ export interface CatalogPage<T> {
   readonly snapshotRevision: number
   readonly complete: boolean
   readonly consumed: { readonly rows: number; readonly bytes: number }
+  /**
+   * What this store has folded or evicted for its whole life. `complete` is
+   * about this page's rows; these counters are about the roster that reached
+   * the page at all.
+   */
+  readonly retention: MarketRetentionReport
 }
 
 export interface CatalogQuery {
@@ -83,21 +97,23 @@ export interface InstrumentQuery extends CatalogQuery {
 }
 
 export interface MarketCatalog {
-  readonly durability: 'memory'
+  readonly durability: MarketDurability
   announce(input: ParticipantAnnouncement, options?: { deadlineMs?: number; signal?: AbortSignal }): Promise<AnnouncementReceipt>
   participants(query?: ParticipantQuery): Promise<CatalogPage<MarketParticipant>>
   instruments(query?: InstrumentQuery): Promise<CatalogPage<MarketInstrumentRecord>>
 }
 
 export interface MarketCatalogOptions {
-  readonly storage: MarketMemoryStorageAdapter
+  readonly storage: MarketStorageAdapter
   readonly now?: () => number
+  /** Row bounds and their compaction path. Defaults to `DEFAULT_MARKET_RETENTION`. */
+  readonly retention?: Partial<MarketRetention>
 }
 
 export function createMarketCatalog(options: MarketCatalogOptions): MarketCatalog {
   const storage = options.storage
   const now = options.now ?? Date.now
-  const cursorSecret = cursorSecretFor(storage)
+  const retention = retentionOf(options.retention)
 
   return {
     get durability() {
@@ -108,12 +124,11 @@ export function createMarketCatalog(options: MarketCatalogOptions): MarketCatalo
       const deadline = deadlineOf(writeOptions, now, 'Market catalog announcement')
       // Validate every caller-controlled field before the storage adapter is touched.
       const row = observationOf(input)
-      let resultingRevision = 0
-      const inserted = await updateEnvelope(storage, deadline, (current) => {
+      const { value: inserted, committed } = await updateEnvelope(storage, deadline, retention, (current) => {
         const observations = current.observations.map(validateStoredObservation)
-        resultingRevision = current.catalogRevision + 1
         const sameId = observations.find(
           (candidate) =>
+            candidate.observationId !== null &&
             candidate.network === row.network &&
             candidate.source === row.source &&
             candidate.observationId === row.observationId,
@@ -125,15 +140,18 @@ export function createMarketCatalog(options: MarketCatalogOptions): MarketCatalo
               'A participant observation reused its network/source/observationId with different immutable facts. The original observation remains unchanged.',
             )
           }
-          resultingRevision = current.catalogRevision
           return { next: { ...withoutRevision(current), observations }, value: false }
         }
         return {
-          next: { ...withoutRevision(current), catalogRevision: current.catalogRevision + 1, observations: [...observations, row] },
+          next: {
+            ...withoutRevision(current),
+            catalogRevision: current.catalogRevision + 1,
+            observations: [...observations, row],
+          },
           value: true,
         }
       })
-      return { inserted, revision: resultingRevision, durability: storage.capabilities.durability }
+      return { inserted, revision: committed.catalogRevision, durability: storage.capabilities.durability }
     },
 
     async participants(query = {}) {
@@ -141,10 +159,10 @@ export function createMarketCatalog(options: MarketCatalogOptions): MarketCatalo
       const deadline = deadlineOf(query, now, 'Market catalog participant page')
       const { envelope } = await loadEnvelope(storage, deadline)
       throwIfStopped(deadline)
-      const queryScopeValue = queryScope('participants', parsed, cursorRevisionFor(storage))
-      const cursor = cursorOf(parsed.cursor, 'participants', envelope.catalogRevision, queryScopeValue, cursorSecret)
+      const queryScopeValue = queryScope('participants', parsed)
+      const cursor = cursorOf(parsed.cursor, 'participants', envelope.catalogRevision, queryScopeValue, envelope.cursorKey)
       const rows = participantView(envelope.observations, parsed)
-      return page(rows, parsed, cursor, envelope.catalogRevision, 'participants', queryScopeValue, cursorSecret, participantKey, deadline)
+      return page(rows, parsed, cursor, envelope.catalogRevision, 'participants', queryScopeValue, envelope.cursorKey, participantKey, envelope.retention, deadline)
     },
 
     async instruments(query = {}) {
@@ -152,10 +170,10 @@ export function createMarketCatalog(options: MarketCatalogOptions): MarketCatalo
       const deadline = deadlineOf(query, now, 'Market catalog instrument page')
       const { envelope } = await loadEnvelope(storage, deadline)
       throwIfStopped(deadline)
-      const queryScopeValue = queryScope('instruments', parsed, cursorRevisionFor(storage))
-      const cursor = cursorOf(parsed.cursor, 'instruments', envelope.catalogRevision, queryScopeValue, cursorSecret)
+      const queryScopeValue = queryScope('instruments', parsed)
+      const cursor = cursorOf(parsed.cursor, 'instruments', envelope.catalogRevision, queryScopeValue, envelope.cursorKey)
       const rows = instrumentView(envelope.observations, parsed)
-      return page(rows, parsed, cursor, envelope.catalogRevision, 'instruments', queryScopeValue, cursorSecret, instrumentKey, deadline)
+      return page(rows, parsed, cursor, envelope.catalogRevision, 'instruments', queryScopeValue, envelope.cursorKey, instrumentKey, envelope.retention, deadline)
     },
   }
 }
@@ -232,20 +250,25 @@ function participantView(
   return [...grouped.values()]
     .map(({ rows, instruments }) => {
       const first = rows[0]!
-      let firstObservedAt = first.observedAt
+      let firstObservedAt = first.firstObservedAt
       let lastObservedAt = first.observedAt
+      let observationCount = 0
+      let compactedObservations = 0
       for (const row of rows) {
-        firstObservedAt = Math.min(firstObservedAt, row.observedAt)
+        firstObservedAt = Math.min(firstObservedAt, row.firstObservedAt)
         lastObservedAt = Math.max(lastObservedAt, row.observedAt)
+        observationCount += row.observations
+        if (row.observationId === null) compactedObservations += row.observations
       }
       return {
         network: first.network,
         address: first.address,
         firstObservedAt,
         lastObservedAt,
-        observationCount: rows.length,
+        observationCount,
+        compactedObservations,
         sources: [...new Set(rows.map((row) => row.source))].sort(compareText),
-        instruments: [...instruments.values()].sort((left, right) => compareText(instrumentKey({ network: '', participantCount: 0, firstObservedAt: 0, lastObservedAt: 0, sources: [], ...left }), instrumentKey({ network: '', participantCount: 0, firstObservedAt: 0, lastObservedAt: 0, sources: [], ...right }))),
+        instruments: [...instruments.values()].sort((left, right) => compareText(pairKey(left), pairKey(right))),
       }
     })
     .sort((left, right) => compareText(participantKey(left), participantKey(right)))
@@ -270,10 +293,10 @@ function instrumentView(
   return [...grouped.values()]
     .map((rows) => {
       const first = rows[0]!
-      let firstObservedAt = first.observedAt
+      let firstObservedAt = first.firstObservedAt
       let lastObservedAt = first.observedAt
       for (const row of rows) {
-        firstObservedAt = Math.min(firstObservedAt, row.observedAt)
+        firstObservedAt = Math.min(firstObservedAt, row.firstObservedAt)
         lastObservedAt = Math.max(lastObservedAt, row.observedAt)
       }
       return {
@@ -298,6 +321,7 @@ function page<T>(
   scope: string,
   secret: string,
   keyOf: (row: T) => string,
+  retention: MarketRetentionReport,
   deadline: StorageDeadline,
 ): CatalogPage<T> {
   const output: T[] = []
@@ -332,6 +356,7 @@ function page<T>(
     snapshotRevision: revision,
     complete: !hasMore,
     consumed: { rows: output.length, bytes },
+    retention,
   }
 }
 
@@ -341,6 +366,11 @@ function cursorOf(value: string | undefined, kind: 'participants' | 'instruments
   if (parts.length !== 6 || parts[0] !== 'mcat2' || parts[2] !== kind || !/^\d+$/.test(parts[1]!) || parts[3] !== scope) {
     throw new KeiError('bad-market-cursor', 'The market catalog cursor is malformed or belongs to a different page kind.')
   }
+  const key = decodeHex(parts[4]!)
+  // Integrity first: a cursor signed by another store, or by this store before
+  // it was cleared and replayed, is not a stale page of this snapshot at all.
+  const expected = cursorIntegrity(secret, `mcat2.${parts[1]}.${kind}.${scope}.${parts[4]}`)
+  if (parts[5] !== expected) throw new KeiError('bad-market-cursor', 'The market catalog cursor failed its integrity check or belongs to another query.')
   const cursorRevision = Number(parts[1])
   if (!Number.isSafeInteger(cursorRevision) || cursorRevision !== revision) {
     throw new KeiError(
@@ -348,9 +378,6 @@ function cursorOf(value: string | undefined, kind: 'participants' | 'instruments
       'The catalog changed after this cursor was issued. Restart paging from the first page to get a stable snapshot without gaps or duplicates.',
     )
   }
-  const key = decodeHex(parts[4]!)
-  const expected = cursorIntegrity(secret, `mcat2.${parts[1]}.${kind}.${scope}.${parts[4]}`)
-  if (parts[5] !== expected) throw new KeiError('bad-market-cursor', 'The market catalog cursor failed its integrity check or belongs to another query.')
   return key
 }
 
@@ -361,20 +388,18 @@ function encodeCursor(kind: string, revision: number, scope: string, secret: str
   return `${payload}.${cursorIntegrity(secret, payload)}`
 }
 
-function queryScope(kind: 'participants' | 'instruments', query: ParsedParticipantQuery | ParsedInstrumentQuery, revision: number): string {
+function queryScope(kind: 'participants' | 'instruments', query: ParsedParticipantQuery | ParsedInstrumentQuery): string {
   const normalized = kind === 'participants'
     ? {
         kind,
         network: query.network ?? null,
         instrument: 'instrument' in query ? query.instrument ?? null : null,
-        cursorRevision: revision,
       }
     : {
         kind,
         network: query.network ?? null,
         base: 'base' in query ? query.base ?? null : null,
         quote: 'quote' in query ? query.quote ?? null : null,
-        cursorRevision: revision,
       }
   return cursorIntegrity('public-query-scope', JSON.stringify(normalized))
 }
@@ -429,23 +454,47 @@ function observationOf(input: ParticipantAnnouncement): StoredParticipantObserva
     address,
     source,
     observedAt: observedAt as number,
+    firstObservedAt: observedAt as number,
+    observations: 1,
     observationId,
     base: instrument?.base ?? null,
     quote: instrument?.quote ?? null,
   }
 }
 
+/**
+ * Re-check a stored row's own fields, including the ones compaction wrote.
+ *
+ * A folded row has no announcement id and stands for a count, so the checks
+ * differ from a fresh announcement's without becoming weaker: its window still
+ * has to be a real interval and its count a positive whole number.
+ */
 function validateStoredObservation(input: StoredParticipantObservation): StoredParticipantObservation {
-  return observationOf({
+  const observationId = ownValue(input, 'observationId')
+  const base = ownValue(input, 'base')
+  const quote = ownValue(input, 'quote')
+  const validated = observationOf({
     network: ownValue(input, 'network') as string,
     address: ownValue(input, 'address') as string,
     source: ownValue(input, 'source') as string,
     observedAt: ownValue(input, 'observedAt') as number,
-    observationId: ownValue(input, 'observationId') as string,
-    ...(ownValue(input, 'base') === null && ownValue(input, 'quote') === null
-      ? {}
-      : { instrument: { base: ownValue(input, 'base') as string, quote: ownValue(input, 'quote') as string } }),
+    observationId: observationId === null ? 'compacted' : (observationId as string),
+    ...(base === null && quote === null ? {} : { instrument: { base: base as string, quote: quote as string } }),
   })
+  const firstObservedAt = ownValue(input, 'firstObservedAt')
+  const observations = ownValue(input, 'observations')
+  if (!Number.isSafeInteger(firstObservedAt) || (firstObservedAt as number) < 0 || (firstObservedAt as number) > validated.observedAt) {
+    throw badObservation('firstObservedAt must be a non-negative whole-millisecond time at or before observedAt')
+  }
+  if (!Number.isSafeInteger(observations) || (observations as number) < 1) {
+    throw badObservation('observations must be a positive safe whole number')
+  }
+  return {
+    ...validated,
+    firstObservedAt: firstObservedAt as number,
+    observations: observations as number,
+    observationId: observationId === null ? null : validated.observationId,
+  }
 }
 
 function instrumentOf(value: MarketInstrumentIdentity): MarketInstrumentIdentity {
@@ -501,6 +550,10 @@ function participantKey(row: MarketParticipant): string {
 
 function instrumentKey(row: MarketInstrumentRecord): string {
   return `${row.network}\u0000${row.base}\u0000${row.quote}`
+}
+
+function pairKey(row: MarketInstrumentIdentity): string {
+  return `${row.base}\u0000${row.quote}`
 }
 
 function sameObservation(left: StoredParticipantObservation, right: StoredParticipantObservation): boolean {
