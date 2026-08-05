@@ -77,21 +77,20 @@ const order = await orders.create({ sku: 'starter-pack' })
 const receipt = await kei.pay({ to: gameAddress, amount: 0.05 })
 await orders.attachPayment(order.id, receipt.hash)
 
-// Game server: onPayment.hash is the receive hash, not receipt.hash.
-game.onPayment(async ({ from, amount, hash: receiveHash }) => {
-  const receive = await game.client.node.blockInfo(receiveHash)
-  if (!receive || receive.type !== 'state' || !['open', 'receive'].includes(receive.subtype)) return
-  await payments.record({ sendHash: receive.link, receiveHash, from, amount })
-  await reconcile(receive.link)
+// Game server
+game.onPayment(async ({ from, amount, sendHash, hash: receiveHash }) => {
+  await payments.record({ sendHash, receiveHash, from, amount })
+  await reconcile(sendHash)
 })
 ```
 
 A Kei payment has no memo field in the current wire contract. The SDK rejects `pay({ memo })` rather
-than silently dropping it. `pay()` returns the player's send-block hash;
-`onPayment.hash` is the game's receive-block hash, and that receive block's
-`link` is the send hash. Persist orders and confirmed payments independently by
-send hash, then run the same atomic, idempotent reconciliation after either
-write. A payment can confirm before the browser attaches it to an order.
+than silently dropping it. `pay()` returns the player's send-block hash, and the
+game reads that same value as `onPayment.sendHash` — the one id both parties
+hold. (`onPayment.hash` is the game's own receive block, which the payer never
+sees.) Persist orders and confirmed payments independently by send hash, then
+run the same atomic, idempotent reconciliation after either write. A payment can
+confirm before the browser attaches it to an order.
 
 ## A currency in one call
 

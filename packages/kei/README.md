@@ -68,21 +68,21 @@ const order = await orders.create({ sku: 'starter-pack' })
 const receipt = await kei.pay({ to: gameAddress, amount: 0.05 })
 await orders.attachPayment(order.id, receipt.hash)
 
-// Game server: onPayment.hash is the receive hash, not receipt.hash.
-game.onPayment(async ({ from, amount, hash: receiveHash }) => {
-  const receive = await game.client.node.blockInfo(receiveHash)
-  if (!receive || receive.type !== 'state' || !['open', 'receive'].includes(receive.subtype)) return
-  await payments.record({ sendHash: receive.link, receiveHash, from, amount })
-  await reconcile(receive.link)
+// Game server
+game.onPayment(async ({ from, amount, sendHash, hash: receiveHash }) => {
+  await payments.record({ sendHash, receiveHash, from, amount })
+  await reconcile(sendHash)
 })
 ```
 
 > A memo isn't available on `pay()` yet — a Kei payment has no wire field for
 > one until M4, and `pay({ memo })` is rejected. `pay()` returns the player's
-> send-block hash; `onPayment.hash` is the game's receive-block hash, whose
-> `link` is that send hash. Persist orders and payments independently by send
-> hash, then invoke one atomic, idempotent reconciliation after either write so
-> payment-before-order is not lost and one payment cannot deliver twice.
+> send-block hash and the game reads the same value as `onPayment.sendHash`, so
+> the two sides already share one id. (`onPayment.hash` is the game's own
+> receive block; the payer never sees it.) Persist orders and payments
+> independently by send hash, then invoke one atomic, idempotent reconciliation
+> after either write so payment-before-order is not lost and one payment cannot
+> deliver twice.
 
 ## A currency in one call
 
