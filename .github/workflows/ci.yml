@@ -57,6 +57,32 @@ jobs:
       # to a consumer install that does not require the registry.
       - run: bun run release:packs
 
+  # `release:check` reads manifests and `release:packs` reads the tarball, but
+  # neither can see that the version number in the tree no longer describes what
+  # the registry already serves under that number. That is how
+  # `@keicoin/core@0.6.0` was burnt: exports landed, the number stayed, and the
+  # divergence only surfaced when someone attempted a release (#157). This
+  # compares each packed artifact against the registry copy of the same version.
+  #
+  # Advisory, like the testnet job: it depends on the network and on npm packing
+  # reproducibly across runner images, neither of which should be able to block a
+  # merge. `scripts/publish.sh` runs the same comparison as a hard refusal, where
+  # it is the last thing standing before an irreversible publish.
+  registry:
+    name: packed artifacts vs the registry (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run release:registry
+
   # M3 points the default network at a real testnet, so the SDK's own contract
   # against it can rot without any of the above noticing. It is best-effort
   # infrastructure with no uptime promise, so this reports rather than blocks.
