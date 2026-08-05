@@ -3,11 +3,13 @@ import { blake2b, bytesToHex, KeiError, isAddress, utf8 } from '@keicoin/core'
 import { deadlineOf } from './catalog.js'
 import {
   loadEnvelope,
-  cursorSecretFor,
-  cursorRevisionFor,
+  retentionOf,
   throwIfStopped,
   updateEnvelope,
-  type MarketMemoryStorageAdapter,
+  type MarketDurability,
+  type MarketRetention,
+  type MarketRetentionReport,
+  type MarketStorageAdapter,
   type StoredOfferRecord,
   type StoredRejectedRow,
   type StoredSourceCheckpoint,
@@ -105,7 +107,8 @@ export interface MaterializedPageReceipt {
   readonly conflicts: number
   readonly quarantined: number
   readonly revision: number
-  readonly durability: 'memory'
+  /** `durable` only after the adapter read the commit back. See `storage.ts`. */
+  readonly durability: MarketDurability
 }
 
 export interface StoredOfferQuery {
@@ -120,6 +123,19 @@ export interface StoredOfferQuery {
   readonly signal?: AbortSignal
 }
 
+export interface StoredMarketCoverage {
+  readonly scope: 'stored-observations'
+  readonly durability: MarketDurability
+  /** Where the bytes live, as the selected adapter names it. */
+  readonly storageScope: string
+  readonly offers: { readonly total: number; readonly open: number; readonly settled: number }
+  readonly checkpoints: number
+  readonly quarantined: number
+  /** Bounds in force, and what they have already folded or evicted. */
+  readonly retention: MarketRetention & MarketRetentionReport
+  readonly sourceBackfill: { readonly complete: false; readonly reason: 'unsupported_pagination' }
+}
+
 export interface StoredOfferPage {
   readonly rows: readonly StoredMarketOffer[]
   readonly nextCursor: string | null
@@ -130,10 +146,12 @@ export interface StoredOfferPage {
     readonly scope: 'stored-observations'
     readonly sourceBackfill: { readonly complete: false; readonly reason: 'unsupported_pagination' }
   }
+  /** What retention has folded or evicted for the life of this store. */
+  readonly retention: MarketRetentionReport
 }
 
 export interface MarketStore {
-  readonly durability: 'memory'
+  readonly durability: MarketDurability
   materialize(input: MaterializedPageInput): Promise<MaterializedPageReceipt>
   offers(query: StoredOfferQuery): Promise<StoredOfferPage>
   checkpoint(query: {
@@ -146,17 +164,21 @@ export interface MarketStore {
     signal?: AbortSignal
   }): Promise<SourceCheckpointInput | null>
   quarantine(query?: { limit?: number; deadlineMs?: number; signal?: AbortSignal }): Promise<readonly RejectedMarketRowInput[]>
+  /** What this store holds, what it is allowed to hold, and what it threw away. */
+  coverage(query?: { network?: string; deadlineMs?: number; signal?: AbortSignal }): Promise<StoredMarketCoverage>
 }
 
 export interface MarketStoreOptions {
-  readonly storage: MarketMemoryStorageAdapter
+  readonly storage: MarketStorageAdapter
   readonly now?: () => number
+  /** Row bounds and their compaction path. Defaults to `DEFAULT_MARKET_RETENTION`. */
+  readonly retention?: Partial<MarketRetention>
 }
 
 export function createMarketStore(options: MarketStoreOptions): MarketStore {
   const storage = options.storage
   const now = options.now ?? Date.now
-  const cursorSecret = cursorSecretFor(storage)
+  const retention = retentionOf(options.retention)
   return {
     get durability() {
       return storage.capabilities.durability
@@ -177,9 +199,7 @@ export function createMarketStore(options: MarketStoreOptions): MarketStore {
         }
       }
       const deadline = deadlineOf(input, now, 'Market page materialization')
-      let nextRevision = 0
-      const value = await updateEnvelope(storage, deadline, (current) => {
-        nextRevision = current.revision + 1
+      const { value, committed } = await updateEnvelope(storage, deadline, retention, (current) => {
         const records = new Map(current.offers.map((row) => [`${row.network}\u0000${row.hash}`, validateStoredOffer(row)]))
         const quarantine = current.quarantine.map(validateRejected)
         let inserted = 0
@@ -220,8 +240,9 @@ export function createMarketStore(options: MarketStoreOptions): MarketStore {
             }
           }
         }
+        // Retention bounds this table inside the same commit, so the push is
+        // safe: the envelope that reaches the adapter is already compacted.
         quarantine.push(...rejected)
-        const boundedQuarantine = quarantine.slice(-MAX_MARKET_QUARANTINE_ROWS)
         const checkpointRows = current.checkpoints.map(validateCheckpoint)
         const checkpointIndex = checkpointRows.findIndex((row) => row.key === checkpoint.key)
         if (checkpointIndex >= 0) {
@@ -238,20 +259,20 @@ export function createMarketStore(options: MarketStoreOptions): MarketStore {
             offerRevision: current.offerRevision + (inserted > 0 || updated > 0 ? 1 : 0),
             offers: [...records.values()].sort((left, right) => compareText(offerKey(left), offerKey(right))),
             checkpoints: checkpointRows.sort((left, right) => compareText(left.key, right.key)),
-            quarantine: boundedQuarantine,
+            quarantine,
           },
           value: { inserted, updated, unchanged, conflicts, quarantined: rejected.length + conflicts },
         }
       })
-      return { ...value, revision: nextRevision, durability: storage.capabilities.durability }
+      return { ...value, revision: committed.revision, durability: storage.capabilities.durability }
     },
 
     async offers(query) {
       const parsed = offerQueryOf(query)
       const deadline = deadlineOf(query, now, 'Stored market offer page')
       const { envelope } = await loadEnvelope(storage, deadline)
-      const scope = offerQueryScope(parsed, cursorRevisionFor(storage))
-      const after = storeCursorOf(parsed.cursor, envelope.offerRevision, scope, cursorSecret)
+      const scope = offerQueryScope(parsed)
+      const after = storeCursorOf(parsed.cursor, envelope.offerRevision, scope, envelope.cursorKey)
       const matching = envelope.offers
         .map(validateStoredOffer)
         .filter(
@@ -285,7 +306,7 @@ export function createMarketStore(options: MarketStoreOptions): MarketStore {
       const last = output.at(-1)
       return {
         rows: output,
-        nextCursor: more && last ? storeCursor(envelope.offerRevision, scope, cursorSecret, `${last.network}\u0000${last.hash}`) : null,
+        nextCursor: more && last ? storeCursor(envelope.offerRevision, scope, envelope.cursorKey,`${last.network}\u0000${last.hash}`) : null,
         snapshotRevision: envelope.offerRevision,
         complete: !more,
         consumed: { rows: output.length, bytes },
@@ -293,6 +314,7 @@ export function createMarketStore(options: MarketStoreOptions): MarketStore {
           scope: 'stored-observations',
           sourceBackfill: { complete: false, reason: 'unsupported_pagination' },
         },
+        retention: envelope.retention,
       }
     },
 
@@ -309,6 +331,26 @@ export function createMarketStore(options: MarketStoreOptions): MarketStore {
       const deadline = deadlineOf(query, now, 'Market quarantine read')
       const { envelope } = await loadEnvelope(storage, deadline)
       return envelope.quarantine.map(validateRejected).slice(-limit).map((row) => ({ ...row }))
+    },
+
+    async coverage(query = {}) {
+      const network = query.network === undefined ? undefined : networkOf(query.network)
+      const deadline = deadlineOf(query, now, 'Stored market coverage read')
+      const { envelope } = await loadEnvelope(storage, deadline)
+      const rows = envelope.offers.map(validateStoredOffer).filter((row) => network === undefined || row.network === network)
+      const open = rows.filter((row) => row.state === 'open').length
+      return {
+        scope: 'stored-observations',
+        durability: storage.capabilities.durability,
+        storageScope: storage.capabilities.scope,
+        offers: { total: rows.length, open, settled: rows.length - open },
+        checkpoints: envelope.checkpoints.filter((row) => network === undefined || row.network === network).length,
+        quarantined: envelope.quarantine.length,
+        retention: { ...retention, ...envelope.retention },
+        // Every count above describes rows this store observed and kept. Neither
+        // the node RPC nor the retention bound can make that network history.
+        sourceBackfill: { complete: false, reason: 'unsupported_pagination' },
+      }
     },
   }
 }
@@ -595,21 +637,22 @@ function storeCursorOf(cursor: string | undefined, revision: number, scope: stri
   if (parts.length !== 5 || parts[0] !== 'mstore2' || !/^\d+$/.test(parts[1]!) || parts[2] !== scope || !/^[0-9a-f]+$/.test(parts[3]!) || parts[3]!.length % 4 !== 0 || parts[3]!.length > 1_600) {
     throw new KeiError('bad-market-cursor', 'Stored offer cursor is malformed.')
   }
-  if (Number(parts[1]) !== revision) throw new KeiError('stale-market-cursor', 'The materialized store changed; restart paging for a stable snapshot.')
+  // Integrity first, for the same reason as the catalog's: a cursor this store
+  // never signed is not a stale page of it.
   const payload = `mstore2.${parts[1]}.${scope}.${parts[3]}`
   if (parts[4] !== cursorIntegrity(secret, payload)) throw new KeiError('bad-market-cursor', 'Stored offer cursor failed its integrity check or belongs to another query.')
+  if (Number(parts[1]) !== revision) throw new KeiError('stale-market-cursor', 'The materialized store changed; restart paging for a stable snapshot.')
   let key = ''
   for (let index = 0; index < parts[3]!.length; index += 4) key += String.fromCharCode(Number.parseInt(parts[3]!.slice(index, index + 4), 16))
   return key
 }
 
-function offerQueryScope(query: ReturnType<typeof offerQueryOf>, cursorRevision: number): string {
+function offerQueryScope(query: ReturnType<typeof offerQueryOf>): string {
   return cursorIntegrity('public-query-scope', JSON.stringify({
     network: query.network,
     base: query.base ?? null,
     quote: query.quote ?? null,
     state: query.state ?? null,
-    cursorRevision,
   }))
 }
 

@@ -1,6 +1,7 @@
 import { KeiError, isAddress, type SwapOffer } from '@keicoin/core'
 
 import type { MarketCatalog, MarketInstrumentIdentity } from './catalog.js'
+import type { MarketDurability } from './storage.js'
 import type {
   MarketIngestStopReason,
   MarketStore,
@@ -80,7 +81,8 @@ export interface AccountChainIngestor {
   readonly id: string
   readonly network: string
   readonly capabilities: {
-    readonly storage: 'process-memory-reference'
+    /** What the selected store's adapter actually proved, not what this source hopes. */
+    readonly storage: MarketDurability
     readonly catalogPaging: true
     readonly sourceBackfillPaging: false
     readonly scannedBlockBudget: true
@@ -109,7 +111,7 @@ export function createAccountChainIngestor(options: AccountChainIngestorOptions)
     id,
     network,
     capabilities: {
-      storage: 'process-memory-reference',
+      storage: options.store.durability,
       catalogPaging: true,
       sourceBackfillPaging: false,
       scannedBlockBudget: true,
