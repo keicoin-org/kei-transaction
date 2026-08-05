@@ -49,6 +49,14 @@ jobs:
 
       - run: bun test
 
+      # `release:check` reads manifests; this one reads the tarball. Packing runs
+      # each package's prepack build, so a package whose exports point at dist/
+      # files the tarball would not contain fails here instead of publishing
+      # successfully and being unimportable (#158). It installs the whole packed
+      # set together and imports every public entry, which is the closest thing
+      # to a consumer install that does not require the registry.
+      - run: bun run release:packs
+
   # M3 points the default network at a real testnet, so the SDK's own contract
   # against it can rot without any of the above noticing. It is best-effort
   # infrastructure with no uptime promise, so this reports rather than blocks.

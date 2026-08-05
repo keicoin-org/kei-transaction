@@ -141,6 +141,27 @@ case "\${1:-}" in
   -e) exec "$PUBLISH_TEST_REAL_NODE" "$@" ;;
   *)
     case "$*" in
+      *check-packs.mjs*)
+        # The real check builds, packs and installs nine tarballs, which this
+        # fixture deliberately mocks away. It is still what leaves behind the two
+        # things the publish loop below it consumes — the publish order, and one
+        # npm pack report per package — so the mock reproduces exactly those.
+        # The real script derives the order from the workspace dependency graph;
+        # these fixture packages are empty manifests, so it is stated outright.
+        destination=''
+        for argument in "$@"; do
+          case "$argument" in
+            --pack-destination=*) destination="\${argument#--pack-destination=}" ;;
+          esac
+        done
+        if [ -n "$destination" ]; then
+          : > "$destination/order.txt"
+          for package in core work claims tokens market wallet economy player-economy kei; do
+            printf '%s\\n' "$package" >> "$destination/order.txt"
+            printf '%s\\n' '[]' > "$destination/$package.json"
+          done
+        fi
+        ;;
       *--field=filename*) printf '%s' 'mock-package-9.9.9.tgz' ;;
       *--field=integrity*) printf '%s' 'sha512-release-test' ;;
       *) : ;;
