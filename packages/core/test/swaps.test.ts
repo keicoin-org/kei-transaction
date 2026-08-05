@@ -18,6 +18,7 @@ import {
   HttpNode,
   KeiError,
   addressFromPublicKey,
+  containsSecret,
   parseAccountSwaps,
   parseSwapInfo,
   parseSwapOffer,
@@ -26,7 +27,19 @@ import {
 
 const SELLER = addressFromPublicKey('1'.repeat(64))
 const BUYER = addressFromPublicKey('2'.repeat(64))
-const OFFER = 'E'.repeat(64)
+// The two hashes below are the only fixtures that have to survive into an
+// asserted error message, and they are deliberately not runs of one nibble.
+// `keyPairFromSeed` registers every seed it is handed as a process-wide secret
+// (src/errors.ts), `bun test` shares one process and one module instance across
+// every file in the workspace, and nothing ever clears that registry — so a
+// fixture hash that some other file also uses as a seed comes back out of a
+// `KeiError` as '[redacted]'. Which files have run by then is the order the OS
+// hands bun, so the collision fails on Linux and passes on Windows.
+// `OFFER` used to be 'E'.repeat(64), which packages/kei/test/trust.test.ts
+// seeds a key pair with. `guardedFixtures` below keeps that legible if it
+// happens again.
+const OFFER = 'C20AC803923E315B3F228CBF5E1CDD119CA35321917D255FF12E07CF5126CA59'
+const OTHER_OFFER = '61EAD50DF57CB1BEE15F0107C909713B2E4642D02019A41BBBF0FC81A9C5FEEA'
 const SETTLED_BY = 'D'.repeat(64)
 const SWORD = 'B'.repeat(64)
 const KEI = '0'.repeat(64)
@@ -241,8 +254,16 @@ describe('the envelope', () => {
 })
 
 describe('provenance: the answer has to be to the question asked', () => {
+  // Fails loudly, and for the right reason, if either hash ever becomes a seed
+  // somewhere else in the workspace — otherwise the only symptom is a
+  // provenance assertion below finding '[redacted]' on one OS and not the other.
+  test('guardedFixtures: neither provenance hash is a registered secret', () => {
+    expect(containsSecret(OFFER)).toBe(false)
+    expect(containsSecret(OTHER_OFFER)).toBe(false)
+  })
+
   test('swap_info cannot answer with a different offer', async () => {
-    const { node } = nodeAnswering(() => ({ offer: { ...openRow(), hash: 'F'.repeat(64) } }))
+    const { node } = nodeAnswering(() => ({ offer: { ...openRow(), hash: OTHER_OFFER } }))
     const error = await refusal(node.swapOffer(OFFER))
     expect(error.code).toBe('invalid-node-response')
     expect(error.message).toContain(OFFER)
