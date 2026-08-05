@@ -150,10 +150,51 @@ export interface StoredOfferPage {
   readonly retention: MarketRetentionReport
 }
 
+/**
+ * A settled-row page for one pair, ordered by the only clock there is.
+ *
+ * `offers()` pages by hash, which is stable and useless for a chart. This pages
+ * by the node's advisory settlement time with the hash as tie-breaker, so a
+ * caller redrawing a chart can resume where the last page ended. Every accepted
+ * row has one: `materialize()` refuses an accepted row without `settledAt`.
+ */
+export interface StoredTradeQuery {
+  readonly network: string
+  readonly base: string
+  readonly quote: string
+  /** `oldest` reads left to right, which is what a chart wants. Default `oldest`. */
+  readonly order?: 'oldest' | 'newest'
+  /** Inclusive advisory lower bound in node-local milliseconds. */
+  readonly from?: number
+  /** Inclusive advisory upper bound in node-local milliseconds. */
+  readonly to?: number
+  readonly limit?: number
+  readonly cursor?: string
+  readonly maxResultBytes?: number
+  readonly deadlineMs?: number
+  readonly signal?: AbortSignal
+}
+
+export interface StoredTradePage {
+  /** Accepted rows in `order`, with raw quantities untouched. */
+  readonly rows: readonly StoredMarketOffer[]
+  readonly nextCursor: string | null
+  readonly snapshotRevision: number
+  readonly complete: boolean
+  readonly consumed: { readonly rows: number; readonly bytes: number }
+  readonly coverage: {
+    readonly scope: 'stored-observations'
+    readonly sourceBackfill: { readonly complete: false; readonly reason: 'unsupported_pagination' }
+  }
+  readonly retention: MarketRetentionReport
+}
+
 export interface MarketStore {
   readonly durability: MarketDurability
   materialize(input: MaterializedPageInput): Promise<MaterializedPageReceipt>
   offers(query: StoredOfferQuery): Promise<StoredOfferPage>
+  /** Settled rows for one pair, in advisory time order, with a resumable cursor. */
+  trades(query: StoredTradeQuery): Promise<StoredTradePage>
   checkpoint(query: {
     network: string
     source: string
@@ -272,7 +313,7 @@ export function createMarketStore(options: MarketStoreOptions): MarketStore {
       const deadline = deadlineOf(query, now, 'Stored market offer page')
       const { envelope } = await loadEnvelope(storage, deadline)
       const scope = offerQueryScope(parsed)
-      const after = storeCursorOf(parsed.cursor, envelope.offerRevision, scope, envelope.cursorKey)
+      const after = storeCursorOf('mstore2', parsed.cursor, envelope.offerRevision, scope, envelope.cursorKey)
       const matching = envelope.offers
         .map(validateStoredOffer)
         .filter(
@@ -306,7 +347,68 @@ export function createMarketStore(options: MarketStoreOptions): MarketStore {
       const last = output.at(-1)
       return {
         rows: output,
-        nextCursor: more && last ? storeCursor(envelope.offerRevision, scope, envelope.cursorKey,`${last.network}\u0000${last.hash}`) : null,
+        nextCursor: more && last ? storeCursor('mstore2', envelope.offerRevision, scope, envelope.cursorKey,`${last.network}\u0000${last.hash}`) : null,
+        snapshotRevision: envelope.offerRevision,
+        complete: !more,
+        consumed: { rows: output.length, bytes },
+        coverage: {
+          scope: 'stored-observations',
+          sourceBackfill: { complete: false, reason: 'unsupported_pagination' },
+        },
+        retention: envelope.retention,
+      }
+    },
+
+    async trades(query) {
+      const parsed = tradeQueryOf(query)
+      const deadline = deadlineOf(query, now, 'Stored market trade page')
+      const { envelope } = await loadEnvelope(storage, deadline)
+      const scope = tradeQueryScope(parsed)
+      const after = storeCursorOf('mtrade1', parsed.cursor, envelope.offerRevision, scope, envelope.cursorKey)
+      const matching: { row: StoredOfferRecord; key: string }[] = []
+      for (const candidate of envelope.offers) {
+        const row = validateStoredOffer(candidate)
+        if (row.network !== parsed.network || row.state !== 'accepted') continue
+        const ask = row.giveAsset === parsed.base && row.wantAsset === parsed.quote
+        const bid = row.giveAsset === parsed.quote && row.wantAsset === parsed.base
+        if (!ask && !bid) continue
+        // Validation refuses an accepted row without a settlement time, so this
+        // is the node's own advisory observation rather than a fallback.
+        const at = row.settledAt as number
+        if (parsed.from !== undefined && at < parsed.from) continue
+        if (parsed.to !== undefined && at > parsed.to) continue
+        matching.push({ row, key: tradeKey(at, row.hash) })
+      }
+      const direction = parsed.order === 'newest' ? -1 : 1
+      matching.sort((left, right) => direction * compareText(left.key, right.key))
+
+      const output: StoredMarketOffer[] = []
+      let bytes = 2
+      let more = false
+      let lastKey: string | null = null
+      for (const { row, key } of matching) {
+        throwIfStopped(deadline)
+        if (after !== null && direction * compareText(key, after) <= 0) continue
+        if (output.length >= parsed.limit) {
+          more = true
+          break
+        }
+        const candidate = publicOffer(row)
+        const candidateBytes = (JSON.stringify(candidate)?.length ?? 0) * 2
+        if (bytes + candidateBytes > parsed.maxResultBytes) {
+          if (output.length === 0) throw new KeiError('market-result-too-large', `One stored trade needs ${candidateBytes} bytes, above this query's ${parsed.maxResultBytes}-byte budget.`)
+          more = true
+          break
+        }
+        output.push(candidate)
+        bytes += candidateBytes
+        lastKey = key
+      }
+      return {
+        rows: output,
+        nextCursor: more && lastKey !== null
+          ? storeCursor('mtrade1', envelope.offerRevision, scope, envelope.cursorKey, lastKey)
+          : null,
         snapshotRevision: envelope.offerRevision,
         complete: !more,
         consumed: { rows: output.length, bytes },
@@ -607,6 +709,74 @@ function offerQueryOf(query: StoredOfferQuery): { network: string; base?: string
   return { network, limit, maxResultBytes, ...(base === undefined ? {} : { base }), ...(quote === undefined ? {} : { quote }), ...(query.state === undefined ? {} : { state: query.state }), ...(query.cursor === undefined ? {} : { cursor: query.cursor }) }
 }
 
+interface ParsedTradeQuery {
+  readonly network: string
+  readonly base: string
+  readonly quote: string
+  readonly order: 'oldest' | 'newest'
+  readonly from?: number
+  readonly to?: number
+  readonly limit: number
+  readonly maxResultBytes: number
+  readonly cursor?: string
+}
+
+function tradeQueryOf(query: StoredTradeQuery): ParsedTradeQuery {
+  if (typeof query !== 'object' || query === null) throw badRow('trade query must be an object')
+  const network = networkOf(query.network)
+  const base = assetOf(query.base, 'base')
+  const quote = assetOf(query.quote, 'quote')
+  if (base === quote) throw badRow('a trade query needs different base and quote assets')
+  if (query.order !== undefined && query.order !== 'oldest' && query.order !== 'newest') {
+    throw badRow("trade query order must be 'oldest' or 'newest'")
+  }
+  const from = query.from === undefined ? undefined : advisoryBound(query.from, 'from')
+  const to = query.to === undefined ? undefined : advisoryBound(query.to, 'to')
+  if (from !== undefined && to !== undefined && from > to) throw badRow('a trade query cannot start after it ends')
+  const limit = integerOf(query.limit, 50, 1, 256, 'trade page limit')
+  const maxResultBytes = integerOf(query.maxResultBytes, 256_000, 1, 1_000_000, 'trade result byte budget')
+  if (query.cursor !== undefined && (typeof query.cursor !== 'string' || query.cursor.length > 2_048)) {
+    throw new KeiError('bad-market-cursor', 'Stored trade cursor is invalid.')
+  }
+  return {
+    network,
+    base,
+    quote,
+    order: query.order ?? 'oldest',
+    limit,
+    maxResultBytes,
+    ...(from === undefined ? {} : { from }),
+    ...(to === undefined ? {} : { to }),
+    ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+  }
+}
+
+function advisoryBound(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw badRow(`trade query ${label} must be a non-negative safe whole-millisecond time`)
+  }
+  return value
+}
+
+/**
+ * Advisory time then hash, both fixed width, so one string compare orders the
+ * page and one string is a complete resumable position within it.
+ */
+function tradeKey(at: number, hash: string): string {
+  return `${String(at).padStart(16, '0')}\u0000${hash}`
+}
+
+function tradeQueryScope(query: ParsedTradeQuery): string {
+  return cursorIntegrity('public-query-scope', JSON.stringify({
+    network: query.network,
+    base: query.base,
+    quote: query.quote,
+    order: query.order,
+    from: query.from ?? null,
+    to: query.to ?? null,
+  }))
+}
+
 function checkpointKeyQueryOf(query: { network: string; source: string; account: string; adapterVersion: number; instrument?: { base: string; quote: string } }): { key: string } {
   const network = networkOf(query.network)
   const source = textOf(query.source, 1, 128, 'checkpoint source')
@@ -624,22 +794,23 @@ function offerKey(row: StoredOfferRecord): string {
   return `${row.network}\u0000${row.hash}`
 }
 
-function storeCursor(revision: number, scope: string, secret: string, key: string): string {
+/** `kind` keeps an offer cursor and a trade cursor from being each other. */
+function storeCursor(kind: 'mstore2' | 'mtrade1', revision: number, scope: string, secret: string, key: string): string {
   let hex = ''
   for (let index = 0; index < key.length; index += 1) hex += key.charCodeAt(index).toString(16).padStart(4, '0')
-  const payload = `mstore2.${revision}.${scope}.${hex}`
+  const payload = `${kind}.${revision}.${scope}.${hex}`
   return `${payload}.${cursorIntegrity(secret, payload)}`
 }
 
-function storeCursorOf(cursor: string | undefined, revision: number, scope: string, secret: string): string | null {
+function storeCursorOf(kind: 'mstore2' | 'mtrade1', cursor: string | undefined, revision: number, scope: string, secret: string): string | null {
   if (cursor === undefined) return null
   const parts = cursor.split('.')
-  if (parts.length !== 5 || parts[0] !== 'mstore2' || !/^\d+$/.test(parts[1]!) || parts[2] !== scope || !/^[0-9a-f]+$/.test(parts[3]!) || parts[3]!.length % 4 !== 0 || parts[3]!.length > 1_600) {
+  if (parts.length !== 5 || parts[0] !== kind || !/^\d+$/.test(parts[1]!) || parts[2] !== scope || !/^[0-9a-f]+$/.test(parts[3]!) || parts[3]!.length % 4 !== 0 || parts[3]!.length > 1_600) {
     throw new KeiError('bad-market-cursor', 'Stored offer cursor is malformed.')
   }
   // Integrity first, for the same reason as the catalog's: a cursor this store
   // never signed is not a stale page of it.
-  const payload = `mstore2.${parts[1]}.${scope}.${parts[3]}`
+  const payload = `${kind}.${parts[1]}.${scope}.${parts[3]}`
   if (parts[4] !== cursorIntegrity(secret, payload)) throw new KeiError('bad-market-cursor', 'Stored offer cursor failed its integrity check or belongs to another query.')
   if (Number(parts[1]) !== revision) throw new KeiError('stale-market-cursor', 'The materialized store changed; restart paging for a stable snapshot.')
   let key = ''

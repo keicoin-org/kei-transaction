@@ -380,6 +380,52 @@ after instrument writes. Acceptance freshly re-reads chain and asset metadata
 and compares every displayed term, including raw quantities and decimals,
 before signing.
 
+### An item chart that survives a restart
+
+`instrument()` reads live chains on every call. An application that wants an
+exchange-like price chart for one item ingests once into a store and draws from
+it afterwards — with no hand-rolled directory, cursor bookkeeping, or price
+conversion:
+
+```js
+const storage = createMemoryMarketStorage()   // or your own atomic compare-and-swap adapter
+const catalog = createMarketCatalog({ storage })
+const store = createMarketStore({ storage })  // bounded — see retention below
+
+await catalog.announce({
+  network: kei.node.network, address: sellerAddress, source: 'my-app',
+  observedAt: Date.now(), observationId: crypto.randomUUID(),
+  instrument: { base: sword, quote: KEI_ASSET },
+})
+
+const ingestor = createAccountChainIngestor({ id: 'main', provider: kei.node, catalog, store })
+const run = await ingestor.ingest({ budget: { maxAccounts: 64, deadlineMs: 10_000 } })
+run.cursor          // round-trip it to continue the roster — in this process or the next one
+run.sourceBackfill  // { complete: false, reason: 'unsupported_pagination' } — always, for now
+
+const chart = await kei.market.stored({ store, base: sword }).history({ interval: '1h', window: '30d' })
+chart.instrument.id                // 'SWORD/KEI', from the chain's own asset names
+chart.points[0].baseQuantity.raw   // exact ledger units that changed hands
+chart.points[0].quoteTotal.raw     // what the whole lot cost — a total, never a price
+chart.points[0].unitPrice          // { numerator, denominator, priceUnit, display }
+chart.summary.median               // exact rational; an even count averages the two middles
+chart.pagination.cursor            // opaque, resumable, and it outlives this process
+```
+
+**`raw`, `numerator` and `denominator` are the values that round-trip.** Every
+`display` field is a `double` for rendering and nothing else: two settlements one
+raw unit apart share one `display` and differ in the exact fields, which is the
+whole reason this path exists.
+
+Both tables have a bound and a compaction path. Discovery rows fold to one row
+per participant, pair and source — keeping first and last observation times and
+the count — before anything is evicted; settled offers compact before open ones;
+and every page plus `store.coverage()` reports what folding and eviction did.
+Pass `retention` to move the bounds, up to `MAX_MARKET_RETENTION`. A store that
+reports `durability: 'durable'` has had that commit read back through the
+adapter's own load path, and `sourceBackfill` stays incomplete until a node RPC
+can prove exhaustion — so this is materialized history, never global history.
+
 > **Everything below this line ships in `@keicoin/market@0.4.0`**, published 4
 > August 2026. The original directory, `book()`, `series()`, `candles()` and
 > `accept(offer, { expect })` surface arrived in `0.2.0`; `0.3.0` made aggregate
