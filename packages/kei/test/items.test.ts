@@ -115,10 +115,22 @@ describe('items', () => {
     await expect(clash).rejects.toThrow(/Shield of Testing/)
   })
 
-  test('a unique item cannot be minted twice', async () => {
+  test('a unique item cannot be minted twice, and says so rather than telling the issuer to burn', async () => {
     const sword = await game.items.create({ name: 'Sword of Testing' })
     await game.items.mint(sword.id, player.address)
-    await expect(game.items.mint(sword.id, other.address)).rejects.toThrow(/maximum supply/)
+    const before = await issuerBlocks()
+
+    // The generic over-max-supply error advises burning some first. That is true
+    // of a currency and destructive here: the only Sword of Testing is the one
+    // `player` owns.
+    const thrown = await game.items
+      .mint(sword.id, other.address)
+      .then(() => undefined, (error: unknown) => error as { code?: string; message: string })
+    expect(thrown?.code).toBe('item-exhausted')
+    expect(thrown?.message).toContain('Sword of Testing')
+    expect(thrown?.message).not.toMatch(/frees headroom/)
+    expect(thrown?.message).toContain('Do not burn one')
+    expect(await issuerBlocks()).toBe(before)
   })
 
   test('a burned item can be re-minted, which is what maxSupply means (SPEC §5.6.6)', async () => {

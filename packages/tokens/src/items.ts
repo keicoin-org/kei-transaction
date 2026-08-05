@@ -353,13 +353,17 @@ export function createIssuerItems(client: KeiClient, options: ItemsOptions = {})
       if (!info) {
         fail('no-such-item', `No item with id ${target} exists. Create it first with items.create().`)
       }
-      // A roll that runs out reports itself as an ordinary token over its max
-      // supply, and that error's advice — burn some — is the wrong fix here. The
-      // roll is scarce because the item it varies is.
-      if (options !== undefined && info.maxSupply !== null && BigInt(info.circulating) >= BigInt(info.maxSupply)) {
+      // An item that runs out reports itself as an ordinary token over its max
+      // supply, and that error's advice — burn some first — is the wrong fix
+      // here. It is true (SPEC §5.6.6) and it means destroying the copy a player
+      // already owns. An item is scarce because it is meant to be, so the fix is
+      // always another asset rather than headroom in this one.
+      if (info.maxSupply !== null && BigInt(info.circulating) >= BigInt(info.maxSupply)) {
         fail(
-          'roll-exhausted',
-          `Every ${info.name} that can exist is already held: this roll has a supply of ${info.maxSupply}, inherited from the base item. A roll that exists keeps the supply it was issued with — issuance metadata is immutable, so passing a larger { supply } for this one is refused rather than applied. Give the base item a larger supply before its rolls are issued, or roll different stats, which is a different asset with its own supply.`,
+          options === undefined ? 'item-exhausted' : 'roll-exhausted',
+          options === undefined
+            ? `Every ${info.name} that can exist is already held: this item was issued with a supply of ${info.maxSupply}. Do not burn one to make room — that destroys the copy its owner holds. Issuance is permanent and its parameters immutable (SPEC §5.3), so re-creating it with a larger { supply } is a no-op: give the next one a name of its own, or move this one with items.transfer().`
+            : `Every ${info.name} that can exist is already held: this roll has a supply of ${info.maxSupply}, inherited from the base item. A roll that exists keeps the supply it was issued with — issuance metadata is immutable, so passing a larger { supply } for this one is refused rather than applied. Give the base item a larger supply before its rolls are issued, or roll different stats, which is a different asset with its own supply.`,
         )
       }
       const token = wrapIssuerToken(client, info)
