@@ -139,6 +139,19 @@ node scripts/check-packs.mjs --pack-destination="$PACK_TMP"
 # could quietly omit a package added to packages/ later.
 PACKAGES=$(cat "$PACK_TMP/order.txt")
 
+# check-packs.mjs asserts this too. It is repeated here because it is the one
+# manifest field that can redirect an irreversible publish — publishConfig.registry
+# outranks even a per-command --registry flag — and this script is the one that
+# runs npm publish. Deliberate belt and braces, checked before authentication.
+for package in $PACKAGES; do
+  directory="packages/$package"
+  manifest_registry=$(node -p "require('./$directory/package.json').publishConfig?.registry ?? ''")
+  if [ -n "$manifest_registry" ] && [ "$manifest_registry" != "$NPM_REGISTRY" ]; then
+    echo "release refused: $directory publishConfig.registry '$manifest_registry' is not the pinned public registry $NPM_REGISTRY" >&2
+    exit 1
+  fi
+done
+
 if [ "$CHECK_ONLY" -eq 1 ]; then
   echo "Preflight passed. Nothing was published."
   exit 0
