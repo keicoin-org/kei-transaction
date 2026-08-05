@@ -13,7 +13,7 @@
 import { beforeEach, describe, expect, test } from 'bun:test'
 import { KEI_ASSET, KeiError, MockNode } from '@keicoin/core'
 import { issueToken } from '@keicoin/tokens'
-import { WalletPanel } from '../src/index.js'
+import { WalletPanel, createWallet } from '../src/index.js'
 import type { WalletMarket, WalletMarketCoverage, WalletMarketOffer, WalletMarketOffers } from '../src/index.js'
 import { makeDom, makeIssuer, makePlayer, waitFor, type Dom, type TestIssuer } from './support.js'
 
@@ -159,6 +159,91 @@ describe('summary', () => {
     expect(error).toBeInstanceOf(KeiError)
     expect(error.code).toBe('wallet-offers-unread')
     expect(error.message).toContain('the node did not answer')
+    player.close()
+  })
+})
+
+/**
+ * A locked asset is named through the client's one shared asset cache (#134).
+ *
+ * Both halves of this have to hold at once, and neither implies the other. A
+ * locked asset has left the holdings table, so the resolve set has to be widened
+ * to cover it or every locked row goes unnamed — and the widened lookup has to
+ * go through the cache the client shares with `items.ownedBy()`, or the wallet
+ * has quietly reopened a metadata fan-out outside the only bound there is
+ * (`asset-cache.ts`). Counting what reaches the node is the only way to tell the
+ * two apart from outside.
+ */
+describe('the shared asset cache', () => {
+  /** Records every asset id the cache actually asks the node about. */
+  function countAssetInfo(target: MockNode): string[] {
+    const asked: string[] = []
+    const real = target.assetInfo.bind(target)
+    target.assetInfo = async (asset) => {
+      asked.push(asset)
+      return real(asset)
+    }
+    return asked
+  }
+
+  test('a locked asset is looked up once and then remembered', async () => {
+    const sword = await game.items.create({ name: 'Sword of Testing' })
+    const market = stubMarket([offer(OFFER, { asset: sword.id, symbol: 'SWORD', name: 'Sword of Testing', amount: 1 })])
+    const player = await makePlayer(node, { market })
+    const asked = countAssetInfo(node)
+
+    const first = await player.kei.wallet.summary()
+    expect(first.locked[0]?.name).toBe('Sword of Testing')
+    // Widening the resolve set is what puts it here at all.
+    expect(asked.filter((asset) => asset === sword.id)).toHaveLength(1)
+
+    asked.length = 0
+    const again = await player.kei.wallet.summary()
+    expect(again.locked[0]?.name).toBe('Sword of Testing')
+    // An issuance record cannot change (SPEC §5.3), so the second summary names
+    // it without asking again.
+    expect(asked).not.toContain(sword.id)
+    player.close()
+  })
+
+  test('a second wallet on the same client inherits the lookup, because the cache is the client\'s', async () => {
+    const sword = await game.items.create({ name: 'Sword of Testing' })
+    const market = stubMarket([offer(OFFER, { asset: sword.id, symbol: 'SWORD', name: 'Sword of Testing', amount: 1 })])
+    const player = await makePlayer(node, { market })
+
+    await player.kei.wallet.summary()
+    const asked = countAssetInfo(node)
+
+    // The point of #134: the bound and the memory belong to the client, not to
+    // whichever wallet asked first. A per-wallet cache would re-ask here, and
+    // that is the regression this test exists to catch.
+    const second = createWallet(player.client, { market })
+    const summary = await second.summary()
+
+    expect(summary.locked).toHaveLength(1)
+    expect(summary.locked[0]).toMatchObject({ asset: sword.id, name: 'Sword of Testing', item: true })
+    expect(asked).not.toContain(sword.id)
+    player.close()
+  })
+
+  test('a locked asset and a held one share the single resolve, not one pass each', async () => {
+    const sword = await game.items.create({ name: 'Sword of Testing' })
+    const gems = await issueToken(game.client, { name: 'Gems', symbol: 'GEM', decimals: 0 })
+    const player = await makePlayer(node, {
+      market: stubMarket([offer(OFFER, { asset: sword.id, symbol: 'SWORD', name: 'Sword of Testing', amount: 1 })]),
+    })
+    await game.client.submitAsset({ kind: 'mint', asset: gems.id, to: player.client.address, amount: '250' })
+    await player.client.receiveAll()
+
+    const asked = countAssetInfo(node)
+    const summary = await player.kei.wallet.summary()
+
+    // One spendable row and one locked row, each named, and exactly one lookup
+    // apiece — the union is de-duplicated and bounded by the one gate.
+    expect(summary.tokens.map((token) => token.asset)).toEqual([gems.id])
+    expect(summary.locked.map((holding) => holding.asset)).toEqual([sword.id])
+    expect(asked.filter((asset) => asset === sword.id)).toHaveLength(1)
+    expect(asked.filter((asset) => asset === gems.id)).toHaveLength(1)
     player.close()
   })
 })
