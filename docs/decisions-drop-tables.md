@@ -129,10 +129,19 @@ batch — it fails one player at a time, whichever of them press claim last, and
 there is no way afterwards to tell an unlucky player from a cheated one.
 
 `drop()` sums the batch per asset and refuses the whole thing while it is still a
-number in a variable. The check is deliberately conservative and says so in its
-own error: entitlements from earlier batches that nobody has claimed yet are not
-in circulating supply, so passing this check is not a guarantee, only the removal
-of the obvious case. The ledger remains the thing that decides.
+number in a variable. `items.commit()` runs the same check, from the same
+`assertCommitHeadroom` in `@keicoin/claims`, and runs it for every asset in the
+batch before it signs any root — a commit is settled and cannot be taken back, so
+a batch refused on its second item must not leave the first one standing.
+
+The check is deliberately conservative and says so in its own error: entitlements
+from earlier batches that nobody has claimed yet are not in circulating supply,
+so passing this check is not a guarantee, only the removal of the obvious case.
+It is also a read, and a mint, a burn, or another server's commit moves the
+number underneath it. The ledger remains the thing that decides. What the SDK
+adds for the cases it cannot catch is on the other side: a claim that cannot be
+paid tells the player what actually happened instead of advising them to burn an
+asset they do not hold.
 
 ## 5. `close()` refuses over unclaimed loot
 

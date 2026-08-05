@@ -25,6 +25,10 @@ beforeEach(async () => {
   other = await Kei.start({ node, seed: randomSeed() })
 })
 
+/** How much the game has written. Unchanged means nothing was published. */
+const issuerBlocks = async (): Promise<number> =>
+  (await node.accountHistory(game.address, { limit: 1_000 })).length
+
 describe('items', () => {
   test('create, mint, own, transfer', async () => {
     const sword = await game.items.create({
@@ -110,6 +114,87 @@ describe('items', () => {
 
     expect((await player.items.ownedBy()).map((item) => item.name).sort()).toEqual(['Potion', 'Shield'])
     expect((await other.items.ownedBy()).map((item) => item.name)).toEqual(['Potion'])
+  })
+
+  test('a commit for more of an item than can exist is refused, and publishes nothing', async () => {
+    const sword = await game.items.create({ name: 'Iron Sword' })
+    const before = await issuerBlocks()
+
+    await expect(
+      game.items.commit([
+        { to: player.address, item: sword.id },
+        { to: other.address, item: sword.id },
+      ]),
+    ).rejects.toThrow(/commits 2 Iron Sword and only 1 more can exist/)
+
+    // A root is settled and cannot be taken back, so the refusal has to happen
+    // before the block, not after it.
+    expect(await issuerBlocks()).toBe(before)
+  })
+
+  test('the same player twice for one item is refused rather than merged into one leaf', async () => {
+    const potion = await game.items.create({ name: 'Potion', supply: 100 })
+    await expect(
+      game.items.commit([
+        { to: player.address, item: potion.id },
+        { to: player.address, item: potion.id },
+      ]),
+    ).rejects.toThrow(/appears twice for Potion/)
+  })
+
+  test('a batch refused on its second item publishes neither root', async () => {
+    const potion = await game.items.create({ name: 'Potion', supply: 100 })
+    const sword = await game.items.create({ name: 'Iron Sword' })
+    const before = await issuerBlocks()
+
+    await expect(
+      game.items.commit([
+        { to: player.address, item: potion.id },
+        { to: player.address, item: sword.id },
+        { to: other.address, item: sword.id },
+      ]),
+    ).rejects.toThrow(/Iron Sword/)
+
+    expect(await issuerBlocks()).toBe(before)
+  })
+
+  test('a commit inside the supply publishes, and all fifty recipients claim', async () => {
+    const potion = await game.items.create({ name: 'Potion', supply: 100 })
+    const winners = await Promise.all(
+      Array.from({ length: 50 }, () => Kei.start({ node, seed: randomSeed() })),
+    )
+
+    const drops = await game.items.commit(winners.map((who) => ({ to: who.address, item: potion.id })))
+    expect(drops).toHaveLength(1)
+    for (const drop of drops) {
+      expect(drop.count).toBe(50)
+      for (const who of winners) await who.claims.add(drop.proofFor(who.address))
+    }
+
+    const token = await game.items.token(potion.id)
+    expect(await token.supply()).toBe(50)
+  })
+
+  test('a claim the item has no room for names something its reader can do', async () => {
+    const sword = await game.items.create({ name: 'Iron Sword' })
+    const drops = await game.items.commit([{ to: player.address, item: sword.id }])
+    // The room the commit was checked against is gone by the time the player
+    // claims — the issuer minted the only sword elsewhere. The commit check is
+    // advisory; the node is the authority on supply.
+    await game.items.mint(sword.id, other.address)
+
+    for (const drop of drops) {
+      let message = ''
+      try {
+        await player.claims.add(drop.proofFor(player.address))
+      } catch (error) {
+        message = (error as Error).message
+      }
+      expect(message).toContain(`root ${drop.root} cannot be paid out`)
+      expect(message).toContain('you hold none of it')
+      // Not the issuer's fix handed to a player who owns nothing to burn.
+      expect(message).not.toMatch(/burn/i)
+    }
   })
 
   test('a player cannot create or mint items', async () => {
