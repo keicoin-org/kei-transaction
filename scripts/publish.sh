@@ -103,12 +103,6 @@ fi
 echo "==> Checking release manifests"
 npm run release:check
 
-# Dependency order: nothing is published before the thing it imports, so the
-# registry never holds a version whose dependencies it cannot serve. Wallet is
-# before the two market consumers because it is the other feature-bearing leaf
-# in this coordinated release; all three already have their dependencies above.
-PACKAGES="core work claims tokens market wallet economy player-economy kei"
-
 if ! git ls-files --error-unmatch bun.lock >/dev/null 2>&1 || [ ! -f bun.lock ]; then
   echo "release refused: bun.lock must exist and be committed before --frozen-lockfile can protect this build" >&2
   exit 1
@@ -132,34 +126,18 @@ npm test
 echo "==> Checking publishable tarballs"
 PACK_TMP=$(mktemp -d "${TMPDIR:-/tmp}/kei-release-packs.XXXXXX")
 trap 'rm -rf "$PACK_TMP"' EXIT HUP INT TERM
-MANIFESTS=""
-for package in $PACKAGES; do
-  directory="packages/$package"
-  name=$(node -p "require('./$directory/package.json').name")
-  version=$(node -p "require('./$directory/package.json').version")
-  access=$(node -p "require('./$directory/package.json').publishConfig?.access ?? ''")
-  if [ "$access" != "public" ]; then
-    echo "release refused: $name@$version must declare publishConfig.access=public" >&2
-    exit 1
-  fi
-  # publishConfig.registry outranks even a per-command --registry flag at
-  # publish time, so it must be absent or the pinned public registry.
-  manifest_registry=$(node -p "require('./$directory/package.json').publishConfig?.registry ?? ''")
-  if [ -n "$manifest_registry" ] && [ "$manifest_registry" != "$NPM_REGISTRY" ]; then
-    echo "release refused: $name@$version publishConfig.registry '$manifest_registry' is not the pinned public registry $NPM_REGISTRY" >&2
-    exit 1
-  fi
-  manifest="$directory/package.json"
-  report="$PACK_TMP/$package.json"
-  npm pack --json --pack-destination "$PACK_TMP" "./$directory" > "$report"
-  node scripts/check-pack.mjs "$name" "$version" "$manifest" < "$report"
-  MANIFESTS="$MANIFESTS $manifest"
-done
 
-echo "==> Smoke-testing the packed dependency graph under Node"
-mkdir "$PACK_TMP/install"
-npm install --prefix "$PACK_TMP/install" --ignore-scripts --no-audit --no-fund "$PACK_TMP"/*.tgz
-node scripts/smoke-pack-install.mjs "$PACK_TMP/install" $MANIFESTS
+# This loop used to live here, which meant CI could not run it and the only
+# check that reads the real tarball ran at the moment a mistake had already cost
+# a version number. It now lives in check-packs.mjs, which CI runs on every push
+# (#158); the release keeps the artifacts by naming a destination, so the
+# integrity comparison below still compares the very tarballs that were checked.
+node scripts/check-packs.mjs --pack-destination="$PACK_TMP"
+
+# The publish set and its dependency order come from the same derivation the
+# pack check just used, rather than from a second hand-maintained list here that
+# could quietly omit a package added to packages/ later.
+PACKAGES=$(cat "$PACK_TMP/order.txt")
 
 if [ "$CHECK_ONLY" -eq 1 ]; then
   echo "Preflight passed. Nothing was published."

@@ -12,6 +12,7 @@
     "test": "bun test",
     "test:m3-live": "bun test ./packages/kei/test/m3-live.ts",
     "release:check": "node scripts/check-release.mjs",
+    "release:packs": "node scripts/check-packs.mjs",
     "check": "npm run typecheck && npm run test"
   },
   "devDependencies": {
