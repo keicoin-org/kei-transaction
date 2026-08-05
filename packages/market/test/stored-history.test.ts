@@ -110,7 +110,10 @@ function checkpoint(observedAt = 100) {
   }
 }
 
-async function storeWith(rows: readonly StoredMarketOfferInput[], storage = createMemoryMarketStorage()) {
+async function storeWith(
+  rows: readonly StoredMarketOfferInput[],
+  storage: MarketStorageAdapter = createMemoryMarketStorage(),
+) {
   const store = createMarketStore({ storage })
   await store.materialize({ offers: [...rows], checkpoint: checkpoint() })
   return store
