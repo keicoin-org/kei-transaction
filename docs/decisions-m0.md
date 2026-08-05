@@ -122,13 +122,31 @@ again.
 ## 8. Item symbols are derived from item names
 
 Asset ids are `H(issuer_pubkey || symbol)` (SPEC §5.6.1), so an item needs a
-symbol. `items.create({ name })` derives one: a slug of the name, truncated,
-plus a short digest of the full name so two long names sharing a prefix do not
-collide into one asset.
+symbol. `items.create({ name })` derives one: 7 characters of stub from the name,
+a hyphen, and 6 bytes of blake2b over the full name — 20 characters, which is the
+node's `max_symbol` exactly, and the same shape `statSymbolFor` uses.
+
+The digest carries the whole separation, not the stub. A themed catalogue shares
+prefixes immediately ("Greatsword of Flame" and "Greatsword of Frost" stub the
+same), so 48 bits is the budget over a game's catalogue of item names — not over
+the world, and not a guarantee. `items.create()` refuses an asset whose stored
+name is not the name it was asked to create, so a collision here, or a `symbol`
+passed explicitly that some other item already holds, is a refusal rather than
+two items quietly sharing one supply.
 
 The consequence is a good one: `items.create()` is idempotent per (issuer, name)
 for the same structural reason `token.issue()` is idempotent per (issuer,
 symbol). Pass `symbol` explicitly to override.
+
+**This derivation changed after 0.9.0.** It was 12 characters of stub and 2 bytes
+of digest, which is 65,536 buckets — over the 500-item catalogue SPEC §5.6.5
+sizes the issuance burn against, sharing one stub, that expects about two
+collisions. Any item issued by the old code keeps the symbol and asset id it was
+issued with; the new code derives a different symbol from the same name and would
+issue a second asset, burning Kei and orphaning what players already hold. A
+catalogue that has already shipped should pin its old symbols with
+`items.create({ symbol })` — `itemSymbolFor` from a 0.9.x install prints them —
+and everything issued from then on can use the derivation.
 
 ## 9. A `kind` hint in metadata separates items from currency
 

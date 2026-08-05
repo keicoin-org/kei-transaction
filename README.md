@@ -146,6 +146,20 @@ await kei.items.ownedBy(address, { limit: 20 })  // first 20 holdings, not first
 await kei.items.transfer(sword.id, toAddress)   // player-signed
 ```
 
+**The symbol is derived from the name.** 7 characters of stub plus 48 bits of
+digest, which is the node's 20-character `max_symbol` spent as widely as it goes.
+`items.create()` is therefore idempotent per (issuer, name), and it refuses an
+asset whose name is not the one you asked to create — so a digest collision, or a
+`symbol` you passed that another item already holds, is an error rather than two
+items sharing one supply. Pass `symbol` to override the derivation.
+
+> **Changed after 0.9.0.** The digest used to be 16 bits, which collides across a
+> catalogue of a few hundred items. Items already issued keep the symbol and id
+> they were issued with; the new derivation would give the same name a new asset.
+> If you have shipped a catalogue, pin its symbols with
+> `items.create({ symbol })` — read them off your existing items, or off
+> `itemSymbolFor` from a 0.9.x install — before upgrading.
+
 ### Stats
 
 Items carry stats if you want them — a sword with no attack number is a picture.

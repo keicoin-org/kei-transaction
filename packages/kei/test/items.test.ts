@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import {
   DEFAULT_ASSET_CONCURRENCY,
   Kei,
+  itemSymbolFor,
   randomSeed,
   type AssetId,
   type MockNode,
@@ -67,6 +68,51 @@ describe('items', () => {
     const second = await game.items.create({ name: 'Greatsword of Endless Testing II' })
     expect(second.id).not.toBe(first.id)
     expect(second.symbol).not.toBe(first.symbol)
+  })
+
+  // This pair was found by brute-forcing `Greatsword of <word>` against the old
+  // 2-byte digest: 004D both times, and one shared slug, so one asset. It is
+  // here as a regression fixture rather than because these two names are
+  // special — 16 bits over the 500-item catalogue SPEC §5.6.5 sizes the burn
+  // against expects collisions, and 48 bits does not.
+  test('two names that collided under a 16-bit digest are two items now', async () => {
+    const damon = await game.items.create({ name: 'Greatsword of Damon', supply: 100 })
+    const darel = await game.items.create({ name: 'Greatsword of Darel', supply: 100 })
+
+    expect(darel.symbol).not.toBe(damon.symbol)
+    expect(darel.id).not.toBe(damon.id)
+    expect(darel.name).toBe('Greatsword of Darel')
+    // Two pools of 100, not one shared pool that sells out at 50.
+    expect(damon.supply).toBe(100)
+    expect(darel.supply).toBe(100)
+  })
+
+  test('an item symbol fits the node max and spends the room on the digest', async () => {
+    const sword = await game.items.create({ name: 'Greatsword of Endless Testing' })
+    expect(sword.symbol).toBe(itemSymbolFor('Greatsword of Endless Testing'))
+    // 7 of stub, a hyphen, 6 bytes of digest — the shape statSymbolFor already
+    // uses, and exactly the node's max_symbol of 20.
+    expect(sword.symbol).toMatch(/^[A-Z0-9][A-Z0-9-]{0,6}-[0-9A-F]{12}$/)
+    expect(sword.symbol.length).toBe(20)
+  })
+
+  test('a short name still gets the full digest', async () => {
+    // Nothing to truncate, so the stub is the whole name and the width is the
+    // digest's, not the name's.
+    expect(itemSymbolFor('Rock')).toMatch(/^ROCK-[0-9A-F]{12}$/)
+    expect(itemSymbolFor('!!!')).toMatch(/^ITEM-[0-9A-F]{12}$/)
+    expect(itemSymbolFor('Rock')).not.toBe(itemSymbolFor('Rocks'))
+  })
+
+  // Whatever the digest width, a symbol can still land on somebody else's asset:
+  // through `create({ symbol })`, or through a collision the width only makes
+  // unlikely. Reading the wrong sword back has to be a sentence.
+  test('create refuses an asset that is not the item it was asked for', async () => {
+    await game.items.create({ name: 'Sword of Testing', symbol: 'SHARED' })
+    const clash = game.items.create({ name: 'Shield of Testing', symbol: 'SHARED' })
+    await expect(clash).rejects.toThrow(/SHARED/)
+    await expect(clash).rejects.toThrow(/Sword of Testing/)
+    await expect(clash).rejects.toThrow(/Shield of Testing/)
   })
 
   test('a unique item cannot be minted twice', async () => {
