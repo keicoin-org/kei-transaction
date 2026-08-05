@@ -598,7 +598,7 @@ describe('account-chain source', () => {
       id: 'node-a',
       provider: { network: 'testnet', async accountSwaps() { providerReads += 1; return [] } },
       catalog: { durability: 'memory', async announce() { throw new Error('unused') }, async participants() { catalogReads += 1; throw new Error('touched') }, async instruments() { throw new Error('unused') } },
-      store: { durability: 'memory', async materialize() { throw new Error('touched') }, async offers() { throw new Error('unused') }, async checkpoint() { return null }, async quarantine() { return [] }, async coverage() { throw new Error('unused') } },
+      store: { durability: 'memory', async materialize() { throw new Error('touched') }, async offers() { throw new Error('unused') }, async trades() { throw new Error('unused') }, async checkpoint() { return null }, async quarantine() { return [] }, async coverage() { throw new Error('unused') } },
     })
     await expect(source.ingest({ budget: { maxRequests: Number.NaN } })).rejects.toMatchObject({ code: 'bad-market-budget' })
     const controller = new AbortController()
