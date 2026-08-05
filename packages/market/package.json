@@ -38,7 +38,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "prepack": "tsc --build"
+    "prepack": "tsc --build --force"
   },
   "publishConfig": {
     "access": "public"
