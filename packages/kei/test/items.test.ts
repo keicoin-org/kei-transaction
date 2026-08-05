@@ -3,15 +3,22 @@
  * balanceOf; there is no indexer and no second code path.
  */
 
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { beforeEach, describe, expect, test } from 'bun:test'
 import {
   DEFAULT_ASSET_CONCURRENCY,
   Kei,
+  MockIpfsUploader,
   itemSymbolFor,
   randomSeed,
   type AssetId,
   type MockNode,
 } from 'kei-transaction'
+
+/** Stand-in for the sword art. The bytes are the image; the path never was. */
+const SWORD_PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x73, 0x77, 0x6f, 0x72, 0x64])
 
 let node: MockNode
 let game: Kei
@@ -35,7 +42,7 @@ describe('items', () => {
     const sword = await game.items.create({
       name: 'Sword of Testing',
       description: 'It tests things.',
-      image: './sword.png',
+      image: SWORD_PNG,
     })
 
     expect(sword.supply).toBe(1)
@@ -256,10 +263,59 @@ describe('items', () => {
   })
 })
 
+describe('item images', () => {
+  test('a path that cannot be read is refused, and nothing is issued', async () => {
+    const before = await issuerBlocks()
+
+    // The normal way to hit this is running a script from a different working
+    // directory. Hashing the path string produced a well-formed pointer to
+    // nothing, on an issuance record that can never be corrected.
+    const thrown = await game.items
+      .create({ name: 'Sword of Testing', image: './nope.png' })
+      .then(() => undefined, (error: unknown) => error as { code?: string; message: string })
+    expect(thrown?.code).toBe('image-unreadable')
+    expect(thrown?.message).toContain('./nope.png')
+    expect(await issuerBlocks()).toBe(before)
+  })
+
+  test('a path that exists is read, and the pointer addresses the contents', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kei-image-'))
+    const path = join(dir, 'sword.png')
+    await writeFile(path, SWORD_PNG)
+
+    const sword = await game.items.create({ name: 'Sword of Testing', image: path })
+    // The same bytes by either route, so the pointer is the file's and not the
+    // path's — two different paths holding this art agree.
+    expect(sword.image).toBe(await new MockIpfsUploader().upload(SWORD_PNG))
+  })
+
+  test('a CID or a URL is passed straight through', async () => {
+    const uploader = new MockIpfsUploader()
+    expect(await uploader.upload('bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi')).toBe(
+      'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi',
+    )
+    expect(await uploader.upload('https://example.test/sword.png')).toBe('https://example.test/sword.png')
+    expect(await uploader.upload('ipfs://sword')).toBe('ipfs://sword')
+  })
+
+  test('a path is refused where there is no filesystem, rather than hashed', async () => {
+    const runtime = globalThis as { process?: unknown }
+    const real = runtime.process
+    try {
+      delete runtime.process
+      const refusal = new MockIpfsUploader().upload('./sword.png')
+      await expect(refusal).rejects.toThrow(/no filesystem/)
+      await expect(refusal).rejects.toThrow(/Uint8Array/)
+    } finally {
+      runtime.process = real
+    }
+  })
+})
+
 describe('the wallet summary', () => {
   test('separates currency, items, and pending claims (SPEC §6.5)', async () => {
     const gems = await game.token.issue({ name: 'Gems', symbol: 'GEM', decimals: 0 })
-    const sword = await game.items.create({ name: 'Sword of Testing', image: './sword.png' })
+    const sword = await game.items.create({ name: 'Sword of Testing', image: SWORD_PNG })
 
     await gems.mint(player.address, 250)
     await game.items.mint(sword.id, player.address)
@@ -318,7 +374,7 @@ describe('item stats', () => {
   test('minting with stats gives the player a variant, not the base item', async () => {
     const base = await game.items.create({
       name: 'Iron Sword',
-      image: './sword.png',
+      image: SWORD_PNG,
       stats: { attack: 10, weight: 3 },
     })
 
