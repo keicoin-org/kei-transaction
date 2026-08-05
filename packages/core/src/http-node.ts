@@ -354,6 +354,14 @@ export class HttpNode implements KeiNode {
           if (stopped) return
           listener({ kind: 'receivable', account: address, hash: receivable.hash })
         }
+        // `seen` only needs to remember what could still come back from the
+        // next poll. Once a hash is off the node's own list it cannot match
+        // again, so keeping it is pure residue — prune to exactly what this
+        // poll said is outstanding. Only on success: a failed poll answers
+        // nothing, and reading that as "the backlog is empty" would clear
+        // `seen` and re-notify everything on the next one that works.
+        const outstanding = new Set(receivables.map((receivable) => receivable.hash))
+        for (const hash of seen) if (!outstanding.has(hash)) seen.delete(hash)
         schedule(this.pollInterval)
       } catch {
         // A missed poll has no caller to surface it to, so it stays quiet — but

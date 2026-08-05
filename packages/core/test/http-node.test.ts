@@ -497,6 +497,106 @@ describe('HttpNode backoff between failed polls', () => {
 })
 
 /**
+ * Issue #113: `seen` inside `subscribe` used to keep every hash it had ever
+ * added, growing with lifetime payment count on a process that never restarts.
+ * The fix prunes it to what the node's own answer says is outstanding, at the
+ * end of each successful poll.
+ */
+describe('HttpNode subscribe and the seen set', () => {
+  const hashFor = (i: number): string => String(i).padStart(64, '0')
+  const receivableFor = (hash: string): unknown => ({ hash, from: 'kei_2', asset: '0'.repeat(64), amount: '1' })
+
+  test('a hash the node has stopped listing is forgotten, not retained forever', async () => {
+    // 500 polls, each reporting only its own new receivable — the node has
+    // already paid out everything before it, so it is off the list. Poll 501
+    // brings back the very first hash, as if it had reappeared. 501 real
+    // macrotask round trips through `captureTimers` is slower than the
+    // default per-test budget, hence the explicit timeout below.
+    const N = 500
+    let poll = 0
+    const fetchImpl = (async () => {
+      poll += 1
+      const hash = poll <= N ? hashFor(poll) : hashFor(1)
+      return new Response(JSON.stringify({ receivables: [receivableFor(hash)] }))
+    }) as unknown as typeof globalThis.fetch
+
+    const timers = captureTimers()
+    try {
+      const node = new HttpNode({ url: RPC, pollInterval: 5, fetch: fetchImpl })
+      const seen: string[] = []
+      const stop = node.subscribe('kei_1', (event) => seen.push(event.hash))
+      await timers.flush()
+      for (let i = 1; i <= N + 1; i += 1) await timers.step()
+      stop()
+
+      // Every one of the 500 distinct hashes arrived exactly once, plus hash
+      // #1 a second time from poll 501.
+      expect(seen).toHaveLength(N + 1)
+      expect(seen.slice(0, N)).toEqual(Array.from({ length: N }, (_, i) => hashFor(i + 1)))
+
+      // Hash #1 reappearing 500 polls later is delivered again. If `seen` had
+      // kept every hash it was ever given, this would have been swallowed as
+      // a duplicate — it is only deliverable because `seen` had already
+      // forgotten it, which is what keeps its size tied to the account's
+      // current backlog instead of to lifetime payment count.
+      expect(seen[N]).toBe(hashFor(1))
+    } finally {
+      timers.restore()
+    }
+  }, 20_000)
+
+  test('a receivable that stays outstanding is never delivered twice', async () => {
+    const hash = hashFor(1)
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ receivables: [receivableFor(hash)] }))) as unknown as typeof globalThis.fetch
+
+    const timers = captureTimers()
+    try {
+      const node = new HttpNode({ url: RPC, pollInterval: 5, fetch: fetchImpl })
+      const seen: string[] = []
+      const stop = node.subscribe('kei_1', (event) => seen.push(event.hash))
+      await timers.flush()
+      // Many polls, the node saying the same thing every time — the case
+      // pruning to "outstanding" exists to keep working for.
+      for (let i = 0; i < 50; i += 1) await timers.step()
+      stop()
+      expect(seen).toEqual([hash])
+    } finally {
+      timers.restore()
+    }
+  })
+
+  test('a failed poll does not clear seen, so recovery does not re-notify everything', async () => {
+    const hash = hashFor(1)
+    let attempts = 0
+    const fetchImpl = (async () => {
+      attempts += 1
+      // First poll succeeds and reports the receivable. Second poll fails
+      // outright. Third poll succeeds and reports the same receivable again —
+      // still outstanding, not a new arrival.
+      if (attempts === 2) throw new Error('ECONNREFUSED')
+      return new Response(JSON.stringify({ receivables: [receivableFor(hash)] }))
+    }) as unknown as typeof globalThis.fetch
+
+    const timers = captureTimers()
+    try {
+      const node = new HttpNode({ url: RPC, pollInterval: 5, fetch: fetchImpl })
+      const seen: string[] = []
+      const stop = node.subscribe('kei_1', (event) => seen.push(event.hash))
+      await timers.flush()
+      // The initial poll from `subscribe` is attempt 1; two more steps drive
+      // the failing attempt 2 and the recovering attempt 3.
+      for (let i = 0; i < 2; i += 1) await timers.step()
+      stop()
+      expect(attempts).toBe(3)
+      expect(seen).toEqual([hash])
+    } finally {
+      timers.restore()
+    }
+  })
+})
+
+/**
  * A node URL is somewhere people keep credentials, and a timeout message is
  * something people paste into an issue. What `safeEndpoint` keeps and drops is
  * pinned in endpoint.test.ts; what these two check is that every error path
