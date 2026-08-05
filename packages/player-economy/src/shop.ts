@@ -216,6 +216,26 @@ export function createPlayerEconomy(
     return { asset: info.id, symbol: info.symbol, name: info.name, decimals: info.decimals }
   }
 
+  /**
+   * The world's word for an asset, then the chain's, then the id.
+   *
+   * The catalogue is optional, and its own fallback cannot do better than the id
+   * because it never reads a chain. Every site here has the asset's facts in
+   * hand already — an `OfferLeg` carries `name` and `symbol`, and `factsFor()`
+   * has just been awaited — so the id is the last resort rather than the first,
+   * and a shop with no catalogue still says "Sword of Testing" in its listings
+   * and in the sentences that interpolate a title.
+   */
+  const wareFor = (asset: AssetId, facts: { name?: string; symbol?: string }): Ware => {
+    const declared = catalogue.byAsset(asset)
+    if (declared) return declared
+    return {
+      key: facts.symbol || asset,
+      asset,
+      title: facts.name || facts.symbol || asset,
+    }
+  }
+
   const announce = (address?: string): void => {
     const mutable = directory as Partial<MutableDirectory>
     if (typeof mutable.watch === 'function') mutable.watch(address ?? client.address)
@@ -303,7 +323,7 @@ export function createPlayerEconomy(
       symbol: facts.symbol,
       // The world's word for it, so a purse reads "Iron Sword" rather than the
       // ticker a symbol has to be derived into.
-      title: catalogue.byAsset(id)?.title ?? facts.name,
+      title: wareFor(id, facts).title,
       decimals: facts.decimals,
       chain,
       pending: inFlight,
@@ -312,7 +332,7 @@ export function createPlayerEconomy(
 
   const asListing = (offer: Offer, money: Currency): Listing | null => {
     if (offer.want.asset !== money.asset) return null
-    const ware = catalogue.describe(offer.give.asset)
+    const ware = wareFor(offer.give.asset, offer.give)
     return {
       hash: offer.hash,
       seller: offer.from,
@@ -396,7 +416,6 @@ export function createPlayerEconomy(
     }
     const money = await currency()
     const asset = catalogue.assetOf(request.item)
-    const ware = catalogue.describe(asset)
     if (asset === money.asset) {
       fail(
         'same-asset',
@@ -405,6 +424,7 @@ export function createPlayerEconomy(
     }
 
     const goods = await factsFor(asset)
+    const ware = wareFor(asset, goods)
     const qty = wholeQty(request.qty, ware)
     const qtyRaw = toRaw(String(qty), goods.decimals, `The quantity of ${ware.title}`)
 
@@ -544,7 +564,7 @@ export function createPlayerEconomy(
             }
           : {}),
       })
-      const ware = catalogue.describe(settlement.received.asset)
+      const ware = wareFor(settlement.received.asset, settlement.received)
       const made: Purchase = {
         hash: settlement.hash,
         listing:
@@ -639,8 +659,11 @@ export function createPlayerEconomy(
 
     const asset = catalogue.assetOf((request.item ?? request.asset) as string | { id: AssetId })
     const facts = await factsFor(asset)
+    // `ware` stays null when the world never declared one — a `Gift` says
+    // whether it was catalogued. The label is what a player reads, so it falls
+    // back to the chain's name the same way every other sentence here does.
     const ware: Ware | null = catalogue.byAsset(asset) ?? null
-    const label = ware?.title ?? facts.symbol
+    const label = wareFor(asset, facts).title
     const amountRaw = toRaw(request.amount ?? 1, facts.decimals, `The ${label} to give`)
     if (amountRaw <= 0n) {
       fail('bad-amount', `A gift of ${label} is at least one unit — got ${String(request.amount)}.`)

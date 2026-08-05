@@ -12,9 +12,11 @@ import {
   KEI_ASSET,
   Kei,
   createDirectory,
+  itemSymbolFor,
   randomSeed,
   type IssuerToken,
   type Item,
+  type Listing,
   type MockNode,
   type MutableDirectory,
 } from 'kei-transaction'
@@ -552,5 +554,118 @@ describe('the boundaries this package keeps', () => {
     await alice.market.offer({ give: { asset: sword.id, amount: 1 }, want: { asset: KEI_ASSET, amount: 3 } })
     const shelves = await carol.shop.browse()
     expect(shelves.listings).toHaveLength(0)
+  })
+})
+
+// ------------------------------------------------------------- no catalogue
+
+/**
+ * The catalogue is optional, so the shop a developer gets from the §6.2 snippet
+ * has none. The chain already carries a name for every asset (SPEC §7); reaching
+ * past it for the 64-hex id makes a hash the default product name, in the
+ * listing and in every sentence that interpolates a title.
+ */
+describe('a shop with no catalogue', () => {
+  let seller: Kei
+  let buyer: Kei
+
+  const bare = () => ({ currency: gold.id, directory })
+
+  beforeEach(async () => {
+    const pair = (await Promise.all([
+      Kei.start({ node, seed: randomSeed(), autoCancelExpired: false, autoReceive: false, shop: bare() }),
+      Kei.start({ node, seed: randomSeed(), autoCancelExpired: false, autoReceive: false, shop: bare() }),
+    ])) as [Kei, Kei]
+    ;[seller, buyer] = pair
+    opened.push(...pair)
+
+    const swords = await game.items.token(sword.id)
+    for (const player of pair) {
+      await game.send(player.address, 100)
+      directory.watch(player.address)
+    }
+    await swords.mint(seller.address, 3)
+    await Promise.all(pair.map((player) => player.sync()))
+  })
+
+  const shelf = async (): Promise<Listing> => {
+    const [listing] = (await buyer.shop.browse({ from: [seller.address] })).listings
+    if (!listing) throw new Error('nothing on the shelf')
+    return listing
+  }
+
+  test('a listing is titled with the item\'s on-chain name and keyed by its symbol', async () => {
+    await seller.shop.list({ item: sword.id, qty: 3, price: 9 })
+    const listing = await shelf()
+
+    expect(listing.title).toBe('Iron Sword')
+    expect(listing.key).toBe(itemSymbolFor('Iron Sword'))
+    expect(listing.asset).toMatch(/^[0-9A-F]{64}$/)
+  })
+
+  test('the refusal a buyer reads names the item rather than its id', async () => {
+    await seller.shop.list({ item: sword.id, qty: 3, price: 9 })
+    const listing = await shelf()
+
+    // This wallet holds no gold at all.
+    const thrown = await buyer.shop
+      .buy(listing)
+      .then(() => undefined, (error: unknown) => error as { code?: string; message: string })
+    expect(thrown?.code).toBe('insufficient-balance')
+    expect(thrown?.message).toContain('Iron Sword')
+    expect(thrown?.message).not.toMatch(/[0-9A-F]{64}/)
+  })
+
+  test('a purchase taken by hash still names what was bought', async () => {
+    await gold.mint(buyer.address, 50)
+    await buyer.sync()
+    await seller.shop.list({ item: sword.id, qty: 3, price: 9 })
+    const listing = await shelf()
+
+    // By hash, so the purchase is described from the settlement rather than
+    // copied off the listing the buyer was shown.
+    const purchase = await buyer.shop.buy(listing.hash)
+    expect(purchase.listing.title).toBe('Iron Sword')
+    expect(purchase.received.title).toBe('Iron Sword')
+    expect(purchase.received.key).toBe(itemSymbolFor('Iron Sword'))
+  })
+
+  test('no sentence this shop throws is a 64-hex asset id', async () => {
+    const sentences: string[] = []
+    const record = async (job: Promise<unknown>): Promise<void> => {
+      await job.then(
+        () => {
+          throw new Error('should have refused')
+        },
+        (error: unknown) => {
+          sentences.push((error as Error).message)
+        },
+      )
+    }
+
+    await record(seller.shop.list({ item: sword.id, qty: 99, price: 9 }))
+    await record(seller.shop.list({ item: sword.id, qty: 1.5, price: 9 }))
+    await record(seller.shop.list({ item: sword.id, qty: 2, each: 4, price: 9 }))
+    await record(seller.shop.gift({ to: buyer.address, item: sword.id, amount: 99 }))
+
+    expect(sentences).toHaveLength(4)
+    for (const sentence of sentences) {
+      expect(sentence).toContain('Iron Sword')
+      expect(sentence).not.toMatch(/[0-9A-F]{64}/)
+    }
+  })
+
+  test('a declared title still wins over the chain\'s name', async () => {
+    await seller.shop.list({ item: sword.id, qty: 3, price: 9 })
+    const dressed = await Kei.start({
+      node,
+      seed: randomSeed(),
+      shop: { currency: gold.id, directory, catalogue: [{ key: 'blade', asset: sword.id, title: 'Alice\'s Blade' }] },
+    })
+    opened.push(dressed)
+
+    const [listing] = (await dressed.shop.browse({ from: [seller.address] })).listings
+    expect(listing?.title).toBe('Alice\'s Blade')
+    expect(listing?.key).toBe('blade')
   })
 })
