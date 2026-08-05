@@ -103,7 +103,16 @@ await gems.balanceOf(playerAddress)   // 500 — one call
 ```
 
 Issuing is idempotent per (issuer, symbol): asset ids are derived, so calling
-`issue()` again returns the token you already have.
+`issue()` again returns the token you already have, writing no block and burning
+no Kei.
+
+Idempotent, not indifferent. Issuance parameters are immutable, so `issue()`
+compares every argument you passed against the token on chain and refuses if any
+of them disagree, naming the field, what the chain says, and what you asked for.
+Tightening `transfer: 'open'` to `'issuer-only'` in your source and redeploying
+is an error, not a success that changes nothing. Arguments you leave out are not
+compared — omitting `transfer` is not asking for `'open'` — and `rate` is your
+desk's own price, never on chain, so it is free to change.
 
 **`transfer` is the only real mechanism for a closed economy.** `open` means a
 permissionless market can and eventually will appear, whatever you would prefer.

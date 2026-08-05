@@ -1,5 +1,6 @@
 export { issueToken, readToken, wrapIssuerToken } from './tokens.js'
 export type {
+  IssuanceField,
   IssueOptions,
   IssuerToken,
   PlayerToken,

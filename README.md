@@ -112,7 +112,16 @@ await gems.balanceOf(playerAddress)   // 500 — one call
 ```
 
 Issuing is idempotent per (issuer, symbol): asset ids are derived, so calling
-`issue()` again returns the token you already have.
+`issue()` again returns the token you already have, writing no block and burning
+no Kei.
+
+Idempotent, not indifferent. Issuance parameters are immutable, so `issue()`
+compares every argument you passed against the token on chain and refuses if any
+of them disagree, naming the field, what the chain says, and what you asked for.
+Tightening `transfer: 'open'` to `'issuer-only'` in your source and redeploying
+is an error, not a success that changes nothing. Arguments you leave out are not
+compared — omitting `transfer` is not asking for `'open'` — and `rate` is your
+desk's own price, never on chain, so it is free to change.
 
 **`transfer` is the only real mechanism for a closed economy.** `open` means a
 permissionless market can and eventually will appear, whatever you would prefer.
@@ -183,8 +192,8 @@ Reusing that asset only helps if it has room, so **a roll is as plentiful as the
 item it varies.** `create` defaults to a supply of 1 — genuinely unique, and one
 Flaming Iron Sword is then all there will ever be — so give the base item a
 supply if many players are meant to hold rolls of it, as above. Supply is fixed
-at a roll's first mint: issuance is idempotent, so raising it afterwards does
-nothing.
+at a roll's first issuance: issuance metadata is immutable, so raising it
+afterwards is refused rather than ignored.
 
 ## A thousand loot drops, one block
 
