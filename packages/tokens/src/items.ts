@@ -137,20 +137,31 @@ export interface PlayerItemsApi {
 }
 
 /**
- * A symbol from a name: slug, truncated, plus a short digest of the full name so
- * two long names that share a prefix do not collide into one asset id.
+ * A symbol from a name: a readable stub, plus a digest of the full name to
+ * separate names the stub cannot.
+ *
+ * The stub is only the first few characters, and a themed catalogue collapses
+ * onto shared prefixes straight away — "Greatsword of Flame" and "Greatsword of
+ * Frost" are one stub — so inside a family the whole separation is the digest.
+ * 20 characters is the node's max_symbol: 7 of stub, a hyphen, and 6 bytes of
+ * digest. 48 bits over a game's catalogue of item names, not over the world;
+ * `statSymbolFor` states the same budget for the same reason.
+ *
+ * That is a bound, not a guarantee: `items.create()` refuses an asset whose name
+ * is not the one it was asked to create, so a collision from here or from a
+ * reused explicit `symbol` is a sentence rather than the wrong sword.
  */
 export function itemSymbolFor(name: string): string {
   const text = String(name ?? '').trim()
   if (text === '') fail('bad-name', 'An item needs a name — that is what its symbol is derived from.')
-  const slug = text
+  const stub = text
     .toUpperCase()
     .replace(/[^A-Z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 12)
+    .slice(0, 7)
     .replace(/-+$/g, '')
-  const digest = bytesToHex(blake2b(utf8(text), 2))
-  return `${slug === '' ? 'ITEM' : slug}-${digest}`
+  const digest = bytesToHex(blake2b(utf8(text), 6))
+  return `${stub === '' ? 'ITEM' : stub}-${digest}`
 }
 
 function itemFrom(info: AssetRecord): Item {
@@ -320,6 +331,17 @@ export function createIssuerItems(client: KeiClient, options: ItemsOptions = {})
       // token that already existed keeps whatever it was created as.
       const info = await client.node.assetInfo(token.id)
       if (!info) fail('issue-failed', `${symbol} was published but cannot be read back.`)
+      // Issuance is idempotent per (issuer, symbol), so this may be an asset that
+      // already existed — and no digest width makes that impossible, because
+      // `symbol` can also be passed explicitly. Metadata is immutable (SPEC §7),
+      // so the only useful moment to notice is now, before anything is minted
+      // against a supply the two items would be sharing.
+      if (info.name !== create.name) {
+        fail(
+          'item-name-mismatch',
+          `${symbol} on this account is already "${info.name}", and you asked to create "${create.name}". Asset ids are derived from (issuer, symbol) (SPEC §5.6.1), so these two would be one asset with one shared supply, and issuance metadata is immutable so it cannot be repaired after a mint. Pass items.create({ symbol: '...' }) to give this one a symbol of its own, or rename it.`,
+        )
+      }
       return itemFrom(info)
     },
 
