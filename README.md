@@ -145,7 +145,7 @@ second code path, and no indexer.
 const sword = await game.items.create({
   name: 'Sword of Testing',
   description: 'It tests things.',
-  image: './sword.png',
+  image: './sword.png',   // a path that exists, image bytes, a CID, or a URL
 })
 
 await game.items.mint(sword.id, playerAddress)
