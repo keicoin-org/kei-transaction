@@ -231,27 +231,29 @@ function assertIssuanceMatches(
   options: IssueOptions,
   defaulted: readonly IssuanceField[],
 ): void {
-  const asked = (field: IssuanceField): boolean =>
-    options[field] !== undefined && !defaulted.includes(field)
+  // A type predicate so each branch below narrows its own option away from
+  // `undefined` rather than asserting it.
+  const asked = <T>(field: IssuanceField, value: T | undefined): value is T =>
+    value !== undefined && !defaulted.includes(field)
   const differs: Array<{ field: IssuanceField; stored: string; wanted: string }> = []
   const note = (field: IssuanceField, stored: string, wanted: string): void => {
     differs.push({ field, stored, wanted })
   }
 
-  if (asked('name') && options.name !== existing.name) {
+  if (asked('name', options.name) && options.name !== existing.name) {
     note('name', quoted(existing.name), quoted(options.name))
   }
-  if (asked('decimals') && options.decimals !== existing.decimals) {
+  if (asked('decimals', options.decimals) && options.decimals !== existing.decimals) {
     note('decimals', String(existing.decimals), String(options.decimals))
   }
-  if (asked('maxSupply')) {
+  if (asked('maxSupply', options.maxSupply)) {
     // A cap is stated in whole units and stored raw, so the comparison is
     // BigInt: at 18 decimals a `number` cannot even hold the difference. The
     // scale is the caller's own `decimals` when they passed one — that is what
     // their cap means — and otherwise the chain's, because a caller who omitted
     // `decimals` did not ask for zero of them.
     const scale = options.decimals ?? existing.decimals
-    const wanted = toRaw(options.maxSupply as number | string, scale, 'maxSupply')
+    const wanted = toRaw(options.maxSupply, scale, 'maxSupply')
     const stored = existing.maxSupply === null ? null : BigInt(existing.maxSupply)
     if (stored === null || stored !== wanted) {
       note(
@@ -261,20 +263,20 @@ function assertIssuanceMatches(
       )
     }
   }
-  if (asked('transfer') && options.transfer !== existing.transfer) {
-    note('transfer', quoted(existing.transfer), quoted(options.transfer as string))
+  if (asked('transfer', options.transfer) && options.transfer !== existing.transfer) {
+    note('transfer', quoted(existing.transfer), quoted(options.transfer))
   }
-  if (asked('swap') && options.swap !== existing.swap) {
-    note('swap', quoted(existing.swap), quoted(options.swap as string))
+  if (asked('swap', options.swap) && options.swap !== existing.swap) {
+    note('swap', quoted(existing.swap), quoted(options.swap))
   }
-  if (asked('description') && options.description !== existing.description) {
-    note('description', unsetOr(existing.description), quoted(options.description as string))
+  if (asked('description', options.description) && options.description !== existing.description) {
+    note('description', unsetOr(existing.description), quoted(options.description))
   }
-  if (asked('image') && options.image !== existing.image) {
-    note('image', unsetOr(existing.image), quoted(options.image as string))
+  if (asked('image', options.image) && options.image !== existing.image) {
+    note('image', unsetOr(existing.image), quoted(options.image))
   }
-  if (asked('kind') && options.kind !== existing.kind) {
-    note('kind', unsetOr(existing.kind), quoted(options.kind as string))
+  if (asked('kind', options.kind) && options.kind !== existing.kind) {
+    note('kind', unsetOr(existing.kind), quoted(options.kind))
   }
 
   if (differs.length === 0) return
