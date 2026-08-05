@@ -11,8 +11,8 @@
  * press "claim" for every sword will hate it (SPEC §5.5, cost 3).
  */
 
-import type { AssetId, KeiClient } from '@keicoin/core'
-import { assertRoot, blake2b, bytesToHex, fail, fromRaw, isHex, utf8 } from '@keicoin/core'
+import type { AssetId, AssetInfo, KeiClient } from '@keicoin/core'
+import { KeiError, assertRoot, blake2b, bytesToHex, fail, formatRaw, fromRaw, isHex, utf8 } from '@keicoin/core'
 
 import type { ClaimBundle } from './tree.js'
 import {
@@ -550,17 +550,56 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
     }
   }
 
+  /**
+   * The refusal a player gets when the asset has no room for their entitlement.
+   *
+   * A claim mints, so the ledger refuses it for the same reason it refuses a
+   * mint past `maxSupply`, and says so in the issuer's words: burn some first.
+   * The player holds none of it to burn and did not publish the root, so that is
+   * an error stating a fix only somebody else can perform, which SPEC §6.1 says
+   * is worse than a bare code. The shortfall is re-derived from the asset rather
+   * than read out of the node's wording, because the code does not survive the
+   * HTTP node — everything it refuses arrives as one `node-error`.
+   */
+  const unpayable = async (bundle: ClaimBundle, error: unknown): Promise<unknown> => {
+    if (!(error instanceof KeiError)) return error
+    if (error.code !== 'over-max-supply' && error.code !== 'node-error') return error
+    let fetched: AssetInfo | null
+    try {
+      fetched = await client.assetInfo(bundle.asset)
+    } catch {
+      return error
+    }
+    const cap = fetched?.maxSupply
+    if (!fetched || cap === null || cap === undefined) return error
+    const info = fetched
+    const amount = BigInt(bundle.amount)
+    const maxSupply = BigInt(cap)
+    const circulating = BigInt(info.circulating)
+    if (circulating + amount <= maxSupply) return error
+    const show = (raw: bigint): string => formatRaw(raw, info.decimals)
+    return new KeiError(
+      'drop-unpayable',
+      `This drop owes you ${show(amount)} ${info.name} and cannot pay it: ${info.name} caps circulating supply at ${show(maxSupply)} and ${show(circulating)} already exist, so there is no room to mint yours (SPEC §5.6.6). Nothing on your side settles this — you hold none of it, and the room has to come from whoever issued it. Your proof is kept and claims itself once there is room; tell the game that root ${bundle.root} cannot be paid out.`,
+    )
+  }
+
   const claim = async (input: ClaimBundle): Promise<ClaimResult> => {
     await hydrate()
     const bundle = await retain(validate(input))
     const description = await describe(bundle)
-    const { hash } = await client.submitAsset({
-      kind: 'claim',
-      root: bundle.root,
-      asset: bundle.asset,
-      amount: bundle.amount,
-      proof: bundle.proof,
-    })
+    let hash: string
+    try {
+      ;({ hash } = await client.submitAsset({
+        kind: 'claim',
+        root: bundle.root,
+        asset: bundle.asset,
+        amount: bundle.amount,
+        proof: bundle.proof,
+      }))
+    } catch (error) {
+      throw await unpayable(bundle, error)
+    }
     await removePersisted(bundle.root)
     held.delete(bundle.root)
     return { ...description, hash }

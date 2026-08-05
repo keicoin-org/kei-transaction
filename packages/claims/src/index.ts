@@ -1,5 +1,7 @@
 export { buildCommit } from './tree.js'
 export type { BuildCommitOptions, BuiltCommit, ClaimBundle, CommitEntry } from './tree.js'
+export { assertCommitHeadroom } from './headroom.js'
+export type { CommitHeadroomOptions } from './headroom.js'
 export { createClaims } from './api.js'
 export {
   MAX_CLAIM_AMOUNT_DIGITS,

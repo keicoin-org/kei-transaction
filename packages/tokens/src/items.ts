@@ -10,7 +10,7 @@
  * the same reason `token.issue()` is idempotent per (issuer, symbol).
  */
 
-import type { AssetId, AssetRecord, KeiClient, TransferPolicy } from '@keicoin/core'
+import type { AssetId, AssetInfo, AssetRecord, KeiClient, TransferPolicy } from '@keicoin/core'
 import {
   MAX_ASSETS_PER_ACCOUNT,
   assertAddress,
@@ -21,7 +21,7 @@ import {
   fail,
   utf8,
 } from '@keicoin/core'
-import { buildCommit } from '@keicoin/claims'
+import { assertCommitHeadroom, buildCommit } from '@keicoin/claims'
 import type { BuiltCommit } from '@keicoin/claims'
 
 import { MockIpfsUploader, type ImageSource, type IpfsUploader } from './ipfs.js'
@@ -175,6 +175,25 @@ export function looksLikeItem(info: AssetRecord): boolean {
   if (info.kind === 'item') return true
   if (info.kind === 'token') return false
   return info.decimals === 0 && info.image !== undefined
+}
+
+/**
+ * One entry per player per item, because a root holds one leaf per account
+ * (SPEC §5.5). `buildCommit` would merge the repeat into an entitlement for two
+ * units of a one-unit item, which nobody could claim; repeating a recipient is
+ * far likelier to be a batch assembled twice than a request for two swords.
+ */
+function assertOneLeafPerRecipient(info: AssetInfo, list: readonly { to: string }[]): void {
+  const seen = new Set<string>()
+  for (const entry of list) {
+    if (seen.has(entry.to)) {
+      fail(
+        'duplicate-recipient',
+        `${entry.to} appears twice for ${info.name} in this loot commit, and a root commits to at most one entitlement per account (SPEC §5.5) — the repeat would be merged into the first entry, committing two units to one leaf instead of dropping the item twice. List them once here and again in the next commit.`,
+      )
+    }
+    seen.add(entry.to)
+  }
 }
 
 export interface ItemsOptions {
@@ -341,10 +360,27 @@ export function createIssuerItems(client: KeiClient, options: ItemsOptions = {})
         byAsset.set(asset, list)
       }
 
-      const published: Array<BuiltCommit & { hash: string }> = []
+      // Every asset is checked before any root is signed. A commit is a settled
+      // block that cannot be taken back, so a batch refused on its second item
+      // must not leave the first standing and claimable.
       for (const [asset, list] of byAsset) {
         const info = await client.node.assetInfo(asset)
         if (!info) fail('no-such-item', `No item with id ${asset} exists.`)
+        assertOneLeafPerRecipient(info, list)
+        assertCommitHeadroom({
+          batch: 'This loot commit',
+          asset: info.name,
+          decimals: 0,
+          maxSupplyRaw: info.maxSupply === null ? null : BigInt(info.maxSupply),
+          circulatingRaw: BigInt(info.circulating),
+          committed: BigInt(list.length),
+          fixes:
+            'Commit fewer winners, split them across separate items, or give the item a larger supply — supply is fixed at issuance, so raising it means creating a new item rather than editing this one.',
+        })
+      }
+
+      const published: Array<BuiltCommit & { hash: string }> = []
+      for (const [asset, list] of byAsset) {
         const built = buildCommit({ asset, decimals: 0, entries: list })
         const { hash } = await client.submitAsset({
           kind: 'commit',
