@@ -132,7 +132,8 @@ const sword = await game.items.create({
 
 await game.items.mint(sword.id, playerAddress)
 await kei.items.owner(sword.id)      // 'kei_3abc...'
-await kei.items.ownedBy(address)     // [ item, ... ]
+await kei.items.ownedBy(address)     // [ item, ... ], eight lookups at a time
+await kei.items.ownedBy(address, { limit: 20 })  // first 20 holdings, not first 20 items
 await kei.items.transfer(sword.id, toAddress)   // player-signed
 ```
 

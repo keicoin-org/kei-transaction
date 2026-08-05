@@ -4,7 +4,13 @@
  */
 
 import { beforeEach, describe, expect, test } from 'bun:test'
-import { Kei, randomSeed, type MockNode } from 'kei-transaction'
+import {
+  DEFAULT_ASSET_CONCURRENCY,
+  Kei,
+  randomSeed,
+  type AssetId,
+  type MockNode,
+} from 'kei-transaction'
 
 let node: MockNode
 let game: Kei
@@ -307,5 +313,130 @@ describe('item stats', () => {
       description: 'See\nkei:stats: below.',
       stats: { attack: 3 },
     })
+  })
+})
+
+/**
+ * Issue #112 — `ownedBy()` must not cost one round trip per holding, one after
+ * another, forever.
+ *
+ * The evidence here is counted rather than timed: how many `asset_info` lookups
+ * a call made, and how many of them were outstanding at the same moment. A slow
+ * machine makes these tests slower, never redder. There is no batch `asset_info`
+ * in the node RPC (`docs/rpc.md`), so the fix is the wave count — `ceil(n / 8)`
+ * instead of `n` — and not asking twice.
+ */
+
+/** Hands the turn back so every in-flight lookup has settled. */
+function flush(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+/** The node, plus a tally of the `asset_info` lookups made through it. */
+function counting(inner: MockNode) {
+  const tally = { calls: 0, peak: 0, failOn: null as AssetId | null }
+  let inFlight = 0
+  const node = new Proxy(inner, {
+    get(target, key) {
+      const value = Reflect.get(target, key) as unknown
+      if (key !== 'assetInfo') return typeof value === 'function' ? value.bind(target) : value
+      return async (asset: AssetId) => {
+        tally.calls++
+        inFlight++
+        tally.peak = Math.max(tally.peak, inFlight)
+        try {
+          if (asset === tally.failOn) throw new Error('the node did not answer')
+          return await target.assetInfo(asset)
+        } finally {
+          inFlight--
+        }
+      }
+    },
+  })
+  return {
+    node,
+    tally,
+    reset() {
+      tally.calls = 0
+      tally.peak = 0
+    },
+  }
+}
+
+/** A fresh player holding `count` items, and a tally reset to zero. */
+async function stocked(count: number) {
+  const counted = counting(node)
+  const collector = await Kei.start({ node: counted.node, seed: randomSeed() })
+  const ids: AssetId[] = []
+  for (let index = 0; index < count; index++) {
+    const relic = await game.items.create({ name: `Relic ${index}` })
+    await game.items.mint(relic.id, collector.address)
+    ids.push(relic.id)
+  }
+  await collector.sync()
+  counted.reset()
+  return { collector, counted, ids, names: ids.map((_, index) => `Relic ${index}`) }
+}
+
+describe('ownedBy is bounded, concurrent, and remembers (#112)', () => {
+  test('forty holdings cost forty lookups eight at a time, then none at all', async () => {
+    const { collector, counted, names } = await stocked(40)
+
+    const owned = await collector.items.ownedBy()
+    // Holdings order survives the fan-out: the answer is not completion order.
+    expect(owned.map((item) => item.name)).toEqual(names)
+    expect(counted.tally.calls).toBe(40)
+    expect(counted.tally.peak).toBe(DEFAULT_ASSET_CONCURRENCY)
+
+    // Issuance metadata is immutable (SPEC §5.3, §5.4), so an unchanged account
+    // asked again is free. Holdings themselves are still read fresh.
+    counted.reset()
+    expect((await collector.items.ownedBy()).map((item) => item.name)).toEqual(names)
+    expect(counted.tally.calls).toBe(0)
+    // Forty issuances and forty mints, each with its own proof of work: the
+    // fixture is what is slow here, not the call under test.
+  }, 60_000)
+
+  test('the wallet and items share one cache and one bound', async () => {
+    const { collector, counted, names } = await stocked(12)
+
+    expect((await collector.wallet.summary()).items.map((item) => item.name).sort()).toEqual(
+      [...names].sort(),
+    )
+    expect(counted.tally.calls).toBe(12)
+
+    // The second question is the same question. A second cache would pay again.
+    counted.reset()
+    expect((await collector.items.ownedBy()).map((item) => item.name)).toEqual(names)
+    expect(counted.tally.calls).toBe(0)
+  })
+
+  test('a lookup that fails rejects, rather than quietly shortening the inventory', async () => {
+    const { collector, counted, ids, names } = await stocked(3)
+
+    counted.tally.failOn = ids[1] as AssetId
+    await expect(collector.items.ownedBy()).rejects.toThrow(/did not answer/)
+
+    counted.tally.failOn = null
+    await flush()
+    counted.reset()
+    expect((await collector.items.ownedBy()).map((item) => item.name)).toEqual(names)
+    // The two that answered are remembered; the one that broke is not remembered
+    // as absent, so the call recovers on its own for the cost of one request.
+    expect(counted.tally.calls).toBe(1)
+  })
+
+  test('limit bounds the fan-out, and there is no unlimited setting', async () => {
+    const { collector, counted, names } = await stocked(12)
+
+    const page = await collector.items.ownedBy(undefined, { limit: 5 })
+    expect(page.map((item) => item.name)).toEqual(names.slice(0, 5))
+    expect(counted.tally.calls).toBe(5)
+
+    for (const bad of [0, -1, 1.5, 1_025]) {
+      await expect(collector.items.ownedBy(undefined, { limit: bad })).rejects.toThrow(
+        /whole number from 1 through 1024/,
+      )
+    }
   })
 })

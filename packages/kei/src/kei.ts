@@ -44,6 +44,7 @@ import {
   type ItemCommitEntry,
   type MintedItem,
   type MintItemOptions,
+  type OwnedByOptions,
   type PlayerItemsApi,
   type PlayerToken,
 } from '@keicoin/tokens'
@@ -283,7 +284,11 @@ export class Kei {
     const player = createPlayerItems(client)
     if (client.role === 'issuer') {
       const issuer = createIssuerItems(client, options.uploader ? { uploader: options.uploader } : {})
-      this.items = { ...player, ...issuer, ownedBy: (address?: string) => player.ownedBy(address) }
+      this.items = {
+        ...player,
+        ...issuer,
+        ownedBy: (address?: string, options?: OwnedByOptions) => player.ownedBy(address, options),
+      }
     } else {
       // Async, because these are declared to return promises: a player calling
       // them should get a rejection to catch, not a synchronous throw.

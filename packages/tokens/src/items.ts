@@ -10,8 +10,17 @@
  * the same reason `token.issue()` is idempotent per (issuer, symbol).
  */
 
-import type { AssetId, AssetInfo, KeiClient, TransferPolicy } from '@keicoin/core'
-import { assertAddress, blake2b, bytesToHex, deriveAssetId, fail, utf8 } from '@keicoin/core'
+import type { AssetId, AssetRecord, KeiClient, TransferPolicy } from '@keicoin/core'
+import {
+  MAX_ASSETS_PER_ACCOUNT,
+  assertAddress,
+  assetCacheFor,
+  blake2b,
+  bytesToHex,
+  deriveAssetId,
+  fail,
+  utf8,
+} from '@keicoin/core'
 import { buildCommit } from '@keicoin/claims'
 import type { BuiltCommit } from '@keicoin/claims'
 
@@ -89,6 +98,21 @@ export interface MintedItem {
   stats?: ItemStats
 }
 
+export interface OwnedByOptions {
+  /**
+   * How many of the account's holdings to look at, newest-listed order being
+   * the node's own. It caps the metadata fan-out, not the number of items
+   * returned: whether a holding is an item is only knowable from its metadata,
+   * so `limit: 20` reads twenty holdings and returns however many of them are
+   * items. A whole number from 1 through 1,024 (SPEC §7's per-account cap).
+   *
+   * The node's `account_holdings` takes no count (`docs/rpc.md`), so the
+   * holdings themselves still arrive in one response; this bounds the lookups
+   * that follow, which is where the round trips are.
+   */
+  limit?: number
+}
+
 export interface IssuerItemsApi {
   create(options: CreateItemOptions): Promise<Item>
   /**
@@ -100,14 +124,14 @@ export interface IssuerItemsApi {
   commit(entries: readonly ItemCommitEntry[]): Promise<Array<BuiltCommit & { hash: string }>>
   get(item: AssetId): Promise<Item | null>
   owner(item: AssetId): Promise<string | null>
-  ownedBy(address: string): Promise<Item[]>
+  ownedBy(address: string, options?: OwnedByOptions): Promise<Item[]>
   token(item: AssetId): Promise<IssuerToken>
 }
 
 export interface PlayerItemsApi {
   transfer(item: AssetId, to: string): Promise<{ hash: string; to: string }>
   owner(item: AssetId): Promise<string | null>
-  ownedBy(address?: string): Promise<Item[]>
+  ownedBy(address?: string, options?: OwnedByOptions): Promise<Item[]>
   get(item: AssetId): Promise<Item | null>
 }
 
@@ -128,7 +152,7 @@ export function itemSymbolFor(name: string): string {
   return `${slug === '' ? 'ITEM' : slug}-${digest}`
 }
 
-function itemFrom(info: AssetInfo): Item {
+function itemFrom(info: AssetRecord): Item {
   // The chain has one description field; stats share it (stats.ts). Callers see
   // the two things separately, and `description` stays prose.
   const { description, stats } = decodeDescription(info.description)
@@ -146,7 +170,7 @@ function itemFrom(info: AssetInfo): Item {
 }
 
 /** Items are tokens; this is how the wallet tells a sword from a currency. */
-export function looksLikeItem(info: AssetInfo): boolean {
+export function looksLikeItem(info: AssetRecord): boolean {
   if (info.kind === 'item') return true
   if (info.kind === 'token') return false
   return info.decimals === 0 && info.image !== undefined
@@ -307,7 +331,7 @@ export function createIssuerItems(client: KeiClient, options: ItemsOptions = {})
 
     get: readItem,
     owner: (item) => ownerOf(client, item),
-    ownedBy: (address) => ownedBy(client, address),
+    ownedBy: (address, options) => ownedBy(client, address, options),
 
     async token(item) {
       const info = await client.node.assetInfo(item)
@@ -331,7 +355,7 @@ export function createPlayerItems(client: KeiClient): PlayerItemsApi {
       return { hash, to }
     },
     owner: (item) => ownerOf(client, item),
-    ownedBy: (address) => ownedBy(client, address ?? client.address),
+    ownedBy: (address, options) => ownedBy(client, address ?? client.address, options),
     async get(item) {
       const info = await client.node.assetInfo(item)
       return info ? itemFrom(info) : null
@@ -352,14 +376,45 @@ async function ownerOf(client: KeiClient, item: AssetId): Promise<string | null>
   return (holders[0] as { account: string }).account
 }
 
-async function ownedBy(client: KeiClient, address: string): Promise<Item[]> {
+/**
+ * Every item an account holds, in the order the node listed the holdings.
+ *
+ * The metadata is read through the client's one asset cache
+ * (`assetCacheFor`, `@keicoin/core`), which is the same instance
+ * `wallet.summary()` uses: bounded fan-out instead of a request per holding,
+ * nothing asked twice, and one bound over both packages rather than one each.
+ * There is no batch `asset_info` in the node RPC (`docs/rpc.md`) and this does
+ * not invent one — the win is `ceil(n / 8)` waves instead of `n`.
+ *
+ * A holding whose lookup rejects rejects this call. A short inventory is
+ * indistinguishable from a smaller one, so a broken request is the caller's to
+ * see rather than something to render.
+ */
+async function ownedBy(
+  client: KeiClient,
+  address: string,
+  options: OwnedByOptions = {},
+): Promise<Item[]> {
+  const limit = options.limit === undefined ? undefined : assertLimit(options.limit)
   const holdings = await client.node.holdings(assertAddress(address, 'address'))
+  const wanted = limit === undefined ? holdings : holdings.slice(0, limit)
+  const records = await assetCacheFor(client).resolve(wanted.map((holding) => holding.asset))
   const items: Item[] = []
-  for (const holding of holdings) {
-    const info = await client.node.assetInfo(holding.asset)
-    if (info && looksLikeItem(info)) items.push(itemFrom(info))
+  for (const holding of wanted) {
+    const record = records.get(holding.asset)
+    if (record && looksLikeItem(record)) items.push(itemFrom(record))
   }
   return items
+}
+
+function assertLimit(limit: number): number {
+  if (!Number.isSafeInteger(limit) || limit <= 0 || limit > MAX_ASSETS_PER_ACCOUNT) {
+    fail(
+      'bad-limit',
+      `limit must be a whole number from 1 through ${MAX_ASSETS_PER_ACCOUNT}, not ${String(limit)}. There is deliberately no "unlimited" setting.`,
+    )
+  }
+  return limit
 }
 
 export function deriveItemId(issuerPublicKey: string, name: string): AssetId {
