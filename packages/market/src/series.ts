@@ -292,8 +292,12 @@ function candleBudgetOf(requested: number | undefined): number {
 const MIN_SAFE_TIME = BigInt(Number.MIN_SAFE_INTEGER)
 const MAX_SAFE_TIME = BigInt(Number.MAX_SAFE_INTEGER)
 
-/** A safe bucket start, using mathematical floor rather than truncation toward zero. */
-function candleStartOf(at: number, every: number): number {
+/**
+ * A safe bucket start, using mathematical floor rather than truncation toward
+ * zero. `stored-history.ts` imports it so exact and numeric candles cannot
+ * disagree about which bucket a trade belongs in.
+ */
+export function candleStartOf(at: number, every: number): number {
   if (!Number.isSafeInteger(at)) {
     fail(
       'bad-candle-time',
