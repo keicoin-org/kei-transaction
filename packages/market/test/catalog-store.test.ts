@@ -388,6 +388,18 @@ describe('MarketStore', () => {
 })
 
 describe('account-chain source', () => {
+  test('reports scan budget capability once enabled', async () => {
+    const storage = createMemoryMarketStorage()
+    const catalog = createMarketCatalog({ storage })
+    const ingestor = createAccountChainIngestor({
+      id: 'node-a',
+      provider: { network: 'testnet', async accountSwaps() { return [] } },
+      catalog,
+      store: createMarketStore({ storage }),
+      now: () => 100,
+    })
+    expect(ingestor.capabilities).toMatchObject({ scannedBlockBudget: true })
+  })
   test('materializes a provider window across restart but never calls it complete history', async () => {
     const storage = createMemoryMarketStorage()
     const catalog = createMarketCatalog({ storage })
@@ -509,6 +521,65 @@ describe('account-chain source', () => {
     expect(result.stopReason).toBe('result_limit')
     expect(result.consumed.resultRows).toBe(1)
     expect({ catalogCalls, providerCalls }).toEqual({ catalogCalls: 1, providerCalls: 1 })
+  })
+
+  test('enforces scanned block budget and returns measured scanned count', async () => {
+    const storage = createMemoryMarketStorage()
+    const catalog = createMarketCatalog({ storage })
+    await catalog.announce(announcement(ALICE, '1', 1))
+
+    const source = createAccountChainIngestor({
+      id: 'node-a',
+      provider: {
+        network: 'testnet',
+        async accountSwaps() {
+          return [
+            {
+              hash: 'A'.repeat(64),
+              from: ALICE,
+              asset: SWORD,
+              amount: '1',
+              wantAsset: KEI,
+              wantAmount: '2',
+              counterparty: null,
+              state: 'open',
+              acceptedBy: null,
+              settledBy: null,
+              height: 1,
+              seenAt: 1,
+              settledAt: null,
+            },
+            {
+              hash: 'B'.repeat(64),
+              from: ALICE,
+              asset: SWORD,
+              amount: '2',
+              wantAsset: KEI,
+              wantAmount: '3',
+              counterparty: null,
+              state: 'open',
+              acceptedBy: null,
+              settledBy: null,
+              height: 2,
+              seenAt: 2,
+              settledAt: null,
+            },
+          ]
+        },
+      },
+      catalog,
+      store: createMarketStore({ storage }),
+      now: () => 100,
+    })
+    const result = await source.ingest({ budget: { maxScannedBlocks: 2, maxResultRows: 10 } })
+    expect(result).toMatchObject({
+      stopReason: 'scan_limit',
+      consumed: { resultRows: 2 },
+      sourceBackfill: { scannedBlocks: 2 },
+    })
+    expect(result.consumed.accounts).toBe(1)
+    expect(result.consumed.requests).toBe(1)
+    expect(result.consumed.pages).toBe(1)
   })
 
   test('bad budgets and pre-abort stop before catalog or provider work', async () => {
@@ -633,3 +704,4 @@ test('new errors remain recognizable through isMarketError', () => {
   const error = new KeiError('bad-market-budget', 'bad')
   expect(isMarketError(error, 'bad-market-budget')).toBe(true)
 })
+

@@ -1,5 +1,5 @@
 export { createMarket } from './market.js'
-export type { MarketApi, MarketChart } from './market.js'
+export type { MarketApi, MarketChart, MarketObservedRange, MarketRequestedRange, MarketTime, MarketTicker } from './market.js'
 export { summarise } from './history.js'
 export type { LegMeta, MarketContext } from './history.js'
 export { assetIdOf, durationMs } from './util.js'
@@ -187,6 +187,7 @@ export type {
   OfferOptions,
   OfferState,
   PriceSummary,
+  TradeRange,
   SellOptions,
   Settlement,
   Trade,

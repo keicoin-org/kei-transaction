@@ -51,6 +51,20 @@ export function finiteMarketNumber(value: number, label: string): number {
   return value
 }
 
+export type MarketTimeInput = number | Date
+
+/** Convert a timestamp input into a safe millisecond integer. */
+export function parseMarketTime(input: MarketTimeInput, label: string): number {
+  const value = input instanceof Date ? input.getTime() : input
+  if (!Number.isSafeInteger(value)) {
+    fail(
+      'bad-market-time',
+      `${label} must be a safe whole-number millisecond timestamp, or a valid Date â€” got ${String(input)}.`,
+    )
+  }
+  return value
+}
+
 const DURATION = /^(\d+(?:\.\d+)?)\s*(ms|s|m|h|d|w)$/i
 
 const UNIT_MS: Record<string, number> = {

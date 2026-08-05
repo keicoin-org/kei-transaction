@@ -27,8 +27,8 @@
 
 import { fail, type AssetId, type KeiClient, type SwapOffer } from '@keicoin/core'
 
-import type { Offer, PriceSummary, Trade, TradeOptions } from './types.js'
-import { assetIdOf, durationMs } from './util.js'
+import type { Duration, Offer, PriceSummary, Trade, TradeOptions } from './types.js'
+import { assetIdOf, durationMs, parseMarketTime } from './util.js'
 import {
   accountLimitOf,
   coverageOf,
@@ -57,6 +57,70 @@ export interface MarketContext {
   toOffer(raw: SwapOffer): Promise<Offer>
 }
 
+export interface TradeRange {
+  /** The requested time window, or null when no explicit lower bound was asked. */
+  window: Duration | null
+  /** Requested lower bound of the time window, or null when only an upper bound exists. */
+  from: number | null
+  /** Requested upper bound of the time window. */
+  to: number
+}
+
+export function resolvedTradeRange(options: TradeOptions, now: () => number): TradeRange {
+  const requested = options.range === undefined ? undefined : options.range
+  if (requested !== undefined && requested.to !== undefined && options.asOf !== undefined) {
+    fail('bad-market-time', 'trade history asOf cannot be used with range.to; pass one upper bound.')
+  }
+  if (requested?.window !== undefined && options.window !== undefined) {
+    fail(
+      'bad-duration',
+      'trade history top-level window cannot be mixed with range.window. Use range.window alone.',
+    )
+  }
+  const from = requested?.from === undefined ? undefined : parseMarketTime(requested.from, 'trade history range.from')
+  const to =
+    requested?.to === undefined
+      ? tradeTime(options.asOf, now, 'trade history asOf')
+      : parseMarketTime(requested.to, 'trade history range.to')
+  const window = requested?.window ?? options.window
+  if (requested !== undefined) {
+    if (from !== undefined && window !== undefined) {
+      fail(
+        'bad-duration',
+        'trade history range.from cannot be used with trade range.window or top-level window. Provide one lower bound: range.from, or window/range.window (derived from range.to).',
+      )
+    }
+    if (requested?.to !== undefined && from !== undefined && to < from) {
+      fail('bad-market-time', 'trade history range.from cannot be greater than range.to.')
+    }
+  }
+
+  if (from !== undefined && from > to) {
+    fail('bad-market-time', `trade history range.from (${String(from)}) cannot be after range.to (${String(to)}).`)
+  }
+
+  if (from !== undefined) {
+    return {
+      window: null,
+      from,
+      to,
+    }
+  }
+  if (window === undefined) {
+    return {
+      window: null,
+      from: null,
+      to,
+    }
+  }
+  const milliseconds = durationMs(window, 'trade history window')
+  return {
+    window,
+    from: subtractTime(to, milliseconds),
+    to,
+  }
+}
+
 export async function readTrades(context: MarketContext, options: TradeOptions = {}): Promise<Covered<Trade>> {
   const { client } = context
   const limit = accountLimitOf(options.limit, 'trade history limit')
@@ -65,9 +129,9 @@ export async function readTrades(context: MarketContext, options: TradeOptions =
   // Anchor the requested interval before touching a directory or the network.
   // A slow page must not move either edge of the range, and rows observed after
   // the caller's advertised `asOf` do not belong in that response.
-  const asOf = tradeTime(options.asOf, () => context.now())
-  const window = options.window === undefined ? undefined : durationMs(options.window, 'window')
-  const since = window === undefined ? undefined : subtractTime(asOf, window)
+  const requested = resolvedTradeRange(options, context.now)
+  const from = requested.from
+  const asOf = requested.to
   const read = {
     signal: options.signal,
     concurrency: options.concurrency,
@@ -104,7 +168,7 @@ export async function readTrades(context: MarketContext, options: TradeOptions =
     // the first-seen observation. A row with neither usable advisory time is
     // still an observed trade: keep it so callers can report the temporal gap
     // instead of turning partial knowledge into an apparently empty window.
-    if (at !== null && (at > asOf || (since !== undefined && at < since))) continue
+    if (at !== null && (at > asOf || (from !== null && at < from))) continue
     matched.push(raw)
   }
 
@@ -131,18 +195,18 @@ export async function readTrades(context: MarketContext, options: TradeOptions =
   return withCoverage(trades, coverage)
 }
 
-function tradeTime(requested: number | undefined, now: () => number): number {
+function tradeTime(requested: number | Date | undefined, now: () => number, label = 'trade history asOf'): number {
   let at: number
   try {
-    at = requested ?? now()
+    at = requested instanceof Date ? requested.getTime() : requested ?? now()
   } catch (error) {
     fail(
       'bad-market-time',
-      `The market clock threw instead of returning a safe whole-number millisecond time: ${error instanceof Error ? error.message : String(error)}.`,
+      `${label} source threw instead of returning a safe whole-number millisecond time: ${error instanceof Error ? error.message : String(error)}.`,
     )
   }
   if (!Number.isSafeInteger(at)) {
-    fail('bad-market-time', `Trade history asOf must be a safe whole-number millisecond time; got ${String(at)}.`)
+    fail('bad-market-time', `${label} must be a safe whole-number millisecond time; got ${String(at)}.`)
   }
   return at
 }
