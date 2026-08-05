@@ -103,6 +103,8 @@ export type {
   Unsubscribe,
 } from './node.js'
 
+export { parseAccountSwaps, parseSwapInfo, parseSwapOffer } from './swaps.js'
+
 export { MAX_ASSETS_PER_ACCOUNT, MockLedger } from './mock/ledger.js'
 export type { LedgerOptions } from './mock/ledger.js'
 export { MockNode } from './mock/node.js'

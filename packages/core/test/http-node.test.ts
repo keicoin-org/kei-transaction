@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { HttpNode, KeiError } from '@keicoin/core'
+import { HttpNode, KeiError, ZERO_ADDRESS } from '@keicoin/core'
 
 interface Call {
   action: string
@@ -105,7 +105,7 @@ describe('HttpNode', () => {
           return {
             offer: {
               hash: 'E'.repeat(64),
-              from: 'kei_1',
+              from: ZERO_ADDRESS,
               asset: 'B'.repeat(64),
               amount: '1',
               wantAsset: '0'.repeat(64),
@@ -153,9 +153,13 @@ describe('HttpNode', () => {
     expect(calls[6]?.body).toEqual({ action: 'account_swaps', account: 'kei_1', count: 100 })
   })
 
-  test('an unknown offer is null, not an error', async () => {
-    const { node } = stubNode(() => ({}))
+  test('an unknown offer is an explicit null, not an absent field', async () => {
+    const { node } = stubNode(() => ({ offer: null }))
     expect(await node.swapOffer('E'.repeat(64))).toBeNull()
+    // An answer that never mentions the offer is a broken answer, and reading
+    // it as "no such offer" is the mistake `swaps.ts` exists to stop.
+    const { node: silent } = stubNode(() => ({}))
+    expect((await refused(silent.swapOffer('E'.repeat(64)))).code).toBe('invalid-node-response')
   })
 
   test('accountSwaps forwards limit and state exactly as asked', async () => {
