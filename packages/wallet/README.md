@@ -86,6 +86,34 @@ kei.wallet.on('change', s => {})
 
 `WalletPanel` is built on this; use it directly if you are drawing your own UI.
 
+## Proving the player controls their address
+
+An address is public, so a game server binding a session to one has to ask for a
+signature rather than take the client's word. The key stays inside the SDK, and
+this works under every `reveal` policy, `never` included — proving control is
+what a wallet does with its key, not something anyone needs its seed for.
+
+```js
+const proof = await kei.wallet.signOwnershipChallenge({
+  domain: 'example.com/my-game/session/v1',   // the asking server's namespace
+  address: kei.address,                       // must be this wallet's own
+  nonce,                                      // server-generated, one use
+  context: { roomId, sessionId },             // bounded, and all of it signed
+})
+// { address, signature, challenge }
+```
+
+The digest signed is derived here from the parsed challenge. A wallet that
+signed a digest it was handed would sign whatever bytes the asker chose, and the
+bytes worth choosing are the hash of a send — so a `hash` sent alongside is
+checked and refused on disagreement, never signed as given. A challenge naming
+another wallet, carrying an unknown field, or arriving as a bare hex string is
+refused with a sentence.
+
+`verifyOwnershipProof` in [`@keicoin/core`](https://www.npmjs.com/package/@keicoin/core)
+is the other half. It needs the address and no key, so the server checking a
+proof does not have to hold a wallet at all.
+
 Games that construct the headless wallet directly can tune immutable asset
 metadata reads without changing mutable summary behavior:
 

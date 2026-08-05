@@ -22,6 +22,42 @@ bun add @keicoin/core     # or npm / pnpm / yarn
 
 `@keicoin/core` depends on nothing else in the tree.
 
+## Checking that a client controls the address it claims
+
+The server half of `kei.wallet.signOwnershipChallenge()`. It needs the address
+and no key, so a game server that holds no Kei wallet can still import it.
+
+```js
+import { createNonceStore, randomChallengeNonce, verifyOwnershipProof } from '@keicoin/core'
+
+const nonces = createNonceStore()             // one use per nonce
+
+const challenge = {
+  domain: 'example.com/my-game/session/v1',   // your namespace, versioned
+  address: claimedAddress,
+  nonce: randomChallengeNonce(),
+  context: { roomId, sessionId },             // bounded, and all of it signed
+}
+
+// ...send the challenge, receive { address, signature, challenge } back...
+
+const ok = await verifyOwnershipProof(proof, { ...challenge, nonces })
+```
+
+It returns `false` for anything a client could have got wrong — bad signature,
+another challenge, an unknown field, a replayed nonce — and never puts the proof
+in an error. It throws only when your own expectation is malformed, which is
+your bug rather than theirs.
+
+A challenge is signed under a fixed `kei-ownership-challenge-v1` domain followed
+by canonical JSON, where a block is hashed under `blake2b-256("kei-block-v1")`
+or `kei-block-local-v0`. So a proof is not a transaction and a transaction is
+not a proof, and your own `domain` is inside the signed JSON rather than in
+front of it, where no value you choose could move those leading bytes. Replay is
+the nonce's job: one per challenge, retired on the first success.
+`createNonceStore` is bounded and per process; a fleet wants one shared store
+implementing `NonceStore`.
+
 ## Atomic mock-ledger rejections
 
 `MockLedger.process()` validates a complete transition before committing it.
