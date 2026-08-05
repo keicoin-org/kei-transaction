@@ -25,6 +25,7 @@ import type {
   SwapState,
   Unsubscribe,
 } from './node.js'
+import { parseAccountSwaps, parseSwapInfo } from './swaps.js'
 
 /** Long enough for a public node paying for DNS, TCP and TLS at once; short enough to be a bound. */
 const DEFAULT_REQUEST_TIMEOUT = 30_000
@@ -300,21 +301,32 @@ export class HttpNode implements KeiNode {
     return result.claimed === true
   }
 
+  /**
+   * The two swap reads are the ones that parse rather than assert.
+   *
+   * Everything else here trusts the shape it is handed, which costs a confusing
+   * stack trace when a node is wrong. These two are the market's read model and
+   * the last authority `accept()` consults before it signs, so they go through
+   * `swaps.ts` — see that file for what a rejected row does to a market read.
+   */
   async swapOffer(hash: string): Promise<SwapOffer | null> {
-    const result = await this.call<{ offer?: SwapOffer | null }>('swap_info', { hash })
-    return result.offer ?? null
+    return parseSwapInfo(await this.call<unknown>('swap_info', { hash }), hash)
   }
 
   async accountSwaps(
     address: string,
     options?: { limit?: number; state?: SwapState },
   ): Promise<SwapOffer[]> {
-    const result = await this.call<{ offers?: SwapOffer[] }>('account_swaps', {
+    const limit = options?.limit ?? 100
+    const result = await this.call<unknown>('account_swaps', {
       account: address,
-      count: options?.limit ?? 100,
+      count: limit,
       ...(options?.state === undefined ? {} : { state: options.state }),
     })
-    return result.offers ?? []
+    return parseAccountSwaps(result, address, {
+      limit,
+      ...(options?.state === undefined ? {} : { state: options.state }),
+    })
   }
 
   /**

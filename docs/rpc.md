@@ -355,6 +355,38 @@ also how price history is read: a settled offer *is* a trade, so
 `{ "state": "accepted" }` against the chains you name is the whole of
 `@keicoin/market`'s `trades()`.
 
+### These two answers are parsed, not assumed
+
+`HttpNode` checks every `swap_info` and `account_swaps` answer at runtime before
+anything reads it, because a swap row is the market's read model and the last
+thing `accept()` consults before it signs. Both actions go through one parser
+(`@keicoin/core`'s `parseSwapOffer`), so a row cannot be valid through one and
+invalid through the other. It requires:
+
+- an answer object carrying its field — `offer` present and either an object or
+  an explicit `null`, `offers` present and an actual array no longer than the
+  `count` that was asked for. An answer with no `offers` in it is a broken
+  answer, not an empty chain;
+- 64 hex characters for `hash`, `asset`, `wantAsset` and `settledBy`, canonical
+  addresses for `from`, `counterparty` and `acceptedBy`, positive canonical raw
+  integer strings for `amount` and `wantAmount`, `state` exactly one of the
+  three, and whole numbers for `height`, `expiresAt`, `seenAt` and `settledAt`;
+- the settlement fields to agree with `state`: an open offer has none of them,
+  an accepted one has all three, a cancelled one has everything but an accepter;
+- the answer to be to the question asked — `offer.hash` equal to the requested
+  hash, every row written by the requested account, and every row in the
+  requested state when one was named.
+
+Anything else is one `KeiError('invalid-node-response')` naming the action, the
+row's index and the field. The row itself is never repeated back (SPEC §6.6),
+and no part of that answer is used. A multi-account market read turns the
+refusal into a `coverage.failed` entry for the one account and keeps the others;
+a direct read fails closed. Fields this SDK does not know about are dropped
+rather than carried, so a structurally valid row is a row with a trustworthy
+*shape* and nothing more — there is no confirmation or finality metadata on this
+wire yet (keicoin-org/kei-node#27), and `seenAt`/`settledAt` are not a substitute
+for one.
+
 ## Subscriptions
 
 `HttpNode` polls `accounts_receivable` on an interval, because a plain RPC node
