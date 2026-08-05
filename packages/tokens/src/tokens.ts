@@ -40,6 +40,25 @@ export interface IssueOptions {
   kind?: 'token' | 'item'
 }
 
+/**
+ * Every `IssueOptions` field the chain stores, and so every field a re-issue can
+ * contradict.
+ *
+ * `symbol` is absent because it is the identity being looked up rather than a
+ * property of it, and `rate` because it is issuer configuration that never
+ * reaches a block (SPEC §5.4) — changing your desk's price is not a re-issue.
+ * Those two are the whole of what `issue()` does not compare.
+ */
+export type IssuanceField =
+  | 'name'
+  | 'decimals'
+  | 'maxSupply'
+  | 'transfer'
+  | 'swap'
+  | 'description'
+  | 'image'
+  | 'kind'
+
 export interface TokenFacts {
   id: AssetId
   name: string
@@ -123,8 +142,26 @@ function factsOf(info: AssetInfo): TokenFacts {
  * paying for another one (SPEC §5.6.1, §6.7). That matters more than it used to:
  * the nth asset an account issues burns n Kei, so a duplicate would not merely
  * cost again, it would cost more.
+ *
+ * Idempotent, not indifferent. Issuance parameters are immutable (SPEC §5.4,
+ * §7), so reusing the stored asset is only honest when the stored asset is the
+ * one being asked for. Every field the caller actually passed is compared
+ * against the chain first, and a difference is refused with the field named —
+ * because the developer's source file is the only place the intent exists, and
+ * this is the one call that can see both it and the ledger.
+ *
+ * `defaulted` names fields in `options` that a layer above resolved from its own
+ * defaults rather than from something the caller asked for. `items.create()`
+ * turns an omitted `supply` into `maxSupply: 1`; that is the items API's
+ * default, not the game's request, so an item stored with a larger supply is
+ * reuse rather than a contradiction. Fields the caller genuinely omitted are
+ * simply absent from `options` and are never compared.
  */
-export async function issueToken(client: KeiClient, options: IssueOptions): Promise<IssuerToken> {
+export async function issueToken(
+  client: KeiClient,
+  options: IssueOptions,
+  defaulted: readonly IssuanceField[] = [],
+): Promise<IssuerToken> {
   if (client.role !== 'issuer') {
     fail(
       'not-issuer-context',
@@ -134,7 +171,10 @@ export async function issueToken(client: KeiClient, options: IssueOptions): Prom
   const symbol = normalizeSymbol(options.symbol)
   const decimals = options.decimals ?? 0
   const existing = await client.node.assetInfo(deriveAssetId(client.publicKey, symbol))
-  if (existing) return wrapIssuerToken(client, existing, options.rate)
+  if (existing) {
+    assertIssuanceMatches(existing, options, defaulted)
+    return wrapIssuerToken(client, existing, options.rate)
+  }
 
   // The nth asset an account issues burns n Kei (SPEC §5.6.5), so the price of
   // this one depends on how many came before it. The node is the only thing
@@ -175,6 +215,91 @@ export async function issueToken(client: KeiClient, options: IssueOptions): Prom
   const info = await client.node.assetInfo(deriveAssetId(client.publicKey, symbol))
   if (!info) fail('issue-failed', `${symbol} was published but cannot be read back. This is a node bug.`)
   return wrapIssuerToken(client, info, options.rate)
+}
+
+/**
+ * Refuse a re-issue that contradicts the asset already stored at this symbol.
+ *
+ * Nothing here writes a block, so the refusal costs nothing and changes nothing;
+ * it exists so that "you asked for X and the chain says Y" is a sentence rather
+ * than a shrug. Every mismatch is reported at once, because a developer whose
+ * source has drifted from the chain usually has more than one field to hear
+ * about.
+ */
+function assertIssuanceMatches(
+  existing: AssetInfo,
+  options: IssueOptions,
+  defaulted: readonly IssuanceField[],
+): void {
+  // A type predicate so each branch below narrows its own option away from
+  // `undefined` rather than asserting it.
+  const asked = <T>(field: IssuanceField, value: T | undefined): value is T =>
+    value !== undefined && !defaulted.includes(field)
+  const differs: Array<{ field: IssuanceField; stored: string; wanted: string }> = []
+  const note = (field: IssuanceField, stored: string, wanted: string): void => {
+    differs.push({ field, stored, wanted })
+  }
+
+  if (asked('name', options.name) && options.name !== existing.name) {
+    note('name', quoted(existing.name), quoted(options.name))
+  }
+  if (asked('decimals', options.decimals) && options.decimals !== existing.decimals) {
+    note('decimals', String(existing.decimals), String(options.decimals))
+  }
+  if (asked('maxSupply', options.maxSupply)) {
+    // A cap is stated in whole units and stored raw, so the comparison is
+    // BigInt: at 18 decimals a `number` cannot even hold the difference. The
+    // scale is the caller's own `decimals` when they passed one — that is what
+    // their cap means — and otherwise the chain's, because a caller who omitted
+    // `decimals` did not ask for zero of them.
+    const scale = options.decimals ?? existing.decimals
+    const wanted = toRaw(options.maxSupply, scale, 'maxSupply')
+    const stored = existing.maxSupply === null ? null : BigInt(existing.maxSupply)
+    if (stored === null || stored !== wanted) {
+      note(
+        'maxSupply',
+        stored === null ? 'uncapped' : formatRaw(stored, existing.decimals),
+        formatRaw(wanted, scale),
+      )
+    }
+  }
+  if (asked('transfer', options.transfer) && options.transfer !== existing.transfer) {
+    note('transfer', quoted(existing.transfer), quoted(options.transfer))
+  }
+  if (asked('swap', options.swap) && options.swap !== existing.swap) {
+    note('swap', quoted(existing.swap), quoted(options.swap))
+  }
+  if (asked('description', options.description) && options.description !== existing.description) {
+    note('description', unsetOr(existing.description), quoted(options.description))
+  }
+  if (asked('image', options.image) && options.image !== existing.image) {
+    note('image', unsetOr(existing.image), quoted(options.image))
+  }
+  if (asked('kind', options.kind) && options.kind !== existing.kind) {
+    note('kind', unsetOr(existing.kind), quoted(options.kind))
+  }
+
+  if (differs.length === 0) return
+  const clauses = differs
+    .map((one) => `${one.field} is ${one.stored} and you asked for ${one.wanted}`)
+    .join('; ')
+  const drop =
+    differs.length === 1
+      ? `the '${(differs[0] as { field: IssuanceField }).field}' argument`
+      : `those arguments (${differs.map((one) => one.field).join(', ')})`
+  fail(
+    'issuance-mismatch',
+    `${existing.symbol} already exists on this account and does not match what you asked for: ${clauses}. Issuance parameters are immutable (SPEC §5.4, §7) — a token's policy and metadata cannot be changed after the fact, and nothing was written just now. Issue this under a new symbol, or drop ${drop} to accept ${existing.symbol} as it stands.`,
+  )
+}
+
+function quoted(value: string): string {
+  return `'${value}'`
+}
+
+/** The chain stores no empty metadata, so "absent" and "empty" are one state. */
+function unsetOr(value: string | undefined): string {
+  return value === undefined ? 'unset' : quoted(value)
 }
 
 export function wrapIssuerToken(client: KeiClient, info: AssetInfo, rate?: number): IssuerToken {
