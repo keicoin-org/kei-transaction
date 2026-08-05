@@ -24,6 +24,10 @@ import process from 'node:process'
 // anything but the reviewed public registry.
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
 
+// The one build command every publishable package must run on prepack. Declared
+// here so the check and the nine manifests cannot drift apart.
+const PREPACK = 'tsc --build --force'
+
 const repositoryRoot = fileURLToPath(new URL('../', import.meta.url))
 const packagesDirectory = join(repositoryRoot, 'packages')
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
@@ -81,9 +85,19 @@ for (const entry of entries) {
   // A package whose exports point into dist/ can only satisfy them if something
   // builds dist/, and `dist/` is gitignored. The hook is the mechanism; a
   // convention that everyone remembers to run publish.sh is not.
-  if (manifest.scripts?.prepack !== 'tsc --build') {
+  //
+  // --force is not decoration. `tsc --build` is incremental against
+  // tsconfig.tsbuildinfo, which is gitignored alongside dist/ but survives in a
+  // working tree — so a tree whose build info is newer than a dist/ that was
+  // removed or left half-written is judged up to date, emits nothing, and packs
+  // the src-only tarball this hook exists to prevent. That state is reachable:
+  // this checkout was carrying a dist/market.js from the previous day with no
+  // `ticker()` in it, a method its source has exported since #122. Publishing
+  // is irreversible, so the hook rebuilds rather than trusting a cache to
+  // describe a directory it never looks at.
+  if (manifest.scripts?.prepack !== PREPACK) {
     throw new Error(
-      `${manifest.name} must declare scripts.prepack as "tsc --build" so a bare npm publish cannot ship an unbuilt tarball`,
+      `${manifest.name} must declare scripts.prepack as "${PREPACK}" so a bare npm publish cannot ship an unbuilt tarball`,
     )
   }
 
