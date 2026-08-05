@@ -168,6 +168,33 @@ function validate(bundle: ClaimBundle): ClaimBundle {
   }
 }
 
+/**
+ * Whose problem the missing headroom is, given what the claimant holds.
+ *
+ * Burning frees headroom one raw unit for one and is the holder's own block
+ * (SPEC §5.6.6), so a claimant with a balance has a fix of their own and must be
+ * told it. `holds` is null when the balance could not be read, in which case this
+ * says what frees room without asserting who has to do it — the one thing it must
+ * never do is claim the reader holds none when nobody checked.
+ */
+function yourShare(
+  info: AssetInfo,
+  holds: bigint | null,
+  needed: bigint,
+  show: (raw: bigint) => string,
+): string {
+  if (holds === null) {
+    return `Burning ${info.name} frees headroom one unit at a time and is the holder's own block, not the issuer's (SPEC §5.6.6), but your balance could not be read just now — so whether ${show(needed)} of the room can come from you is unresolved.`
+  }
+  if (holds === 0n) {
+    return `Nothing on your side settles this — you hold none of it, and the room has to come from whoever issued it or from the accounts that do.`
+  }
+  if (holds >= needed) {
+    return `You can settle this yourself: you hold ${show(holds)} ${info.name} and burning ${show(needed)} of it frees exactly the room this claim needs. Burning is your own block, not the issuer's (SPEC §5.6.6).`
+  }
+  return `You hold ${show(holds)} ${info.name}, and burning all of it frees that much of the ${show(needed)} this claim needs — the remainder has to come from other holders or from whoever issued it. Burning is your own block, not the issuer's (SPEC §5.6.6).`
+}
+
 export function createClaims(client: KeiClient, options: ClaimsOptions = {}): DurableClaimsApi {
   const autoClaim = options.autoClaim !== false
   const store = options.store ?? createMemoryClaimStore()
@@ -555,11 +582,20 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
    *
    * A claim mints, so the ledger refuses it for the same reason it refuses a
    * mint past `maxSupply`, and says so in the issuer's words: burn some first.
-   * The player holds none of it to burn and did not publish the root, so that is
-   * an error stating a fix only somebody else can perform, which SPEC §6.1 says
-   * is worse than a bare code. The shortfall is re-derived from the asset rather
-   * than read out of the node's wording, because the code does not survive the
-   * HTTP node — everything it refuses arrives as one `node-error`.
+   * Whether that fix is the player's to perform depends on whether they hold any
+   * of the asset, so this reads their balance rather than assuming. Burning is
+   * the holder's own block and not the issuer's (SPEC §5.6.6), and it is the only
+   * way a capped supply gets headroom back — so for a capped currency near its
+   * cap, where most claimants do hold a balance, telling them the room has to
+   * come from the issuer is false and points at the wrong party. `economy` builds
+   * drop roots for every asset shape and `kei.ts` wires this one `claim()` behind
+   * all of them, so the message cannot assume the item case. An error stating a
+   * fix only somebody else can perform is worse than a bare code (SPEC §6.1),
+   * and so is one that denies a fix the reader could actually apply.
+   *
+   * The shortfall is re-derived from the asset rather than read out of the node's
+   * wording, because the code does not survive the HTTP node — everything it
+   * refuses arrives as one `node-error`.
    */
   const unpayable = async (bundle: ClaimBundle, error: unknown): Promise<unknown> => {
     if (!(error instanceof KeiError)) return error
@@ -578,9 +614,17 @@ export function createClaims(client: KeiClient, options: ClaimsOptions = {}): Du
     const circulating = BigInt(info.circulating)
     if (circulating + amount <= maxSupply) return error
     const show = (raw: bigint): string => formatRaw(raw, info.decimals)
+    // Raw units throughout: a balance near a 128-bit cap is not a `number`.
+    const needed = circulating + amount - maxSupply
+    let holds: bigint | null
+    try {
+      holds = BigInt(await client.node.holderBalance(bundle.asset, client.address))
+    } catch {
+      holds = null
+    }
     return new KeiError(
       'drop-unpayable',
-      `This drop owes you ${show(amount)} ${info.name} and cannot pay it: ${info.name} caps circulating supply at ${show(maxSupply)} and ${show(circulating)} already exist, so there is no room to mint yours (SPEC §5.6.6). Nothing on your side settles this — you hold none of it, and the room has to come from whoever issued it. Your proof is kept and claims itself once there is room; tell the game that root ${bundle.root} cannot be paid out.`,
+      `This drop owes you ${show(amount)} ${info.name} and cannot pay it: ${info.name} caps circulating supply at ${show(maxSupply)} and ${show(circulating)} already exist, so there is no room to mint yours (SPEC §5.6.6). ${yourShare(info, holds, needed, show)} Your proof is kept and claims itself once there is room; tell the game that root ${bundle.root} cannot be paid out.`,
     )
   }
 
