@@ -212,14 +212,14 @@ const TIME_NOTE =
  */
 export function createStoredHistory(options: StoredHistoryOptions): StoredHistoryApi {
   if (typeof options !== 'object' || options === null) {
-    fail('bad-account-source', 'Stored history needs { store, network, base, quote, assets }.')
+    fail('bad-market-source', 'Stored history needs { store, network, base, quote, assets }.')
   }
   const store = options.store
   if (!store || typeof store.trades !== 'function') {
-    fail('bad-account-source', 'Stored history needs a MarketStore with trades(); see createMarketStore.')
+    fail('bad-market-source', 'Stored history needs a MarketStore with trades(); see createMarketStore.')
   }
   if (typeof options.assets !== 'function') {
-    fail('bad-asset', 'Stored history needs an assets(id) lookup so a price is labelled with the asset the chain named, not a 64-hex id.')
+    fail('bad-asset-metadata', 'Stored history needs an assets(id) lookup so a price is labelled with the asset the chain named, not a 64-hex id.')
   }
   const base = assetIdOf(options.base)
   const quote = assetIdOf(options.quote)

@@ -808,7 +808,7 @@ export function createMarket(client: KeiClient, options: MarketOptions = {}): Ma
     instrument: instrumentFactory.instrument,
     stored(storedOptions) {
       if (!storedOptions || storedOptions.store === undefined || storedOptions.store === null) {
-        fail('no-accounts', 'market.stored() needs { store }: the exact history is read from what an ingestor materialized, not from a live walk.')
+        fail('bad-market-source', 'market.stored() needs { store }: the exact history is read from what an ingestor materialized, not from a live walk.')
       }
       return createStoredHistory({
         store: storedOptions.store,
