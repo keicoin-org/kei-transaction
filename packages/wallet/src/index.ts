@@ -14,6 +14,13 @@
  * however many panels are listening, because the alternative — a full summary
  * per update per listener — is how a busy wallet turns one arrival into a burst
  * of requests and then renders them in whatever order they happened to finish.
+ *
+ * One thing here is about what the caller gets back. `holdings` is what an
+ * account can spend, and its own open offer holds its asset outside that
+ * (SPEC §9.2), so a summary built on `holdings` alone answers "you have no
+ * sword" to a player who listed one and can cancel it back at any time.
+ * `locked` is the other half of that answer, and the two together are what the
+ * account owns.
  */
 
 import type {
@@ -22,7 +29,7 @@ import type {
   OwnershipChallengeMessage,
   OwnershipProof,
 } from '@keicoin/core'
-import { KEI_DECIMALS, assetCacheFor, fail, fromRaw } from '@keicoin/core'
+import { KEI_ASSET, KEI_DECIMALS, assetCacheFor, fail, fromRaw, toRaw } from '@keicoin/core'
 import type { ItemStats } from '@keicoin/tokens'
 import type { ClaimsApi, PendingClaim } from '@keicoin/claims'
 import {
@@ -53,26 +60,108 @@ export interface ItemHolding {
   stats?: ItemStats
 }
 
+/**
+ * Something this account owns and cannot spend right now.
+ *
+ * Owned and spendable are two different questions, and `swap_offer` is where
+ * they come apart: the offerer's own asset moves into the lock, so it leaves
+ * `holdings` while it is still theirs and still recoverable by their own
+ * `swap_cancel` (SPEC §9.2). `tokens` and `items` answer "what can this account
+ * spend"; those plus `locked` answer "what does it own". Reporting only the
+ * first as an inventory is what made the panel say a listed sword did not
+ * exist.
+ *
+ * The words here are the availability axis and nothing else. Whether the block
+ * behind a holding is pending, confirmed or failed is a separate question about
+ * a different thing, and this type deliberately leaves those names free for it:
+ * a locked item is confirmed on chain, and a pending one is not yet anywhere.
+ */
+export interface LockedHolding {
+  asset: AssetId
+  name: string
+  symbol: string
+  /** Whole units for an item, decimal for a token — as `items` and `tokens`. */
+  amount: number
+  /** Whether this shows as an item rather than a currency. */
+  item: boolean
+  /** Why it cannot be spent. An open offer is the only reason there is. */
+  reason: 'offer'
+  /** The `swap_offer` block holding it, and what `market.cancel` takes. */
+  offer: string
+  /** What the offer asks for it. */
+  want: { asset: AssetId; symbol: string; name: string; amount: number }
+  /** Advisory, and never enforced by the ledger (SPEC §9.3). */
+  expiresAt: number | null
+}
+
 export interface WalletSummary {
   address: string
+  /** Spendable Kei. Kei locked in this account's own offers is `keiLocked`. */
   kei: number
-  /** Ascending by `asset` id — see `WalletApi.summary`. */
+  /** Spendable balances, ascending by `asset` id — see `WalletApi.summary`. */
   tokens: TokenBalance[]
-  /** Ascending by `asset` id — see `WalletApi.summary`. */
+  /** Spendable holdings, ascending by `asset` id — see `WalletApi.summary`. */
   items: ItemHolding[]
+  /**
+   * Owned, not spendable: what this account has locked in its own open offers,
+   * ascending by `asset` id and then by `offer`. Empty when `createWallet` was
+   * given no `market`, which is also when nothing here costs a read.
+   */
+  locked: LockedHolding[]
+  /** Kei locked in this account's own open offers, and not counted in `kei`. */
+  keiLocked: number
   pending: PendingClaim[]
+}
+
+/** One side of an offer, as much of it as the wallet reads. */
+export interface WalletMarketLeg {
+  asset: AssetId
+  symbol: string
+  name: string
+  amount: number
+  /** Exact ledger quantity. Preferred over `amount` when Kei is totalled. */
+  raw?: string
+}
+
+export interface WalletMarketOffer {
+  hash: string
+  give: WalletMarketLeg
+  want: WalletMarketLeg
+  expiresAt: number | null
+}
+
+/** The unread-chains half of a market walk's `coverage`. */
+export interface WalletMarketCoverage {
+  readonly failed: readonly { readonly reason: string }[]
+}
+
+export interface WalletMarketOffers extends ReadonlyArray<WalletMarketOffer> {
+  readonly coverage?: WalletMarketCoverage
+}
+
+/**
+ * What the wallet needs from `@keicoin/market`, declared structurally rather
+ * than imported — the same reason `WalletPanelCustody` is (panel.ts). This
+ * package depends on `@keicoin/core` and not on the market, and a game that
+ * never trades should not acquire one to read its inventory. A real
+ * `createMarket` result satisfies it exactly, and `Kei` passes its own.
+ */
+export interface WalletMarket {
+  mine(options?: { state?: 'open' }): Promise<WalletMarketOffers>
 }
 
 export interface WalletApi {
   /**
-   * A fresh read of the account: balance, holdings, and pending claims are
-   * fetched every time. Only the assets' issuance metadata is remembered
-   * between calls, and none of that can change (SPEC §5.3, §5.4).
+   * A fresh read of the account: balance, holdings, this account's own open
+   * offers, and pending claims are fetched every time. Only the assets'
+   * issuance metadata is remembered between calls, and none of that can change
+   * (SPEC §5.3, §5.4).
    *
-   * `tokens` and `items` are each **ascending by asset id**. That is the order
-   * regardless of the order the node listed the holdings in and regardless of
-   * which metadata lookup answered first, so two refreshes that found the same
-   * things render the same way round.
+   * `tokens`, `items` and `locked` are each **ascending by asset id**. That is
+   * the order regardless of the order the node listed the holdings in and
+   * regardless of which metadata lookup answered first, so two refreshes that
+   * found the same things render the same way round. Two offers locking the
+   * same asset are ordered by their offer hash after that.
    */
   summary(): Promise<WalletSummary>
   on(event: 'change', listener: (summary: WalletSummary) => void): () => void
@@ -90,6 +179,13 @@ export interface WalletApi {
 
 export interface WalletOptions {
   claims?: ClaimsApi
+  /**
+   * Where `locked` and `keiLocked` come from: this wallet's own open offers,
+   * one bounded read of its own chain per summary. Without it both are empty
+   * and `summary()` costs exactly what it did before, so an asset listed for
+   * sale reads as gone — which is the whole of issue #43.
+   */
+  market?: WalletMarket
   /**
    * How many asset-metadata lookups this client may have in flight at once,
    * counted across every `summary()`, refresh, and `items.ownedBy()` it is
@@ -135,6 +231,22 @@ function byAssetId(a: { asset: AssetId }, b: { asset: AssetId }): number {
   return a.asset < b.asset ? -1 : a.asset > b.asset ? 1 : 0
 }
 
+/** One account can have several offers out on one asset; hashes break the tie. */
+function byAssetThenOffer(a: LockedHolding, b: LockedHolding): number {
+  return byAssetId(a, b) || (a.offer < b.offer ? -1 : a.offer > b.offer ? 1 : 0)
+}
+
+/**
+ * The locked Kei of one offer, in raw units.
+ *
+ * Off `raw` when the offer carries it, which every offer this package is handed
+ * by `@keicoin/market` does. Adding the decimal `amount`s instead would drift
+ * at the eighteenth place, and the sum is subtracted from a balance elsewhere.
+ */
+function lockedRawOf(leg: WalletMarketLeg): bigint {
+  return leg.raw === undefined ? toRaw(leg.amount, KEI_DECIMALS, 'Locked Kei') : BigInt(leg.raw)
+}
+
 export function createWallet(client: KeiClient, options: WalletOptions = {}): WalletApi {
   const assets = assetCacheFor(client, {
     limit: positiveInteger(
@@ -155,13 +267,47 @@ export function createWallet(client: KeiClient, options: WalletOptions = {}): Wa
     // Everything mutable, read fresh every time: the Kei balance, what the
     // account holds, and what it has yet to claim. None of this is ever served
     // from a cache — only the issuance metadata below is.
-    const [info, holdings, pending] = await Promise.all([
+    const [info, holdings, pending, offers] = await Promise.all([
       client.node.accountInfo(client.address),
       client.node.holdings(client.address),
       options.claims ? options.claims.pending() : Promise.resolve<PendingClaim[]>([]),
+      options.market
+        ? options.market.mine({ state: 'open' })
+        : Promise.resolve<WalletMarketOffers>([]),
     ])
 
-    const records = await assets.resolve(holdings.map((holding) => holding.asset))
+    // A chain read that failed would arrive here as "nothing is locked", which
+    // is the exact sentence this field exists to stop the wallet saying. Same
+    // rule as a failed asset lookup (assets.ts): the caller sees the error
+    // rather than an inventory quietly missing something.
+    const unread = offers.coverage?.failed ?? []
+    if (unread.length > 0) {
+      fail(
+        'wallet-offers-unread',
+        `Could not read this account's own open offers, so the wallet cannot say what is locked in them: ${unread[0]?.reason ?? 'the read failed'}`,
+      )
+    }
+
+    // Kei is not a holding and has no issuance record to look up, so it is
+    // totalled separately and the rest are named from metadata like any other.
+    const locks = offers.filter((offer) => offer.give.asset !== KEI_ASSET)
+    let keiLockedRaw = 0n
+    for (const offer of offers) {
+      if (offer.give.asset === KEI_ASSET) keiLockedRaw += lockedRawOf(offer.give)
+    }
+
+    // One resolve over both halves of the inventory, through the client's shared
+    // asset cache (#134). Both requirements have to hold at once: a locked asset
+    // has left `holdings`, so resolving only the holdings would leave every
+    // locked row unnamed and `continue` past it — which is issue #43 again by a
+    // different route — and resolving it anywhere but this cache would put the
+    // fan-out back outside the one bound the client has. `resolve` de-duplicates
+    // its argument and shares in-flight lookups, so an asset that is somehow in
+    // both halves still costs one request.
+    const records = await assets.resolve([
+      ...holdings.map((holding) => holding.asset),
+      ...locks.map((offer) => offer.give.asset),
+    ])
 
     const tokens: TokenBalance[] = []
     const items: ItemHolding[] = []
@@ -199,14 +345,42 @@ export function createWallet(client: KeiClient, options: WalletOptions = {}): Wa
     // player's inventory must not reshuffle when they switch node. Nothing in
     // this package promised the holdings order before now, so id order is the
     // contract from here, and `summary()` says so.
+    // Named from the same cache the spendable rows are named from, so one asset
+    // reads the same whichever half of the summary it is currently in.
+    const locked: LockedHolding[] = []
+    for (const offer of locks) {
+      const record = records.get(offer.give.asset)
+      if (!record) continue
+      const asset = assetFactsFrom(record)
+      locked.push({
+        asset: asset.asset,
+        name: asset.name,
+        symbol: asset.symbol,
+        amount: offer.give.amount,
+        item: asset.item,
+        reason: 'offer',
+        offer: offer.hash,
+        want: {
+          asset: offer.want.asset,
+          symbol: offer.want.symbol,
+          name: offer.want.name,
+          amount: offer.want.amount,
+        },
+        expiresAt: offer.expiresAt,
+      })
+    }
+
     tokens.sort(byAssetId)
     items.sort(byAssetId)
+    locked.sort(byAssetThenOffer)
 
     return {
       address: client.address,
       kei: info ? fromRaw(BigInt(info.balance), KEI_DECIMALS) : 0,
       tokens,
       items,
+      locked,
+      keiLocked: fromRaw(keiLockedRaw, KEI_DECIMALS),
       pending,
     }
   }
