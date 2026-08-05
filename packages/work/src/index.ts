@@ -101,7 +101,14 @@ export class WorkServerProvider implements WorkProvider {
     if (typeof impl !== 'function') {
       fail('no-fetch', 'No fetch available. Pass one to WorkServerProvider, or use Node 18+, Bun, or a browser.')
     }
-    this.fetchImpl = impl
+    // Bound, for the reason `HttpNode` spells out at
+    // packages/core/src/http-node.ts:91-96: a browser's `fetch` insists on
+    // `window` as its receiver, and called as `this.fetchImpl(...)` it throws
+    // "Illegal invocation". Here that error lands in `requestWork`'s catch, so
+    // it reads as an unreachable work server — or, with a fallback configured,
+    // as nothing at all. Node and Bun do not enforce the receiver, so only a
+    // browser ever saw it, which is the platform §5.5 built this for.
+    this.fetchImpl = impl.bind(globalThis)
     this.fallback = options.fallback
   }
 
