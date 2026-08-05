@@ -61,7 +61,7 @@ import {
   type PlayerEconomyApi,
   type PlayerEconomyOptions,
 } from '@keicoin/player-economy'
-import { createWorkProvider } from '@keicoin/work'
+import { createWorkProvider, type WorkOptions } from '@keicoin/work'
 import { createWallet, type WalletApi } from '@keicoin/wallet'
 
 import { assertServerOnly, deploymentSignal, testnetAllowedInDeployment } from './environment.js'
@@ -111,8 +111,15 @@ export interface StartOptions {
    * frees the lock and takes the listing off the ledger.
    */
   autoCancelExpired?: boolean
-  /** A work server, so proof-of-work does not pause the game (SPEC §5.5). */
-  workServer?: string
+  /**
+   * A work server, so proof-of-work does not pause the game (SPEC §5.5). A URL
+   * on its own is the usual form. If the server wants a token, use the object
+   * form and put the token in a header rather than in the URL: the URL is what
+   * an error message names, and a header is not.
+   *
+   * `{ url: 'https://work.example/', headers: { authorization: 'Bearer …' } }`
+   */
+  workServer?: string | { url: string; headers?: Record<string, string> }
   storage?: SeedStore
   /**
    * Refuse to start rather than hand back a wallet that a reload would lose
@@ -337,7 +344,7 @@ export class Kei {
     custody: SeedCustody,
     options: StartOptions,
   ): Promise<Kei> {
-    const work: WorkProvider = createWorkProvider(node, options.workServer ? { workServer: options.workServer } : {})
+    const work: WorkProvider = createWorkProvider(node, workOptions(options.workServer))
     const client = new KeiClient({
       node,
       work,
@@ -559,6 +566,15 @@ async function resolveNode(options: StartOptions): Promise<KeiNode> {
   // real M3 testnet, which is the transport swap this API was designed around.
   if (options.network === 'mock') return MockNode.create()
   return new HttpNode({ url: DEFAULT_TESTNET_NODE_URL, network: 'testnet' })
+}
+
+function workOptions(workServer: StartOptions['workServer']): WorkOptions {
+  if (!workServer) return {}
+  if (typeof workServer === 'string') return { workServer }
+  return {
+    workServer: workServer.url,
+    ...(workServer.headers ? { headers: workServer.headers } : {}),
+  }
 }
 
 /**

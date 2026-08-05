@@ -498,51 +498,26 @@ describe('HttpNode backoff between failed polls', () => {
 
 /**
  * A node URL is somewhere people keep credentials, and a timeout message is
- * something people paste into an issue.
+ * something people paste into an issue. What `safeEndpoint` keeps and drops is
+ * pinned in endpoint.test.ts; what these two check is that every error path
+ * through this client names the safe form and not `options.url`.
  */
 describe('HttpNode error messages and the node URL', () => {
-  const timeoutFor = async (url: string): Promise<string> => {
-    const node = new HttpNode({ url, requestTimeout: 10, fetch: deafFetch().fetch })
+  test('userinfo, query and fragment never reach a timeout message', async () => {
+    const node = new HttpNode({
+      url: 'https://operator:hunter2-correct-horse@node.example:8443/rpc?apiKey=sk-live-9f8e7d6c5b4a3210&v=2#staging',
+      requestTimeout: 10,
+      fetch: deafFetch().fetch,
+    })
     const error = await refused(node.accountInfo('kei_1'))
+
     expect(error.code).toBe('node-timeout')
-    return error.message
-  }
-
-  test('userinfo, query and fragment never reach the message', async () => {
-    const message = await timeoutFor(
-      'https://operator:hunter2-correct-horse@node.example:8443/rpc?apiKey=sk-live-9f8e7d6c5b4a3210&v=2#staging',
-    )
-
-    expect(message).toContain('https://node.example:8443/rpc')
-    expect(message).not.toContain('operator')
-    expect(message).not.toContain('hunter2-correct-horse')
-    expect(message).not.toContain('apiKey')
-    expect(message).not.toContain('sk-live-9f8e7d6c5b4a3210')
-    expect(message).not.toContain('staging')
-  })
-
-  test('a token carried as a path segment is redacted, and the host survives', async () => {
-    const message = await timeoutFor('https://node.example/v3/0123456789abcdef0123456789abcdef')
-    expect(message).toContain('https://node.example/v3/[redacted]')
-    expect(message).not.toContain('0123456789abcdef')
-  })
-
-  test('an endpoint with no scheme keeps its secrets too', async () => {
-    // `new URL` refuses this outright, so it is cut back as text instead.
-    const message = await timeoutFor('node.example/rpc?apiKey=sk-live-9f8e7d6c5b4a3210#tail')
-    expect(message).toContain('node.example/rpc')
-    expect(message).not.toContain('sk-live-9f8e7d6c5b4a3210')
-    expect(message).not.toContain('apiKey')
-    expect(message).not.toContain('tail')
-  })
-
-  test('userinfo inside a host-less URL is not a hiding place', async () => {
-    // This one does parse — as a scheme and one opaque path with the password
-    // sitting in the middle of it, which the structural route would have kept.
-    const message = await timeoutFor('operator:hunter2-correct-horse@node.example/rpc')
-    expect(message).toContain('node.example/rpc')
-    expect(message).not.toContain('hunter2-correct-horse')
-    expect(message).not.toContain('operator')
+    expect(error.message).toContain('https://node.example:8443/rpc')
+    expect(error.message).not.toContain('operator')
+    expect(error.message).not.toContain('hunter2-correct-horse')
+    expect(error.message).not.toContain('apiKey')
+    expect(error.message).not.toContain('sk-live-9f8e7d6c5b4a3210')
+    expect(error.message).not.toContain('staging')
   })
 
   test('the same endpoint is what an unreachable node is named by', async () => {

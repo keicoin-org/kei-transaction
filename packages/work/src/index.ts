@@ -14,7 +14,7 @@
  */
 
 import type { KeiNode, WorkProvider, WorkTier } from '@keicoin/core'
-import { KeiError, fail, generateWork } from '@keicoin/core'
+import { KeiError, fail, generateWork, safeEndpoint } from '@keicoin/core'
 
 export interface LocalWorkOptions {
   /** Overrides the node's advertised thresholds. Mostly for tests. */
@@ -66,6 +66,7 @@ export class LocalWorkProvider implements WorkProvider {
 
 export interface WorkServerOptions {
   url: string
+  /** Sent with every request. Where a token belongs: `{ authorization: `Bearer ${token}` }`. */
   headers?: Record<string, string>
   fetch?: typeof globalThis.fetch
   /** Used when the server is unreachable. Pass a LocalWorkProvider to degrade instead of fail. */
@@ -84,6 +85,8 @@ function workCacheKey(root: string, tier: WorkTier): string {
  */
 export class WorkServerProvider implements WorkProvider {
   private readonly url: string
+  /** `url` with everything an error must not repeat taken out of it. */
+  private readonly endpoint: string
   private readonly headers: Record<string, string>
   private readonly fetchImpl: typeof globalThis.fetch
   private readonly fallback: WorkProvider | undefined
@@ -92,6 +95,7 @@ export class WorkServerProvider implements WorkProvider {
   constructor(options: WorkServerOptions) {
     if (!options?.url) fail('no-work-server', 'A work server needs a URL, for example https://work.kei.dev.')
     this.url = options.url
+    this.endpoint = safeEndpoint(options.url)
     this.headers = { 'content-type': 'application/json', ...options.headers }
     const impl = options.fetch ?? globalThis.fetch
     if (typeof impl !== 'function') {
@@ -158,7 +162,7 @@ export class WorkServerProvider implements WorkProvider {
       if (this.fallback) return this.fallback.generate(root, tier)
       throw new KeiError(
         'work-server-unreachable',
-        `The work server at ${this.url} did not return work. Pass { fallback: new LocalWorkProvider(node) } to generate locally instead.`,
+        `The work server at ${this.endpoint} did not return work. Pass { fallback: new LocalWorkProvider(node) } to generate locally instead.`,
       )
     }
   }
@@ -167,6 +171,12 @@ export class WorkServerProvider implements WorkProvider {
 export interface WorkOptions {
   /** A work server URL. Without one, work is generated locally. */
   workServer?: string
+  /**
+   * Sent with every work-server request. A work server that wants a token wants
+   * it here — `{ authorization: `Bearer ${token}` }` — and not in `workServer`,
+   * because a URL is what an error message names and a header is not.
+   */
+  headers?: Record<string, string>
   thresholds?: Record<WorkTier, string>
   fetch?: typeof globalThis.fetch
 }
@@ -178,6 +188,7 @@ export function createWorkProvider(node: KeiNode, options: WorkOptions = {}): Wo
   return new WorkServerProvider({
     url: options.workServer,
     fallback: local,
+    ...(options.headers ? { headers: options.headers } : {}),
     ...(options.fetch ? { fetch: options.fetch } : {}),
   })
 }
@@ -187,6 +198,20 @@ export function createWorkProvider(node: KeiNode, options: WorkOptions = {}): Wo
  * times that is already something other than a client, so it stops being read.
  */
 export const MAX_WORK_REQUEST_BYTES = 8_192
+
+/**
+ * Compares in time that does not depend on where the first difference is. A
+ * work server is a public endpoint by design, so a `!==` on the token hands a
+ * patient caller the prefix one character at a time.
+ */
+function tokenMatches(expected: string, presented: string | null): boolean {
+  const given = presented ?? ''
+  let difference = given.length ^ expected.length
+  for (let i = 0; i < given.length; i++) {
+    difference |= given.charCodeAt(i) ^ expected.charCodeAt(i % expected.length)
+  }
+  return difference === 0
+}
 
 export interface WorkRpcOptions {
   /** Where the work comes from. `startWorkServer` passes a `LocalWorkProvider`. */
@@ -212,7 +237,7 @@ export function workRpcHandler(options: WorkRpcOptions): (request: Request) => P
 
   return async (request: Request): Promise<Response> => {
     if (request.method !== 'POST') return send(405, { error: 'POST required' })
-    if (token && request.headers.get('authorization') !== `Bearer ${token}`) {
+    if (token && !tokenMatches(`Bearer ${token}`, request.headers.get('authorization'))) {
       return send(401, { error: 'unauthorized' })
     }
 
