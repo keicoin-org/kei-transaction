@@ -38,6 +38,11 @@ jobs:
       # lockfile got rewritten mid-install is a dependency nobody chose.
       - run: bun install --frozen-lockfile
 
+      # A range that cannot select the version it will be published against is
+      # how a consumer ends up with a second, older copy of core underneath it.
+      # Cheap enough to check on every push rather than only at release time.
+      - run: bun run release:check
+
       # Builds every package's project references on the way through, so this
       # also proves the workspace still compiles as a whole.
       - run: bun run typecheck

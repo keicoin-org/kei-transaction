@@ -1,6 +1,6 @@
 {
   "name": "kei-transaction",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Real currencies and items for browser games. One install, no payment infrastructure.",
   "license": "MIT",
   "author": "Sano",
@@ -47,13 +47,13 @@
     "access": "public"
   },
   "dependencies": {
-    "@keicoin/claims": "^0.5.1",
-    "@keicoin/core": "^0.5.0",
-    "@keicoin/economy": "^0.2.2",
-    "@keicoin/market": "^0.4.0",
-    "@keicoin/player-economy": "^0.1.2",
-    "@keicoin/tokens": "^0.5.2",
-    "@keicoin/wallet": "^0.5.0",
-    "@keicoin/work": "^0.4.1"
+    "@keicoin/claims": "^0.6.0",
+    "@keicoin/core": "^0.6.0",
+    "@keicoin/economy": "^0.2.3",
+    "@keicoin/market": "^0.5.0",
+    "@keicoin/player-economy": "^0.1.3",
+    "@keicoin/tokens": "^0.5.3",
+    "@keicoin/wallet": "^0.5.1",
+    "@keicoin/work": "^0.4.2"
   }
 }
