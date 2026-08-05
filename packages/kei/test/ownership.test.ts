@@ -347,3 +347,47 @@ describe('the seed is irrelevant to it (SPEC §6.6)', () => {
     }
   })
 })
+
+/**
+ * The import a consumer actually writes.
+ *
+ * `kei-transaction` is the default install (SPEC §10.1), and #138 is what
+ * happens when the umbrella does not re-export the real primitive: a repo
+ * hand-rolled a weaker secret-scrubber rather than noticing the good one was
+ * unreachable. Three repositories are waiting on this exact surface, so the
+ * whole loop — a wallet producing a proof and a server checking it — is
+ * asserted here against the package root, with nothing imported from a
+ * sub-package.
+ */
+describe('reachable from the package root', () => {
+  test('a wallet proves and a server verifies, importing only `kei-transaction`', async () => {
+    const root = await import('kei-transaction')
+
+    // The server half. A game server checking a proof has no wallet and no
+    // seed, and needs these by name.
+    expect(typeof root.verifyOwnershipProof).toBe('function')
+    expect(typeof root.createNonceStore).toBe('function')
+    expect(typeof root.randomChallengeNonce).toBe('function')
+    expect(typeof root.ownershipChallengeHash).toBe('function')
+    expect(typeof root.parseOwnershipChallenge).toBe('function')
+
+    // The wallet half.
+    const kei = await player()
+    expect(typeof kei.wallet.signOwnershipChallenge).toBe('function')
+
+    const challenge = {
+      domain: DOMAIN,
+      address: ALICE.address,
+      nonce: root.randomChallengeNonce(),
+      context: { roomId: 'room-7' },
+    }
+    const proof = await kei.wallet.signOwnershipChallenge(challenge)
+    const nonces = root.createNonceStore()
+
+    expect(await root.verifyOwnershipProof(proof, { ...challenge, nonces })).toBe(true)
+    // The second presentation of one proof is a replay, and the store is where
+    // that is caught — so a server wiring this up from the root alone gets the
+    // protection too, not just the signature check.
+    expect(await root.verifyOwnershipProof(proof, { ...challenge, nonces })).toBe(false)
+  })
+})
