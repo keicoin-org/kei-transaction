@@ -388,6 +388,18 @@ describe('MarketStore', () => {
 })
 
 describe('account-chain source', () => {
+  test('reports scan budget capability once enabled', async () => {
+    const storage = createMemoryMarketStorage()
+    const catalog = createMarketCatalog({ storage })
+    const ingestor = createAccountChainIngestor({
+      id: 'node-a',
+      provider: { network: 'testnet', async accountSwaps() { return [] } },
+      catalog,
+      store: createMarketStore({ storage }),
+      now: () => 100,
+    })
+    expect(ingestor.capabilities).toMatchObject({ scannedBlockBudget: true })
+  })
   test('materializes a provider window across restart but never calls it complete history', async () => {
     const storage = createMemoryMarketStorage()
     const catalog = createMarketCatalog({ storage })
@@ -692,3 +704,4 @@ test('new errors remain recognizable through isMarketError', () => {
   const error = new KeiError('bad-market-budget', 'bad')
   expect(isMarketError(error, 'bad-market-budget')).toBe(true)
 })
+

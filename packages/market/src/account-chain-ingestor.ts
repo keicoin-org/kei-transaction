@@ -83,7 +83,7 @@ export interface AccountChainIngestor {
     readonly storage: 'process-memory-reference'
     readonly catalogPaging: true
     readonly sourceBackfillPaging: false
-    readonly scannedBlockBudget: false
+    readonly scannedBlockBudget: true
     readonly atomicCheckpoints: true
   }
   ingest(request?: AccountChainIngestRequest): Promise<AccountChainIngestResult>
@@ -112,7 +112,7 @@ export function createAccountChainIngestor(options: AccountChainIngestorOptions)
       storage: 'process-memory-reference',
       catalogPaging: true,
       sourceBackfillPaging: false,
-      scannedBlockBudget: false,
+      scannedBlockBudget: true,
       atomicCheckpoints: true,
     },
 
