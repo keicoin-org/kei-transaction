@@ -1,6 +1,6 @@
 {
   "name": "@keicoin/market",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "The market for Kei: offers that are blocks, atomic settlement, bounded multi-account books, and price history read from the chain.",
   "license": "MIT",
   "author": "Sano",
@@ -41,6 +41,6 @@
     "access": "public"
   },
   "dependencies": {
-    "@keicoin/core": "^0.6.0"
+    "@keicoin/core": "^0.7.0"
   }
 }

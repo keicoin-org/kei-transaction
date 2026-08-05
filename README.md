@@ -813,7 +813,7 @@ The M0–M10 ladder was retired on 3 August 2026 for four concurrent tracks
 | **The wallet panel** | `@keicoin/wallet@0.5.0` — `WalletPanel.mount()` plus the SPEC §6.6 seed-reveal friction, explicit `persistent`/`session`/`supplied` custody reporting, bounded identity-checked metadata caching, and an ordered coalesced refresh stream. The panel warns before displaying a balance when browser storage could not persist its seed |
 | **Recipes and loot tables** | `@keicoin/economy@0.2.2` — recipes and drop tables remain reachable as `kei.economy`; the patch moves its market dependency floor to the coordinated `0.4.0` graph. Drop tables add no consensus rules: every block written is one the SDK could already write by hand |
 | **Player shops** | `@keicoin/player-economy@0.1.2` — `kei.shop` lets players list, browse, buy, cancel, and gift from their own keys, with whole-shelf browsing aligned to the market's oriented ask levels. It is reachable from a plain `kei-transaction@0.8.0` install |
-| **npm** | The initial `0.8.0` graph published and verified on 4 August 2026 was core `0.5.0`, work `0.4.1`, claims `0.5.1`, tokens `0.5.2`, market `0.4.0`, wallet `0.5.0`, economy `0.2.2`, player economy `0.1.2`, and umbrella `0.8.0`. Fresh npm and Bun projects installed the umbrella, resolved one compatible copy of every workspace package, imported its public entry, and found the work binary. That is still the whole of what the registry serves. The core `0.5.1` patch that was pending here is withdrawn: public surface landed after it was prepared, so it is superseded by the `0.9.0` candidate below, which moves every consumer range because `^0.5.0` cannot select core `0.6.0`. `create-kei-game@0.2.0` predates the harness's move to its standalone repository; future harness releases are owned there |
+| **npm** | The initial `0.8.0` graph published and verified on 4 August 2026 was core `0.5.0`, work `0.4.1`, claims `0.5.1`, tokens `0.5.2`, market `0.4.0`, wallet `0.5.0`, economy `0.2.2`, player economy `0.1.2`, and umbrella `0.8.0`. It is no longer the whole of what the registry serves: **a release run on 5 August 2026 published six packages on top of it and then stopped**, so npm now also holds core `0.6.0`, work `0.4.2`, claims `0.6.0`, tokens `0.5.3`, market `0.5.0` and wallet `0.5.1`, with no umbrella pinning any of them. `npm install kei-transaction` still installs `0.8.0` and still imports, because the `0.8.0` floors cannot reach the newer versions — which is also why it resolves six copies of core. `@keicoin/core@0.6.0` is burnt: the tarball on npm predates [#141](https://github.com/keicoin-org/kei-transaction/pull/141) and lacks three symbols the umbrella re-exports, so it can never be the core this tree ships against. [#157](https://github.com/keicoin-org/kei-transaction/issues/157) is the diagnosis and the `0.9.0` candidate below is the fix. `create-kei-game@0.2.0` predates the harness's move to its standalone repository; future harness releases are owned there |
 | **The harness** | Create Kei MMO owns its own releases. Its repository is still named [`create-kei-game`](https://github.com/keicoin-org/create-kei-game) pending the rename, and its default branch still carries the retired scaffolder that `create-kei-game@0.2.0` was published from; the transition into an ongoing MMO creation harness is an unmerged draft, [PR #1](https://github.com/keicoin-org/create-kei-game/pull/1) |
 | **The work server** | `@keicoin/work@0.4.1` exports the bounded handler/server integration and the `kei-work-server` CLI; operating a public instance is separate deployment work |
 
@@ -858,59 +858,100 @@ release is read as a set rather than as nine independent publishes.
 
 ### Unreleased — coordinated `0.9.0` candidate
 
-Nothing here is published yet. The registry still holds the `0.8.0` set. The
-`@keicoin/core@0.5.1` candidate that used to occupy this section was never
-published and is withdrawn: durable claims and the market instrument work landed
-after it was prepared, so a patch number can no longer describe the tarball core
-would ship.
+None of the numbers below is published. The registry is **not** the clean
+`0.8.0` set any more: a release run on 5 August 2026 published core `0.6.0`,
+work `0.4.2`, claims `0.6.0`, tokens `0.5.3`, market `0.5.0` and wallet `0.5.1`
+between 16:35:45 and 16:36:55 UTC, and stopped before economy, player economy
+and the umbrella. What npm holds is a half-graph with no umbrella over it, and
+one number in it is unusable
+([#157](https://github.com/keicoin-org/kei-transaction/issues/157)).
 
-| Package | Current registry | After release | Why |
+`publish.log` shows that run's `npm publish` for wallet failing with
+`E403 … cannot publish over the previously published versions: 0.5.1`, which
+reads as though `0.5.1` was already there. It was not. The registry records
+exactly one publish time for `@keicoin/wallet@0.5.1` — 16:36:54.939 UTC, inside
+that run's own window — and the integrity it serves,
+`sha512-GoC1spIJbGkY/…tjD67wZz9NGzQ==`, is the integrity that run's log printed
+for the tarball it had just packed. The `403` was npm refusing a **re-`PUT` of
+an upload that had already succeeded**, not a stale `404` in the pre-check. The
+practical difference is one package: six of the nine are published, not five.
+
+**`@keicoin/core@0.6.0` on npm is burnt.** Unpacking the published tarball shows
+no `src/swaps.ts` and no `src/ownership.ts`, and its public entry exports 123
+names where the tree's exports 141. So it contains neither
+[#141](https://github.com/keicoin-org/kei-transaction/pull/141)'s `parseSwapInfo`
+/ `parseSwapOffer` / `parseAccountSwaps` nor
+[#142](https://github.com/keicoin-org/kei-transaction/pull/142)'s ownership
+surface — all of which the umbrella re-exports statically. A consumer install of
+the graph as previously numbered dies at import under Node and under Bun with
+`SyntaxError: The requested module '@keicoin/core' does not provide an export
+named 'parseAccountSwaps'`. A published version cannot be replaced, so core moves
+to `0.7.0` and every dependent's floor moves with it.
+
+Each number below is derived from what changed **inside that package since the
+version the registry actually serves**, established by unpacking that published
+tarball and diffing it against this tree, not from the package's role in the
+release.
+
+| Package | On the registry | After release | Why |
 |---|---:|---:|---|
-| `@keicoin/core` | `0.5.0` | **`0.6.0`** | Minor. Exports `claimStoreAdmissionHash` and adds `KeiClient.authorizeClaimStore()`, alongside the atomic mock-ledger fix |
-| `@keicoin/work` | `0.4.1` | **`0.4.2`** | Patch. `precompute()` was already public; only its retain-and-consume-once semantics changed. Core floor moves to `^0.6.0` |
-| `@keicoin/claims` | `0.5.1` | **`0.6.0`** | Minor. Adds `createMemoryClaimStore`, `createBrowserClaimStore`, `DurableClaimsApi`, the claim-store diagnostics and durability types, and the four claim bounds constants |
-| `@keicoin/tokens` | `0.5.2` | **`0.5.3`** | Patch. Source and exports are unchanged; its core and claims floors move |
-| `@keicoin/market` | `0.4.0` | **`0.5.0`** | Minor. Adds the instrument API, the durable catalog and observation store, the account-chain source and ingestor with read budgets, and the chart, history and OHLC surfaces |
-| `@keicoin/wallet` | `0.5.0` | **`0.5.1`** | Patch. Source and exports are unchanged; its core, claims and tokens floors move |
-| `@keicoin/economy` | `0.2.2` | **`0.2.3`** | Patch. Source and exports are unchanged; its core, claims and market floors move |
-| `@keicoin/player-economy` | `0.1.2` | **`0.1.3`** | Patch. Source and exports are unchanged; its core and market floors move |
-| `kei-transaction` | `0.8.0` | **`0.9.0`** | Minor. Adds `StartOptions.claimStore`, widens `Kei.claims` to `DurableClaimsApi`, re-exports the new claims and market surface, and moves every range to the published graph |
+| `@keicoin/core` | `0.6.0` burnt | **`0.7.0`** | Minor. `swaps.ts` ([#141](https://github.com/keicoin-org/kei-transaction/pull/141)) and `ownership.ts` ([#142](https://github.com/keicoin-org/kei-transaction/pull/142)) are absent from the published tarball entirely; the entry gains 18 names. #141 also **changed an existing failure mode**: `swap_info` with no `offer` and `account_swaps` with no `offers` used to default to "no such offer" and "no offers", and are now refused as malformed |
+| `@keicoin/work` | `0.4.2` | **`0.4.3`** | Patch. Every file under `src/` is byte-identical to the published tarball; only its core floor moves |
+| `@keicoin/claims` | `0.6.0` | **`0.7.0`** | Minor. `headroom.ts` is new, the entry gains `assertCommitHeadroom` and `CommitHeadroomOptions` ([#137](https://github.com/keicoin-org/kei-transaction/pull/137)), and [#159](https://github.com/keicoin-org/kei-transaction/pull/159) rewrote which refusal an unpayable drop raises |
+| `@keicoin/tokens` | `0.5.3` | **`0.6.0`** | Minor, and the one to read before publishing. The entry gains `IssuanceField`; `issueToken()` now throws `issuance-mismatch` where a contradicting re-issue used to succeed silently ([#148](https://github.com/keicoin-org/kei-transaction/pull/148)); and [#149](https://github.com/keicoin-org/kei-transaction/pull/149) changes the symbol and asset id derived from **every** item name |
+| `@keicoin/market` | `0.5.0` | **`0.6.0`** | Minor. `stored-history.ts` is new and the entry goes from 172 to 201 exports — bounded durable storage ([#147](https://github.com/keicoin-org/kei-transaction/pull/147)) and unrounded stored price history ([#161](https://github.com/keicoin-org/kei-transaction/pull/161)) |
+| `@keicoin/wallet` | `0.5.1` | **`0.6.0`** | Minor. The published tarball contains no `signOwnershipChallenge` at all, so `WalletApi` gains a required member ([#142](https://github.com/keicoin-org/kei-transaction/pull/142)), and the entry gains `LockedHolding` and the four `WalletMarket*` types ([#139](https://github.com/keicoin-org/kei-transaction/pull/139)) |
+| `@keicoin/economy` | `0.2.2` | **`0.2.3`** | Patch, and never published at `0.2.3`. Its entry is byte-identical to the published one; only `batch.ts` moved to claims' shared headroom helper, with the same `no-headroom` code |
+| `@keicoin/player-economy` | `0.1.2` | **`0.1.3`** | Patch, and never published at `0.1.3`. Every file under `src/` is byte-identical to `0.1.2`; its core and market floors move |
+| `kei-transaction` | `0.8.0` | **`0.9.0`** | Minor, and never published at `0.9.0`. Its entry goes from 259 to 399 exports — the durable claims, market storage and stored-history, swap-parsing, ownership and wallet-market surface — and it re-floats every internal range onto the versions above |
 
-Four packages carry no source change at all since `0.8.0`. Their releases exist
-because under 0.x caret rules `^0.5.0` cannot select core `0.6.0` and `^0.4.0`
-cannot select market `0.5.0`. A consumer left on the old floor would let an
-install retain a second, older copy of core, claims or market underneath it,
-which is the failure this section was written to prevent. Dependency-only moves
-are patches; every package that gained public surface takes a minor, because
-this repository does not hide new API in a patch.
+Only `work` and `player-economy` are dependency-only, and that is a measurement
+rather than a judgement: their `src/` trees hash identically to the tarballs npm
+serves. #157 proposed dependency-only patches for claims, market, tokens and
+wallet as well; that is no longer true, and this section takes minors for them
+instead. Dependency-only moves are patches; anything that gained API or changed a
+failure takes a minor, because this repository does not hide new API in a patch —
+and a minor also has the useful property that no old caret range can reach across
+it, so the graph is closed by arithmetic rather than by good intentions.
 
-The candidate is the merge of
-[#89](https://github.com/keicoin-org/kei-transaction/pull/89) durable claim
-stores, [#95](https://github.com/keicoin-org/kei-transaction/pull/95) atomic
-`MockLedger.process()` transitions,
-[#98](https://github.com/keicoin-org/kei-transaction/pull/98) single-use
-precomputed work, [#105](https://github.com/keicoin-org/kei-transaction/pull/105)
-the market instrument API,
-[#106](https://github.com/keicoin-org/kei-transaction/pull/106) durable proof
-retention, [#108](https://github.com/keicoin-org/kei-transaction/pull/108) the
-market catalog and observation store,
-[#117](https://github.com/keicoin-org/kei-transaction/pull/117),
-[#119](https://github.com/keicoin-org/kei-transaction/pull/119) and
-[#123](https://github.com/keicoin-org/kei-transaction/pull/123) the chart and
-history surfaces,
-[#120](https://github.com/keicoin-org/kei-transaction/pull/120) exact top-up
-conversion, and
-[#122](https://github.com/keicoin-org/kei-transaction/pull/122) and
-[#124](https://github.com/keicoin-org/kei-transaction/pull/124) account-chain
-read budgets. There is no wire, ledger, or consensus change.
+#### Two things a person doing this release needs to have read
+
+**#149 must not reach npm until the consumer checklist in
+[#155](https://github.com/keicoin-org/kei-transaction/issues/155) is ticked.**
+The published `@keicoin/tokens@0.5.3` still derives an item symbol from a
+12-character slug and a 2-byte digest; this tree derives it from a 7-character
+stub and a 6-byte digest. So a game that upgrades and keeps calling
+`items.create({ name })` derives a different symbol for the same name and issues
+a **second** asset for an item its players already hold: Kei burnt on the new
+issuance, and the units in inventories orphaned against an id nothing mints into
+any more. The five consumers to confirm first are world-of-wonder, button,
+`create-kei-game`'s templates, carpet-markets and kei-wallet.
+`items.create({ symbol })` is the pin, and it needs no new API. `@keicoin/tokens`
+is where the change lands, and the umbrella carries it too.
+
+**`issuance-mismatch` now shadows `item-name-mismatch`.** #148 and #149 landed
+together, and in `items.create()` the `name` comparison inside
+`assertIssuanceMatches` runs first — before `create()` reaches its own
+`item-name-mismatch` guard. So a symbol collision on an existing item surfaces as
+`issuance-mismatch`, and #149's guard is unreachable through `create()`. Any
+consumer error handling or documentation written against `item-name-mismatch` is
+wrong as of this release.
 
 `npm run release:check` is the mechanical proof that the graph is closed: it
 reads every public manifest, refuses any internal range that cannot select the
 version being published, and refuses a `bun.lock` whose workspace names,
-versions and dependency ranges do not match the manifests. It now also runs in
-CI, so a range and a version cannot drift apart between releases. Publication
-order stays core, work, claims, tokens, market, wallet, economy, player economy,
-umbrella last.
+versions and dependency ranges do not match the manifests. It runs in CI, so a
+range and a version cannot drift apart between releases. What it cannot see is a
+range selecting a *published* version that lacks a symbol the tree re-exports —
+which is exactly #157 — so the tarball-integrity comparison in `publish.sh` is
+the guard that matters, and
+[#158](https://github.com/keicoin-org/kei-transaction/issues/158) puts a
+`prepack` build and a manifest-target check underneath it in every package.
+
+Publication order stays core, work, claims, tokens, market, wallet, economy,
+player economy, umbrella last. It requires a person with an authenticator: the
+script needs an OTP, an attached HEAD on `master`, and that HEAD to match a
+freshly fetched `origin/master` exactly.
 
 ### `0.8.0` — published 4 August 2026
 
