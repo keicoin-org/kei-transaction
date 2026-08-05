@@ -15,7 +15,7 @@
 
 import type { AssetId, KeiClient } from '@keicoin/core'
 import { KeiError, assertAddress, fail, formatRaw, fromRaw } from '@keicoin/core'
-import { buildCommit } from '@keicoin/claims'
+import { assertCommitHeadroom, buildCommit } from '@keicoin/claims'
 
 import { isResolved, needsAnIssuer, resolveStack, type ResolvedStack } from './assets.js'
 import {
@@ -353,15 +353,7 @@ function rowFor(rows: readonly ResolvedStack[], drop: Drop, table: DropTable): R
   return row
 }
 
-/**
- * Refuse a batch the ledger would only half-honour.
- *
- * A claim mints, and minting past `maxSupply` is an invalid block (SPEC §5.6.6),
- * so an over-committed batch does not fail here — it fails one player at a time,
- * whichever thousand of them happen to press claim last, and there is no way to
- * tell them apart afterwards. Better to refuse the whole batch while it is still
- * a number in a variable.
- */
+/** Refuse a batch the ledger would only half-honour — see `assertCommitHeadroom`. */
 function assertHeadroom(
   table: DropTable,
   rows: readonly ResolvedStack[],
@@ -369,15 +361,18 @@ function assertHeadroom(
 ): void {
   for (const [asset, entries] of byAsset) {
     const row = rows.find((candidate) => candidate.asset === asset)
-    if (!row || row.maxSupplyRaw === null) continue
+    if (!row) continue
     let committed = 0n
     for (const entry of entries) committed += BigInt(entry.amount)
-    const headroom = row.maxSupplyRaw - row.circulatingRaw
-    if (committed <= headroom) continue
-    fail(
-      'no-headroom',
-      `This batch of "${table.id}" commits ${formatRaw(committed, row.decimals)} ${row.symbol} and only ${formatRaw(headroom < 0n ? 0n : headroom, row.decimals)} more can exist: ${row.symbol} caps circulating supply at ${formatRaw(row.maxSupplyRaw, row.decimals)} and ${formatRaw(row.circulatingRaw, row.decimals)} are already held (SPEC §5.6.6). Roll fewer players, lower the amount on that row, or burn some ${row.symbol} to free headroom. Entitlements from earlier batches that nobody has claimed yet are not counted in circulating supply, so leave room for those too.`,
-    )
+    assertCommitHeadroom({
+      batch: `This batch of "${table.id}"`,
+      asset: row.symbol,
+      decimals: row.decimals,
+      maxSupplyRaw: row.maxSupplyRaw,
+      circulatingRaw: row.circulatingRaw,
+      committed,
+      fixes: `Roll fewer players, lower the amount on that row, or burn some ${row.symbol} to free headroom.`,
+    })
   }
 }
 
