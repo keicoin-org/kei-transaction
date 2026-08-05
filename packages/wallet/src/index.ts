@@ -16,7 +16,12 @@
  * of requests and then renders them in whatever order they happened to finish.
  */
 
-import type { AssetId, KeiClient } from '@keicoin/core'
+import type {
+  AssetId,
+  KeiClient,
+  OwnershipChallengeMessage,
+  OwnershipProof,
+} from '@keicoin/core'
 import { KEI_DECIMALS, assetCacheFor, fail, fromRaw } from '@keicoin/core'
 import type { ItemStats } from '@keicoin/tokens'
 import type { ClaimsApi, PendingClaim } from '@keicoin/claims'
@@ -71,6 +76,16 @@ export interface WalletApi {
    */
   summary(): Promise<WalletSummary>
   on(event: 'change', listener: (summary: WalletSummary) => void): () => void
+  /**
+   * Answer a server's challenge, proving this wallet controls its address
+   * without disclosing anything that could sign anything else (SPEC §6.3).
+   *
+   * The challenge is structured, and the digest signed is derived from it here
+   * — a wallet that signed a digest it was handed would sign whatever bytes the
+   * asker chose, and the bytes worth choosing are a send. `verifyOwnershipProof`
+   * is the other half, and it needs only the address.
+   */
+  signOwnershipChallenge(challenge: OwnershipChallengeMessage): Promise<OwnershipProof>
 }
 
 export interface WalletOptions {
@@ -285,6 +300,9 @@ export function createWallet(client: KeiClient, options: WalletOptions = {}): Wa
 
   return {
     summary,
+    // The key stays inside the client, which is the whole point of routing this
+    // through the wallet rather than handing a game the seed to derive one.
+    signOwnershipChallenge: (challenge) => client.signOwnershipChallenge(challenge),
     on(event, listener) {
       if (event !== 'change') return () => undefined
       // Match the SDK emitter contract: registering the same callback twice is

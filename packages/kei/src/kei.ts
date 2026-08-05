@@ -14,6 +14,7 @@ import type {
   KeiNode,
   KeyPair,
   NetworkName,
+  OwnershipExpectation,
   PaymentEvent,
   RevealPolicy,
   Role,
@@ -29,6 +30,7 @@ import {
   keyPairFromSeed,
   normalizeSeed,
   randomSeed,
+  verifyOwnershipProof,
 } from '@keicoin/core'
 import { createClaims, type ClaimStore, type DurableClaimsApi } from '@keicoin/claims'
 import {
@@ -340,6 +342,21 @@ export class Kei {
    */
   static async mock(options: { faucetAmount?: number } = {}): Promise<MockNode> {
     return MockNode.create(options)
+  }
+
+  /**
+   * Check a proof from `kei.wallet.signOwnershipChallenge()` (SPEC §6.3).
+   *
+   * The asking half of proving address control, and the only half a game server
+   * runs. It needs the address and no key, so a server holding no wallet can
+   * import `verifyOwnershipProof` on its own instead. Pass `nonces` or the same
+   * proof answers every challenge that shares its nonce.
+   */
+  static async verifyOwnershipProof(
+    proof: unknown,
+    expected: OwnershipExpectation,
+  ): Promise<boolean> {
+    return verifyOwnershipProof(proof, expected)
   }
 
   private static async assemble(

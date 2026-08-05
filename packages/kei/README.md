@@ -103,7 +103,16 @@ await gems.balanceOf(playerAddress)   // 500 — one call
 ```
 
 Issuing is idempotent per (issuer, symbol): asset ids are derived, so calling
-`issue()` again returns the token you already have.
+`issue()` again returns the token you already have, writing no block and burning
+no Kei.
+
+Idempotent, not indifferent. Issuance parameters are immutable, so `issue()`
+compares every argument you passed against the token on chain and refuses if any
+of them disagree, naming the field, what the chain says, and what you asked for.
+Tightening `transfer: 'open'` to `'issuer-only'` in your source and redeploying
+is an error, not a success that changes nothing. Arguments you leave out are not
+compared — omitting `transfer` is not asking for `'open'` — and `rate` is your
+desk's own price, never on chain, so it is free to change.
 
 **`transfer` is the only real mechanism for a closed economy.** `open` means a
 permissionless market can and eventually will appear, whatever you would prefer.
@@ -321,6 +330,68 @@ Hiding the seed in the UI is not a security control. It defends against
 screenshots, streams, and shoulder-surfing. It does not defend against an
 attacker: the seed is in browser storage, and any XSS on your page reads it
 whatever the UI does.
+
+### Proving a player controls their address
+
+An address is public, so a server binding a session to one cannot take the
+client's word for it. Ask for a signature. The player's key never leaves the
+SDK, and this works under every `reveal` policy, `never` included.
+
+The server issues a challenge:
+
+```js
+import { createNonceStore, randomChallengeNonce, verifyOwnershipProof } from 'kei-transaction'
+
+const nonces = createNonceStore()             // one use per nonce
+
+const challenge = {
+  domain: 'example.com/my-game/session/v1',   // your namespace, versioned
+  address: claimedAddress,
+  nonce: randomChallengeNonce(),              // server-generated, per challenge
+  context: { roomId, sessionId },             // bounded, and all of it signed
+}
+```
+
+The player answers it:
+
+```js
+const proof = await kei.wallet.signOwnershipChallenge(challenge)
+// { address, signature, challenge }   — never a bare digest, never the key
+```
+
+The server checks it:
+
+```js
+const ok = await verifyOwnershipProof(proof, { ...challenge, nonces })
+```
+
+`verifyOwnershipProof` needs the address and nothing else — no key, no wallet,
+no node — so a server holding no Kei wallet at all can run it. It returns
+`false` for anything a client could have got wrong and throws only when your own
+expectation is malformed, which is the one case a sentence can fix.
+
+The wallet signs the digest it derived from the challenge, never a digest you
+hand it. You may send yours along as `hash`; it is checked, and a disagreement
+is refused rather than quietly corrected. That is the difference between this
+and a signing oracle: the bytes a hostile server would choose are the hash of a
+send.
+
+Two properties make it safe to hand a game.
+
+- **Domain separation.** The signed preimage is a fixed `kei-ownership-challenge-v1`
+  prefix and canonical JSON of the challenge. A Kei block hashes under
+  `blake2b-256("kei-block-v1")` or `kei-block-local-v0`, so a proof is not a
+  transaction and a transaction is not a proof. Your `domain` travels inside the
+  signed JSON rather than in front of it, so no value you choose moves those
+  leading bytes.
+- **One use.** The nonce is yours to generate and yours to retire. Keep the
+  store, and stop accepting a challenge long before the store's bound could
+  evict its nonce; `createNonceStore` is per process, so a fleet behind a load
+  balancer wants one shared store implementing `NonceStore`.
+
+What it is not: identity, proof a human is present, or a bearer token for
+anything else. It says one thing — whoever sent this holds the key for that
+address, once.
 
 ### Whether the wallet survives a reload
 

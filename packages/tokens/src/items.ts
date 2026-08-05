@@ -65,8 +65,9 @@ export interface MintItemOptions {
   transfer?: TransferPolicy
   /**
    * How many players can hold this roll. Defaults to the base item's, so a
-   * unique sword rolls unique variants. Fixed at the roll's first issuance:
-   * issuance is idempotent, so raising it later does nothing.
+   * unique sword rolls unique variants. Fixed at the roll's first issuance,
+   * because issuance metadata is immutable — passing a different one for a roll
+   * that already exists is refused rather than ignored.
    */
   supply?: number
 }
@@ -236,8 +237,8 @@ export function createIssuerItems(client: KeiClient, options: ItemsOptions = {})
    * as the base item unless told otherwise: a unique sword rolls unique
    * variants, and a sword issued with `supply: 100` rolls variants a hundred
    * players can hold. Supply is fixed at the roll's *first* issuance, because
-   * issuance is idempotent — passing a bigger `supply` for a roll that already
-   * exists does nothing.
+   * issuance metadata is immutable — passing a bigger `supply` for a roll that
+   * already exists cannot raise it, and is refused rather than ignored.
    */
   const variantOf = async (item: AssetId, options: MintItemOptions): Promise<Item> => {
     const base = await readItem(item)
@@ -259,17 +260,32 @@ export function createIssuerItems(client: KeiClient, options: ItemsOptions = {})
 
     // Scoped to the base id, so a variant of this sword is never the same asset
     // as an identically statted variant of some other item.
-    const token = await issueToken(client, {
-      name,
-      symbol: statSymbolFor(name, stats, base.id),
-      decimals: 0,
-      ...(supply === null ? {} : { maxSupply: supply }),
-      transfer: options.transfer ?? base.transferPolicy,
-      swap: 'off',
-      kind: 'item',
-      ...(description === undefined ? {} : { description }),
-      ...(image === undefined ? {} : { image }),
-    })
+    //
+    // Whatever this resolved from the base item rather than from the caller is
+    // declared defaulted: a roll that already exists is reused, and inheriting
+    // the base's supply or policy is not a contradiction of the stored roll. An
+    // explicit `supply` or `transfer` that disagrees with it is, and now gets a
+    // sentence instead of a silent no-op.
+    const token = await issueToken(
+      client,
+      {
+        name,
+        symbol: statSymbolFor(name, stats, base.id),
+        decimals: 0,
+        ...(supply === null ? {} : { maxSupply: supply }),
+        transfer: options.transfer ?? base.transferPolicy,
+        swap: 'off',
+        kind: 'item',
+        ...(description === undefined ? {} : { description }),
+        ...(image === undefined ? {} : { image }),
+      },
+      [
+        ...(options.supply === undefined ? (['maxSupply'] as const) : []),
+        ...(options.transfer === undefined ? (['transfer'] as const) : []),
+        ...(options.description === undefined ? (['description'] as const) : []),
+        ...(options.image === undefined ? (['image'] as const) : []),
+      ],
+    )
     const info = await client.node.assetInfo(token.id)
     if (!info) fail('issue-failed', `${name} was published but cannot be read back.`)
     return itemFrom(info)
@@ -287,17 +303,30 @@ export function createIssuerItems(client: KeiClient, options: ItemsOptions = {})
         (hasStats(create.stats) ? statSymbolFor(create.name, create.stats) : itemSymbolFor(create.name))
       const image = create.image === undefined ? undefined : await uploader.upload(create.image)
       const description = encodeDescription(create.description, create.stats)
-      const token = await issueToken(client, {
-        name: create.name,
-        symbol,
-        decimals: 0,
-        maxSupply: create.supply ?? 1,
-        transfer: create.transfer ?? 'open',
-        swap: 'off',
-        kind: 'item',
-        ...(description === undefined ? {} : { description }),
-        ...(image === undefined ? {} : { image }),
-      })
+      // `supply` and `transfer` are this API's defaults when omitted, not the
+      // game's request, so an item already stored with a larger supply or a
+      // tighter policy is reused rather than refused. Everything the caller did
+      // pass — and `decimals`, `swap` and `kind`, which are what an item *is*
+      // (SPEC §7) — is compared, so landing on some other asset at this symbol
+      // is a refusal rather than the wrong sword.
+      const token = await issueToken(
+        client,
+        {
+          name: create.name,
+          symbol,
+          decimals: 0,
+          maxSupply: create.supply ?? 1,
+          transfer: create.transfer ?? 'open',
+          swap: 'off',
+          kind: 'item',
+          ...(description === undefined ? {} : { description }),
+          ...(image === undefined ? {} : { image }),
+        },
+        [
+          ...(create.supply === undefined ? (['maxSupply'] as const) : []),
+          ...(create.transfer === undefined ? (['transfer'] as const) : []),
+        ],
+      )
       // The `kind` hint is metadata, and metadata is written at issuance, so a
       // token that already existed keeps whatever it was created as.
       const info = await client.node.assetInfo(token.id)
@@ -330,7 +359,7 @@ export function createIssuerItems(client: KeiClient, options: ItemsOptions = {})
       if (options !== undefined && info.maxSupply !== null && BigInt(info.circulating) >= BigInt(info.maxSupply)) {
         fail(
           'roll-exhausted',
-          `Every ${info.name} that can exist is already held: this roll has a supply of ${info.maxSupply}, inherited from the base item. Give the base item a larger supply, or pass { supply } for this roll — but do it before the roll's first mint, because issuance is idempotent and a roll that exists keeps the supply it was issued with.`,
+          `Every ${info.name} that can exist is already held: this roll has a supply of ${info.maxSupply}, inherited from the base item. A roll that exists keeps the supply it was issued with — issuance metadata is immutable, so passing a larger { supply } for this one is refused rather than applied. Give the base item a larger supply before its rolls are issued, or roll different stats, which is a different asset with its own supply.`,
         )
       }
       const token = wrapIssuerToken(client, info)

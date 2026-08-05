@@ -106,6 +106,8 @@ export type MarketErrorCode =
   /** A persisted adapter/envelope does not satisfy the atomic storage contract. */
   | 'bad-market-storage'
   | 'market-storage-conflict'
+  /** An adapter claiming durability acknowledged a commit it cannot read back. */
+  | 'market-durability-unconfirmed'
   /** A materialized offer/checkpoint/quarantine record is unsafe. */
   | 'bad-market-row'
   /** A provider or account-chain source is malformed. */
@@ -161,6 +163,7 @@ const CODES = new Set<string>([
   'market-observation-conflict',
   'bad-market-storage',
   'market-storage-conflict',
+  'market-durability-unconfirmed',
   'bad-market-row',
   'bad-market-source',
   'market-deadline',

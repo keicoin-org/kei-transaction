@@ -2,7 +2,9 @@ import { describe, expect, test } from 'bun:test'
 import {
   createAccountChainIngestor as createMarketAccountChainIngestor,
   createAccountChainSource as createMarketAccountChainSource,
+  DEFAULT_MARKET_RETENTION as MARKET_DEFAULT_RETENTION,
   DEFAULT_SUBSCRIPTION_READ_TIMEOUT as MARKET_DEFAULT_SUBSCRIPTION_READ_TIMEOUT,
+  MARKET_STORAGE_SCHEMA_VERSION as MARKET_SCHEMA_VERSION,
   MAX_ACCOUNTS_PER_WALK as MARKET_MAX_ACCOUNTS_PER_WALK,
   MAX_DIRECTORY_LIMIT as MARKET_MAX_DIRECTORY_LIMIT,
   toUnixCandles as marketToUnixCandles,
@@ -12,15 +14,20 @@ import {
 import {
   createAccountChainIngestor,
   createAccountChainSource,
+  DEFAULT_MARKET_RETENTION,
   DEFAULT_SUBSCRIPTION_READ_TIMEOUT,
+  MARKET_STORAGE_SCHEMA_VERSION,
   MAX_ACCOUNTS_PER_WALK,
   MAX_DIRECTORY_LIMIT,
+  MAX_MARKET_RETENTION,
   toUnixCandles,
   toUnixLine,
   type InstrumentApi,
   type InstrumentSnapshot,
   type AccountChainIngestor,
   type MarketDataSource,
+  type MarketStorageAdapter,
+  type StoredMarketCoverage,
 } from '../src/index.js'
 
 describe('market bounds umbrella exports', () => {
@@ -44,5 +51,18 @@ describe('market bounds umbrella exports', () => {
     expect(typesCompile<InstrumentSnapshot>()).toBe(true)
     expect(typesCompile<AccountChainIngestor>()).toBe(true)
     expect(typesCompile<MarketDataSource>()).toBe(true)
+  })
+
+  test('exposes the store schema version and its retention bounds', () => {
+    expect(MARKET_STORAGE_SCHEMA_VERSION).toBe(MARKET_SCHEMA_VERSION)
+    expect(DEFAULT_MARKET_RETENTION).toBe(MARKET_DEFAULT_RETENTION)
+    // Every bound has a compaction path, and none of them may exceed what the
+    // envelope validator will open on the next read.
+    for (const key of Object.keys(DEFAULT_MARKET_RETENTION) as (keyof typeof DEFAULT_MARKET_RETENTION)[]) {
+      expect(DEFAULT_MARKET_RETENTION[key]).toBeLessThanOrEqual(MAX_MARKET_RETENTION[key])
+    }
+    const typesCompile = <T>(_value?: T): true => true
+    expect(typesCompile<MarketStorageAdapter>()).toBe(true)
+    expect(typesCompile<StoredMarketCoverage>()).toBe(true)
   })
 })

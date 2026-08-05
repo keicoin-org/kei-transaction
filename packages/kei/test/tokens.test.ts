@@ -3,7 +3,7 @@
  */
 
 import { beforeEach, describe, expect, test } from 'bun:test'
-import { Kei, randomSeed, type IssuerToken, type MockNode } from 'kei-transaction'
+import { Kei, randomSeed, type IssueOptions, type IssuerToken, type MockNode } from 'kei-transaction'
 
 const GAME_SEED = 'C'.repeat(64)
 
@@ -50,11 +50,137 @@ describe('issuing', () => {
   test('is idempotent per (issuer, symbol) — the id is derived, not assigned', async () => {
     const first = await game.token.issue({ name: 'Gems', symbol: 'GEM' })
     const balanceAfterFirst = await game.balance()
-    const second = await game.token.issue({ name: 'Gems Again', symbol: 'gem' })
+    const second = await game.token.issue({ name: 'Gems', symbol: 'gem' })
 
     expect(second.id).toBe(first.id)
     // No second burn, because nothing was issued the second time.
     expect(await game.balance()).toBe(balanceAfterFirst)
+  })
+
+  test('a full re-issue that matches writes no block and burns no Kei', async () => {
+    const args: IssueOptions = {
+      name: 'Gems',
+      symbol: 'GEM',
+      decimals: 2,
+      maxSupply: 1_000_000,
+      transfer: 'issuer-only',
+      swap: 'off',
+      rate: 100,
+      description: 'The hard currency.',
+      image: 'ipfs://gem',
+      kind: 'token',
+    }
+
+    const first = await game.token.issue(args)
+    const balanceAfterFirst = await game.balance()
+    const blocksAfterFirst = (await node.accountInfo(game.address))?.height
+
+    const second = await game.token.issue(args)
+    expect(second.id).toBe(first.id)
+    expect(await game.balance()).toBe(balanceAfterFirst)
+    expect((await node.accountInfo(game.address))?.height).toBe(blocksAfterFirst)
+    // And the issuer's asset count did not move, so the next asset is not dearer.
+    expect((await node.accountInfo(game.address))?.issuedCount).toBe(1)
+  })
+
+  // SPEC §5.4: the policy is chosen at issuance and immutable thereafter. The
+  // one call that can notice the source file and the chain disagreeing is this
+  // one, so it has to say so out loud rather than report success.
+  describe('a re-issue that contradicts the stored asset', () => {
+    const original: IssueOptions = {
+      name: 'Gold',
+      symbol: 'GOLD',
+      decimals: 0,
+      maxSupply: 1_000_000,
+      transfer: 'open',
+      swap: 'one-way',
+      description: 'Coin of the realm.',
+      image: 'ipfs://gold',
+      kind: 'token',
+    }
+
+    beforeEach(async () => {
+      await game.token.issue(original)
+    })
+
+    test('tightening transfer is refused, not silently ignored', async () => {
+      const attempt = game.token.issue({ ...original, transfer: 'issuer-only' })
+      await expect(attempt).rejects.toThrow(
+        /GOLD already exists on this account.*transfer is 'open' and you asked for 'issuer-only'.*immutable/s,
+      )
+      await expect(attempt).rejects.toThrow(/SPEC §5\.4/)
+      // Still open on chain, and the caller was told rather than left guessing.
+      const gold = await game.token('GOLD', game.address)
+      expect(gold.transferPolicy).toBe('open')
+    })
+
+    test('every field the chain stores is compared', async () => {
+      const cases: Array<[Partial<IssueOptions>, RegExp]> = [
+        [{ name: 'Golde' }, /name is 'Gold' and you asked for 'Golde'/],
+        [{ decimals: 2 }, /decimals is 0 and you asked for 2/],
+        [{ maxSupply: 10_000_000 }, /maxSupply is 1000000 and you asked for 10000000/],
+        [{ transfer: 'none' }, /transfer is 'open' and you asked for 'none'/],
+        [{ swap: 'two-way' }, /swap is 'one-way' and you asked for 'two-way'/],
+        [{ description: 'Nope.' }, /description is 'Coin of the realm\.' and you asked for 'Nope\.'/],
+        [{ image: 'ipfs://other' }, /image is 'ipfs:\/\/gold' and you asked for 'ipfs:\/\/other'/],
+        [{ kind: 'item' }, /kind is 'token' and you asked for 'item'/],
+      ]
+      for (const [override, expected] of cases) {
+        await expect(game.token.issue({ ...original, ...override })).rejects.toThrow(expected)
+      }
+    })
+
+    test('the refusal names every field that differs, not just the first', async () => {
+      await expect(
+        game.token.issue({ ...original, transfer: 'none', swap: 'off' }),
+      ).rejects.toThrow(/transfer is 'open' and you asked for 'none'; swap is 'one-way' and you asked for 'off'/)
+    })
+
+    test('the refusal is a KeiError with a code an agent can branch on', async () => {
+      try {
+        await game.token.issue({ ...original, transfer: 'issuer-only' })
+        throw new Error('should have refused')
+      } catch (error) {
+        expect((error as { code?: string }).code).toBe('issuance-mismatch')
+      }
+    })
+
+    test('a field the caller omitted is not compared against a default', async () => {
+      // No transfer, no swap, no maxSupply, no decimals, no metadata: this has
+      // not asked for 'open', it has not asked.
+      const gold = await game.token.issue({ name: 'Gold', symbol: 'GOLD' })
+      expect(gold.transferPolicy).toBe('open')
+      expect(gold.maxSupply).toBe(1_000_000)
+    })
+
+    test('rate is issuer configuration, so it never counts as a contradiction', async () => {
+      const gold = await game.token.issue({ ...original, rate: 7 })
+      expect(gold.rate).toBe(7)
+    })
+  })
+
+  // maxSupply is a cap in whole units against a raw value on the chain, so at
+  // 18 decimals a `number` comparison loses the bottom of it entirely.
+  test('maxSupply is compared in raw units, at a scale a number cannot hold', async () => {
+    const wei: IssueOptions = { name: 'Wei', symbol: 'WEI', decimals: 18, maxSupply: '1000000' }
+    await game.token.issue(wei)
+
+    // Same cap: no block, no burn.
+    const balanceAfter = await game.balance()
+    await game.token.issue(wei)
+    expect(await game.balance()).toBe(balanceAfter)
+
+    // One raw unit off — 10^-18 of a token, invisible as a float.
+    await expect(
+      game.token.issue({ ...wei, maxSupply: '1000000.000000000000000001' }),
+    ).rejects.toThrow(/maxSupply is 1000000 and you asked for 1000000\.000000000000000001/)
+  })
+
+  test('a cap asked of an uncapped token says so', async () => {
+    await game.token.issue({ name: 'Air', symbol: 'AIR' })
+    await expect(game.token.issue({ name: 'Air', symbol: 'AIR', maxSupply: 10 })).rejects.toThrow(
+      /maxSupply is uncapped and you asked for 10/,
+    )
   })
 
   test('a first token burns 1 Kei — the one non-free operation (SPEC §5.6.5)', async () => {
@@ -228,9 +354,14 @@ describe('transfer policy, enforced by the ledger and not by the SDK', () => {
     await expect(token.transfer(other.address, 1)).rejects.toThrow(/soulbound.*only be burned/s)
   })
 
-  test('the policy is immutable: re-issuing does not change it', async () => {
+  test('the policy is immutable, and asking for a different one is refused', async () => {
     await game.token.issue({ name: 'Coin', symbol: 'FIXED', transfer: 'issuer-only' })
-    const again = await game.token.issue({ name: 'Coin', symbol: 'FIXED', transfer: 'open' })
+    await expect(
+      game.token.issue({ name: 'Coin', symbol: 'FIXED', transfer: 'open' }),
+    ).rejects.toThrow(/transfer is 'issuer-only' and you asked for 'open'/)
+
+    // Unchanged, which was always true; what is new is being told.
+    const again = await game.token.issue({ name: 'Coin', symbol: 'FIXED' })
     expect(again.transferPolicy).toBe('issuer-only')
   })
 })

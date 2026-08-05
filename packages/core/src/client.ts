@@ -19,6 +19,8 @@ import { hashBlock } from './hash.js'
 import { bytesToHex, utf8 } from './hex.js'
 import type { KeyPair } from './keys.js'
 import type { AssetInfo, KeiNode, Receivable, Unsubscribe } from './node.js'
+import type { OwnershipChallengeMessage, OwnershipProof } from './ownership.js'
+import { ownershipChallengeHash, parseOwnershipChallenge } from './ownership.js'
 import type { WorkProvider } from './work.js'
 import { workRoot } from './work.js'
 
@@ -144,6 +146,30 @@ export class KeiClient {
       this.#keys.privateKey,
       claimStoreAdmissionHash(this.node.network, this.address, root, value),
     )
+  }
+
+  /**
+   * Prove this wallet controls its address, to whoever asked (SPEC §6.3).
+   *
+   * The same fixed-domain shape as `authorizeClaimStore` and the same promise:
+   * the digest is derived here from the parsed challenge, so the party asking
+   * never names the bytes. Works under every `reveal` policy, because proving
+   * control is what a wallet does with its key rather than something anyone
+   * needs its seed for (SPEC §6.6).
+   */
+  async signOwnershipChallenge(challenge: OwnershipChallengeMessage): Promise<OwnershipProof> {
+    const parsed = parseOwnershipChallenge(challenge)
+    if (parsed.address !== this.address) {
+      fail(
+        'challenge-not-mine',
+        'That challenge names a different wallet, so this one cannot answer it. Ask whoever issued it for one naming kei.address, which is the address this wallet can prove.',
+      )
+    }
+    return {
+      address: this.address,
+      signature: await signHash(this.#keys.privateKey, ownershipChallengeHash(parsed)),
+      challenge: parsed,
+    }
   }
 
   // -------------------------------------------------------------- lifecycle
