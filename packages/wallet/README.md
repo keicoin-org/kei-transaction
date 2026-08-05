@@ -108,9 +108,12 @@ const wallet = createWallet(client, {
 Those four constants, `createWallet`, and the `WalletOptions` TypeScript type are
 also re-exported by the recommended `kei-transaction` umbrella package.
 
-The concurrency limit is wallet-wide, including overlapping summaries. The LRU
-cache lasts for the wallet object's lifetime and contains issuance metadata
-only; balance, holdings, pending claims, and circulating supply are always read
+Both limits are the client's, not one wallet's: the cache is shared with
+`kei.items.ownedBy()`, so the same asset is fetched once and the concurrency
+bound covers overlapping summaries and inventory reads together. Whichever asks
+first sizes it, and `createWallet` asks while it is being constructed. The LRU
+cache lasts for the client's lifetime and contains issuance metadata only;
+balance, holdings, pending claims, and circulating supply are always read
 fresh. A custom cache limit below the current holding count is supported, but it
 will evict and refetch some metadata between summaries. Invalid limits fail
 synchronously with `KeiError('bad-wallet-option')`. If a node answers an asset

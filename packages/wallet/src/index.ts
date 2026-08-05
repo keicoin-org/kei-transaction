@@ -17,15 +17,15 @@
  */
 
 import type { AssetId, KeiClient } from '@keicoin/core'
-import { KEI_DECIMALS, fail, fromRaw } from '@keicoin/core'
+import { KEI_DECIMALS, assetCacheFor, fail, fromRaw } from '@keicoin/core'
 import type { ItemStats } from '@keicoin/tokens'
 import type { ClaimsApi, PendingClaim } from '@keicoin/claims'
 import {
-  AssetFactsCache,
   DEFAULT_ASSET_CACHE_LIMIT,
   DEFAULT_ASSET_CONCURRENCY,
   MAX_ASSET_CACHE_LIMIT,
   MAX_ASSET_CONCURRENCY,
+  assetFactsFrom,
 } from './assets.js'
 
 export interface TokenBalance {
@@ -76,20 +76,24 @@ export interface WalletApi {
 export interface WalletOptions {
   claims?: ClaimsApi
   /**
-   * How many asset-metadata lookups this wallet may have in flight at once,
-   * counted across every `summary()` call and refresh it is running rather than
-   * per call. Defaults to 8.
+   * How many asset-metadata lookups this client may have in flight at once,
+   * counted across every `summary()`, refresh, and `items.ownedBy()` it is
+   * running rather than per call. Defaults to 8.
    *
    * Raise it when talking to a node you run yourself; the default is sized for
-   * the shared public one (see assets.ts). Must be a whole number from 1
-   * through 32.
+   * the shared public one (see `asset-cache.ts` in `@keicoin/core`). Must be a
+   * whole number from 1 through 32.
    */
   assetConcurrency?: number
   /**
-   * How many assets' immutable metadata this wallet remembers before evicting
+   * How many assets' immutable metadata this client remembers before evicting
    * the least recently used. Defaults to 2,048 — twice SPEC §7's hard cap of
    * 1,024 distinct assets per account. Must be a whole number from 1 through
    * 8,192; there is no unbounded setting.
+   *
+   * Both bounds belong to the client's one asset cache, which the wallet shares
+   * with `items.ownedBy()`. The first caller to ask for it sizes it, and
+   * `createWallet` asks while it is being constructed.
    */
   assetCacheLimit?: number
 }
@@ -117,21 +121,20 @@ function byAssetId(a: { asset: AssetId }, b: { asset: AssetId }): number {
 }
 
 export function createWallet(client: KeiClient, options: WalletOptions = {}): WalletApi {
-  const assets = new AssetFactsCache(
-    client.node,
-    positiveInteger(
+  const assets = assetCacheFor(client, {
+    limit: positiveInteger(
       options.assetCacheLimit,
       DEFAULT_ASSET_CACHE_LIMIT,
       'assetCacheLimit',
       MAX_ASSET_CACHE_LIMIT,
     ),
-    positiveInteger(
+    concurrency: positiveInteger(
       options.assetConcurrency,
       DEFAULT_ASSET_CONCURRENCY,
       'assetConcurrency',
       MAX_ASSET_CONCURRENCY,
     ),
-  )
+  })
 
   const summary = async (): Promise<WalletSummary> => {
     // Everything mutable, read fresh every time: the Kei balance, what the
@@ -143,13 +146,14 @@ export function createWallet(client: KeiClient, options: WalletOptions = {}): Wa
       options.claims ? options.claims.pending() : Promise.resolve<PendingClaim[]>([]),
     ])
 
-    const facts = await assets.resolve(holdings.map((holding) => holding.asset))
+    const records = await assets.resolve(holdings.map((holding) => holding.asset))
 
     const tokens: TokenBalance[] = []
     const items: ItemHolding[] = []
     for (const holding of holdings) {
-      const asset = facts.get(holding.asset)
-      if (!asset) continue
+      const record = records.get(holding.asset)
+      if (!record) continue
+      const asset = assetFactsFrom(record)
       if (asset.item) {
         items.push({
           asset: asset.asset,

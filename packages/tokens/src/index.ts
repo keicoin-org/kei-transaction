@@ -23,6 +23,7 @@ export type {
   IssuerItemsApi,
   MintedItem,
   MintItemOptions,
+  OwnedByOptions,
   PlayerItemsApi,
 } from './items.js'
 

@@ -122,6 +122,7 @@ export type {
   IssuerToken,
   Item,
   ItemCommitEntry,
+  OwnedByOptions,
   PlayerToken,
   PublishedCommit,
   TokenTransfer,

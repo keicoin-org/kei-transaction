@@ -52,6 +52,17 @@ export type {
   WorkTier,
 } from './blocks.js'
 
+export {
+  AssetCache,
+  DEFAULT_ASSET_CACHE_LIMIT,
+  DEFAULT_ASSET_CONCURRENCY,
+  MAX_ASSET_CACHE_LIMIT,
+  MAX_ASSET_CONCURRENCY,
+  assetCacheFor,
+  assetRecordFrom,
+} from './asset-cache.js'
+export type { AssetCacheHost, AssetCacheOptions, AssetRecord } from './asset-cache.js'
+
 export { KeiClient, claimStoreAdmissionHash } from './client.js'
 export type { BlockDraft, ClientConfig, ClientEvents, PaymentEvent, RevealPolicy, Role } from './client.js'
 
