@@ -33,14 +33,32 @@ export type Role = 'player' | 'issuer'
 export interface PaymentEvent {
   from: string
   amount: number
+  /**
+   * The receive block this account just wrote. It lives on the payee's own
+   * chain, so the payer has never seen it.
+   */
   hash: string
+  /**
+   * The payer's send block — the one id both parties hold, and what `pay()`
+   * returned to them. Correlate an order by this, not by `hash`.
+   */
+  sendHash: string
   memo?: string
 }
 
 export interface ClientEvents extends Record<string, unknown> {
   received: PaymentEvent
   sent: { to: string; amount: number; hash: string; memo?: string }
-  'asset-received': { asset: AssetId; symbol: string; amount: number; from: string; hash: string }
+  'asset-received': {
+    asset: AssetId
+    symbol: string
+    amount: number
+    from: string
+    /** The receive block this account wrote. */
+    hash: string
+    /** The sender's send block — the id both parties hold. */
+    sendHash: string
+  }
   /** Anything that could change what a wallet panel shows. */
   update: { reason: string }
   error: KeiError
@@ -240,10 +258,12 @@ export class KeiClient {
       // SDK refuses the same way it refuses commit/commit_close/claim — up
       // front, rather than building a block the node would reject or, worse,
       // silently strip the memo from. Correlate the payment by the hash
-      // returned here instead, passed out of band to the recipient.
+      // returned here instead: it is the send hash, and the recipient reads the
+      // same value off `PaymentEvent.sendHash`, so nothing has to be passed out
+      // of band for the two sides to agree on which payment this was.
       fail(
         'no-memo-yet',
-        'kei.pay({ memo }) is not available yet — a memo on a Kei payment has no wire representation until M4. Correlate the payment by its hash instead: the hash this call returns is exact, where a memo would only have narrowed an amount/timing guess.',
+        'kei.pay({ memo }) is not available yet — a memo on a Kei payment has no wire representation until M4. Correlate the payment by its hash instead: the hash this call returns is the send hash, and the recipient sees the same value as `sendHash` on the payment it receives. That match is exact, where a memo would only have narrowed an amount/timing guess.',
       )
     }
 
@@ -348,6 +368,7 @@ export class KeiClient {
         from: receivable.from,
         amount: fromRaw(amount, KEI_DECIMALS),
         hash,
+        sendHash: receivable.hash,
         ...(receivable.memo === undefined ? {} : { memo: receivable.memo }),
       })
       return
@@ -361,6 +382,7 @@ export class KeiClient {
       amount: fromRaw(BigInt(receivable.amount), meta.decimals),
       from: receivable.from,
       hash,
+      sendHash: receivable.hash,
     })
   }
 
