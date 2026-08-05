@@ -260,11 +260,14 @@ export class Kei {
       ...(options.autoClaim === false ? { autoClaim: false } : {}),
       ...(options.claimStore === undefined ? {} : { store: options.claimStore }),
     })
-    this.wallet = createWallet(client, { claims: this.claims })
     this.market = createMarket(
       client,
       options.autoCancelExpired === false ? { autoCancelExpired: false } : {},
     )
+    // The same market again, and this one is why it is built first: a listed
+    // item leaves `holdings` while it is still the player's (SPEC §9.2), so a
+    // wallet that cannot read this account's own offers reports it as gone.
+    this.wallet = createWallet(client, { claims: this.claims, market: this.market })
     // Shares this market rather than opening a second one, so a recipe's offers
     // are swept by the same background cancel as everything else (SPEC §9.3).
     this.economy = createEconomy(client, {

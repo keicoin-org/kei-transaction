@@ -32,7 +32,7 @@ import {
 } from '@keicoin/core'
 import { createClaims } from '@keicoin/claims'
 import { createIssuerItems, createPlayerItems, type IssuerItemsApi, type PlayerItemsApi } from '@keicoin/tokens'
-import { createWallet } from '../src/index.js'
+import { createWallet, type WalletMarket } from '../src/index.js'
 import type { WalletPanelCustody, WalletPanelKei } from '../src/panel.js'
 
 /** Generates work locally against whatever thresholds the node advertises. */
@@ -59,6 +59,13 @@ interface WalletOptions {
   autoClaim?: boolean
   /** What `Kei.start()` would have reported about this seed (SPEC §6.4). */
   custody?: WalletPanelCustody
+  /**
+   * This wallet's own open offers. `@keicoin/market` is downstream of this
+   * package, so the tests here supply the shape `createWallet` asks for rather
+   * than the market itself; `packages/kei/test/wallet-locked.test.ts` runs the
+   * same ground through the real one.
+   */
+  market?: WalletMarket
 }
 
 async function baseWallet(node: MockNode, role: Role, options: WalletOptions): Promise<BaseWallet> {
@@ -73,7 +80,10 @@ async function baseWallet(node: MockNode, role: Role, options: WalletOptions): P
   await client.start()
 
   const claims = createClaims(client, options.autoClaim === false ? { autoClaim: false } : {})
-  const wallet = createWallet(client, { claims })
+  const wallet = createWallet(client, {
+    claims,
+    ...(options.market === undefined ? {} : { market: options.market }),
+  })
   // Matches the real `Kei` class's public shape exactly (SPEC §6.5) — see
   // WalletPanelKei's doc comment — so no adapter is needed here either.
   const kei: WalletPanelKei = {

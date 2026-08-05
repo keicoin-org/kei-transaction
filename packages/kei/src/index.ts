@@ -405,8 +405,14 @@ export {
 } from '@keicoin/wallet'
 export type {
   ItemHolding,
+  LockedHolding,
   TokenBalance,
   WalletApi,
+  WalletMarket,
+  WalletMarketCoverage,
+  WalletMarketLeg,
+  WalletMarketOffer,
+  WalletMarketOffers,
   WalletOptions,
   WalletPanelCustody,
   WalletPanelHandle,

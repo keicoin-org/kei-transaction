@@ -27,7 +27,7 @@
 
 import type { RevealPolicy } from '@keicoin/core'
 import { fail, scrub } from '@keicoin/core'
-import type { WalletApi, WalletSummary } from './index.js'
+import type { LockedHolding, WalletApi, WalletSummary } from './index.js'
 
 /** `'inventory'` is the SPEC §6.5 example's spelling; it is an alias for `'items'`. */
 export type WalletPanelSection = 'balance' | 'tokens' | 'items' | 'inventory' | 'claims'
@@ -295,11 +295,20 @@ function renderBalance(doc: Document, el: HTMLElement, summary: WalletSummary): 
   value.className = 'kei-wallet-panel__value'
   value.textContent = String(summary.kei)
   el.append(label, value)
+  // A bid takes the Kei out of the balance the moment it is written (SPEC §9.2)
+  // and nothing else on the panel accounts for the difference, so the number
+  // above is only honest next to this one.
+  if (summary.keiLocked <= 0) return
+  const locked = doc.createElement('span')
+  locked.className = 'kei-wallet-panel__locked'
+  locked.textContent = `${summary.keiLocked} locked in your offers`
+  el.appendChild(locked)
 }
 
 function renderTokens(doc: Document, el: HTMLElement, summary: WalletSummary): void {
   el.textContent = ''
-  if (summary.tokens.length === 0) {
+  const locked = summary.locked.filter((holding) => !holding.item)
+  if (summary.tokens.length === 0 && locked.length === 0) {
     el.appendChild(emptyNote(doc, 'No tokens yet.'))
     return
   }
@@ -316,11 +325,19 @@ function renderTokens(doc: Document, el: HTMLElement, summary: WalletSummary): v
     row.append(name, amount)
     el.appendChild(row)
   }
+  for (const holding of locked) {
+    el.appendChild(lockedRow(doc, holding, holding.name, `${holding.amount} ${holding.symbol}`))
+  }
 }
 
 function renderItems(doc: Document, el: HTMLElement, summary: WalletSummary): void {
   el.textContent = ''
-  if (summary.items.length === 0) {
+  const locked = summary.locked.filter((holding) => holding.item)
+  // "No items yet." is true only of an account that holds none and has none
+  // locked either. An item in this player's own offer is still this player's
+  // and comes back on a cancel (SPEC §9.2), so it is named below instead of
+  // being counted as nothing.
+  if (summary.items.length === 0 && locked.length === 0) {
     el.appendChild(emptyNote(doc, 'No items yet.'))
     return
   }
@@ -334,6 +351,41 @@ function renderItems(doc: Document, el: HTMLElement, summary: WalletSummary): vo
     row.appendChild(name)
     el.appendChild(row)
   }
+  for (const holding of locked) {
+    const name = holding.amount > 1 ? `${holding.name} ×${holding.amount}` : holding.name
+    el.appendChild(lockedRow(doc, holding, name, null))
+  }
+}
+
+/**
+ * A row for something the player owns and cannot spend, marked as such in the
+ * DOM as well as in the sentence: a game styling around this needs to be able
+ * to tell the two apart without reading the text.
+ */
+function lockedRow(doc: Document, holding: LockedHolding, name: string, amount: string | null): HTMLElement {
+  const row = doc.createElement('div')
+  row.className = 'kei-wallet-panel__row kei-wallet-panel__row--locked'
+  row.dataset.symbol = holding.symbol
+  row.dataset.locked = holding.reason
+  row.dataset.offer = holding.offer
+  const nameEl = doc.createElement('span')
+  nameEl.className = 'kei-wallet-panel__row-name'
+  nameEl.textContent = name
+  row.appendChild(nameEl)
+  if (amount !== null) {
+    const amountEl = doc.createElement('span')
+    amountEl.className = 'kei-wallet-panel__row-amount'
+    amountEl.textContent = amount
+    row.appendChild(amountEl)
+  }
+  const note = doc.createElement('span')
+  note.className = 'kei-wallet-panel__row-locked'
+  // Both halves matter: where it went, and that it is coming back if nobody
+  // takes it. "Listed" is the player's word for the state; the offer hash is on
+  // the row for the game that wants to offer a cancel button.
+  note.textContent = `Listed for ${holding.want.amount} ${holding.want.symbol}. Still yours until it sells.`
+  row.appendChild(note)
+  return row
 }
 
 function renderClaims(doc: Document, el: HTMLElement, summary: WalletSummary): void {

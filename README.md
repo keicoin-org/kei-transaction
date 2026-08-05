@@ -532,9 +532,16 @@ There is a runnable version of all of this in
 ## The wallet
 
 ```js
-await kei.wallet.summary()      // { address, kei, tokens, items, pending }
+await kei.wallet.summary()      // { address, kei, keiLocked, tokens, items, locked, pending }
 kei.wallet.on('change', s => {})
 ```
+
+`kei`, `tokens` and `items` are what the player can spend right now; `locked` and
+`keiLocked` are what they own and cannot. An offer holds the seller's own asset
+until somebody takes it or they cancel it, so a listed sword leaves the spendable
+balance while it is still theirs — `items` plus `locked` is the inventory, and a
+screen showing only the first tells a player who just listed a sword that they
+have no sword.
 
 The seed lives in browser storage and is never transmitted anywhere. Whether a
 player can see it is your decision, declared at setup:
