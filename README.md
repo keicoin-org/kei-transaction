@@ -154,20 +154,6 @@ await kei.items.ownedBy(address, { limit: 20 })  // first 20 holdings, not first
 await kei.items.transfer(sword.id, toAddress)   // player-signed
 ```
 
-**The symbol is derived from the name.** 7 characters of stub plus 48 bits of
-digest, which is the node's 20-character `max_symbol` spent as widely as it goes.
-`items.create()` is therefore idempotent per (issuer, name), and it refuses an
-asset whose name is not the one you asked to create — so a digest collision, or a
-`symbol` you passed that another item already holds, is an error rather than two
-items sharing one supply. Pass `symbol` to override the derivation.
-
-> **Changed after 0.9.0.** The digest used to be 16 bits, which collides across a
-> catalogue of a few hundred items. Items already issued keep the symbol and id
-> they were issued with; the new derivation would give the same name a new asset.
-> If you have shipped a catalogue, pin its symbols with
-> `items.create({ symbol })` — read them off your existing items, or off
-> `itemSymbolFor` from a 0.9.x install — before upgrading.
-
 ### Stats
 
 Items carry stats if you want them — a sword with no attack number is a picture.
@@ -897,7 +883,7 @@ release.
 | `@keicoin/core` | `0.6.0` burnt | **`0.7.0`** | Minor. `swaps.ts` ([#141](https://github.com/keicoin-org/kei-transaction/pull/141)) and `ownership.ts` ([#142](https://github.com/keicoin-org/kei-transaction/pull/142)) are absent from the published tarball entirely; the entry gains 18 names. #141 also **changed an existing failure mode**: `swap_info` with no `offer` and `account_swaps` with no `offers` used to default to "no such offer" and "no offers", and are now refused as malformed |
 | `@keicoin/work` | `0.4.2` | **`0.4.3`** | Patch. Every file under `src/` is byte-identical to the published tarball; only its core floor moves |
 | `@keicoin/claims` | `0.6.0` | **`0.7.0`** | Minor. `headroom.ts` is new, the entry gains `assertCommitHeadroom` and `CommitHeadroomOptions` ([#137](https://github.com/keicoin-org/kei-transaction/pull/137)), and [#159](https://github.com/keicoin-org/kei-transaction/pull/159) rewrote which refusal an unpayable drop raises |
-| `@keicoin/tokens` | `0.5.3` | **`0.6.0`** | Minor, and the one to read before publishing. The entry gains `IssuanceField`; `issueToken()` now throws `issuance-mismatch` where a contradicting re-issue used to succeed silently ([#148](https://github.com/keicoin-org/kei-transaction/pull/148)); and [#149](https://github.com/keicoin-org/kei-transaction/pull/149) changes the symbol and asset id derived from **every** item name |
+| `@keicoin/tokens` | `0.5.3` | **`0.6.0`** | Minor. The entry gains `IssuanceField`; `issueToken()` now throws `issuance-mismatch` where a contradicting re-issue used to succeed silently ([#148](https://github.com/keicoin-org/kei-transaction/pull/148)). [#149](https://github.com/keicoin-org/kei-transaction/pull/149)'s 48-bit item symbol is **not** in this release — see below — so `itemSymbolFor()` still derives the published `0.5.3` shape, a 12-character slug plus a 2-byte digest |
 | `@keicoin/market` | `0.5.0` | **`0.6.0`** | Minor. `stored-history.ts` is new and the entry goes from 172 to 201 exports — bounded durable storage ([#147](https://github.com/keicoin-org/kei-transaction/pull/147)) and unrounded stored price history ([#161](https://github.com/keicoin-org/kei-transaction/pull/161)) |
 | `@keicoin/wallet` | `0.5.1` | **`0.6.0`** | Minor. The published tarball contains no `signOwnershipChallenge` at all, so `WalletApi` gains a required member ([#142](https://github.com/keicoin-org/kei-transaction/pull/142)), and the entry gains `LockedHolding` and the four `WalletMarket*` types ([#139](https://github.com/keicoin-org/kei-transaction/pull/139)) |
 | `@keicoin/economy` | `0.2.2` | **`0.2.3`** | Patch, and never published at `0.2.3`. Its entry is byte-identical to the published one; only `batch.ts` moved to claims' shared headroom helper, with the same `no-headroom` code |
@@ -926,26 +912,27 @@ measure after the publish, not before it.
 
 #### Two things a person doing this release needs to have read
 
-**#149 must not reach npm until the consumer checklist in
-[#155](https://github.com/keicoin-org/kei-transaction/issues/155) is ticked.**
-The published `@keicoin/tokens@0.5.3` still derives an item symbol from a
-12-character slug and a 2-byte digest; this tree derives it from a 7-character
-stub and a 6-byte digest. So a game that upgrades and keeps calling
-`items.create({ name })` derives a different symbol for the same name and issues
-a **second** asset for an item its players already hold: Kei burnt on the new
-issuance, and the units in inventories orphaned against an id nothing mints into
-any more. The five consumers to confirm first are world-of-wonder, button,
-`create-kei-game`'s templates, carpet-markets and kei-wallet.
-`items.create({ symbol })` is the pin, and it needs no new API. `@keicoin/tokens`
-is where the change lands, and the umbrella carries it too.
+**#149 is deferred out of this release, per #155.** `master` carried #149's
+48-bit `itemSymbolFor()` (7-character stub, 6-byte digest) briefly, but the
+per-consumer checklist in
+[#155](https://github.com/keicoin-org/kei-transaction/issues/155) —
+world-of-wonder, button, `create-kei-game`'s templates, carpet-markets and
+kei-wallet — is still entirely unticked, each box living in another repository
+that this release cannot see the state of. Publishing the new derivation before
+those catalogues pin their existing symbols with `items.create({ symbol })`
+would make every one of them issue a **second** asset for an item its players
+already hold on the next upgrade: Kei burnt on the new issuance, and the units
+already in inventories orphaned against an id nothing mints into any more. So
+[#149](https://github.com/keicoin-org/kei-transaction/pull/149) was reverted for
+this release (`itemSymbolFor()` is back to the published `0.5.3` shape — a
+12-character slug plus a 2-byte digest, along with the `item-name-mismatch`
+guard that only the new derivation needed) and stays reverted until every box
+above is ticked. It remains merged in the project's history and can be
+re-landed in a future minor once that is true.
 
-**`issuance-mismatch` now shadows `item-name-mismatch`.** #148 and #149 landed
-together, and in `items.create()` the `name` comparison inside
-`assertIssuanceMatches` runs first — before `create()` reaches its own
-`item-name-mismatch` guard. So a symbol collision on an existing item surfaces as
-`issuance-mismatch`, and #149's guard is unreachable through `create()`. Any
-consumer error handling or documentation written against `item-name-mismatch` is
-wrong as of this release.
+`#148`'s `issuance-mismatch` — a contradicting re-issue now throws instead of
+succeeding silently — is unaffected by the revert above and ships in this
+release as planned.
 
 `npm run release:check` is the mechanical proof that the graph is closed: it
 reads every public manifest, refuses any internal range that cannot select the
