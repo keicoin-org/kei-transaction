@@ -19,7 +19,16 @@ export function registerSecret(secret: string): void {
   }
 }
 
-/** Replace every registered secret in `text` with a marker. */
+/**
+ * The safe way to include arbitrary text in something you are about to emit —
+ * a log line, an event, a crash report. Replaces every registered secret in
+ * `text` with a marker before you send it anywhere.
+ *
+ * Covers what `registerSecret` was told about: a seed or private key an
+ * `@keicoin/core` client derived, in every case it stores. It is a backstop
+ * (see the module comment above), not a general-purpose secret scanner — it
+ * does not protect a secret your own code invented and never registered.
+ */
 export function scrub(text: string): string {
   let out = text
   for (const secret of secrets) {
@@ -28,7 +37,16 @@ export function scrub(text: string): string {
   return out
 }
 
-/** True if `text` contains a registered secret. Used by the test suite. */
+/**
+ * A last-line check before an integration writes `text` to a transport, a
+ * log, or a crash reporter: true if it contains a value this process
+ * registered as secret. Covers the seed and its derived private key, in
+ * every case, for every client this process has opened — the same registry
+ * `scrub` reads from, so the two stay in agreement.
+ *
+ * A backstop, not a general-purpose secret scanner (see the module comment
+ * above): it only catches a value `registerSecret` was told about.
+ */
 export function containsSecret(text: string): boolean {
   for (const secret of secrets) {
     if (text.includes(secret)) return true

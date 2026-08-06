@@ -44,6 +44,9 @@ export type {
 export {
   ADDRESS_PREFIX,
   HttpNode,
+  containsSecret,
+  formatRaw,
+  fromRaw,
   issuanceBurn,
   KEI_ASSET,
   KEI_DECIMALS,
@@ -56,6 +59,7 @@ export {
   MAX_CHALLENGE_DOMAIN,
   MockNode,
   NULL_REPRESENTATIVE,
+  ZERO_HASH,
   addressFromPublicKey,
   createNonceStore,
   isAddress,
@@ -71,6 +75,9 @@ export {
   randomChallengeNonce,
   randomSalt,
   randomSeed,
+  registerSecret,
+  scrub,
+  toRaw,
   verifyOwnershipProof,
 } from '@keicoin/core'
 export type {
