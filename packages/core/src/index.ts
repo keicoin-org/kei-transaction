@@ -98,6 +98,7 @@ export {
   parseOwnershipChallenge,
   randomChallengeNonce,
   verifyOwnershipProof,
+  verifyOwnershipProofWithoutReplayProtection,
 } from './ownership.js'
 export type {
   ChallengeContextValue,
@@ -106,6 +107,8 @@ export type {
   OwnershipChallengeMessage,
   OwnershipExpectation,
   OwnershipProof,
+  OwnershipVerificationFailureCode,
+  OwnershipVerificationResult,
 } from './ownership.js'
 
 export type {

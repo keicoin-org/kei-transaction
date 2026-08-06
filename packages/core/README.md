@@ -41,13 +41,16 @@ const challenge = {
 
 // ...send the challenge, receive { address, signature, challenge } back...
 
-const ok = await verifyOwnershipProof(proof, { ...challenge, nonces })
+const { verified } = await verifyOwnershipProof(proof, { ...challenge, nonces })
 ```
 
-It returns `false` for anything a client could have got wrong — bad signature,
-another challenge, an unknown field, a replayed nonce — and never puts the proof
-in an error. It throws only when your own expectation is malformed, which is
-your bug rather than theirs.
+It refuses — `{ verified: false, code, message }` — for anything a client could
+have got wrong: bad signature, another challenge, an unknown field, a replayed
+nonce, each with its own `code` — and never puts the proof in an error. It
+throws only when your own expectation is malformed, which is your bug rather
+than theirs — and `nonces` being missing is one of those bugs: without it the
+same proof would verify forever. Call `verifyOwnershipProofWithoutReplayProtection`
+instead if that is deliberate for a given proof.
 
 A challenge is signed under a fixed `kei-ownership-challenge-v1` domain followed
 by canonical JSON, where a block is hashed under `blake2b-256("kei-block-v1")`

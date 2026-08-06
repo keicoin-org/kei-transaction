@@ -15,6 +15,7 @@ import type {
   KeyPair,
   NetworkName,
   OwnershipExpectation,
+  OwnershipVerificationResult,
   PaymentEvent,
   RevealPolicy,
   Role,
@@ -357,13 +358,17 @@ export class Kei {
    *
    * The asking half of proving address control, and the only half a game server
    * runs. It needs the address and no key, so a server holding no wallet can
-   * import `verifyOwnershipProof` on its own instead. Pass `nonces` or the same
-   * proof answers every challenge that shares its nonce.
+   * import `verifyOwnershipProof` on its own instead.
+   *
+   * `expected.nonces` is required — pass `createNonceStore()` — or the same
+   * proof verifies forever, which is not weaker replay protection, it is none.
+   * Use `verifyOwnershipProofWithoutReplayProtection` directly (also exported
+   * from this package) if that is deliberate for a given proof.
    */
   static async verifyOwnershipProof(
     proof: unknown,
     expected: OwnershipExpectation,
-  ): Promise<boolean> {
+  ): Promise<OwnershipVerificationResult> {
     return verifyOwnershipProof(proof, expected)
   }
 

@@ -348,13 +348,19 @@ const proof = await kei.wallet.signOwnershipChallenge(challenge)
 The server checks it:
 
 ```js
-const ok = await verifyOwnershipProof(proof, { ...challenge, nonces })
+const { verified } = await verifyOwnershipProof(proof, { ...challenge, nonces })
 ```
 
 `verifyOwnershipProof` needs the address and nothing else — no key, no wallet,
-no node — so a server holding no Kei wallet at all can run it. It returns
-`false` for anything a client could have got wrong and throws only when your own
-expectation is malformed, which is the one case a sentence can fix.
+no node — so a server holding no Kei wallet at all can run it. It refuses —
+`{ verified: false, code, message }` — for anything a client could have got
+wrong, naming why (bad signature, wrong challenge, a replay), and never puts
+the proof in an error. It throws only when your own expectation is malformed,
+which is the one case a sentence can fix — and `nonces` is now required for
+exactly that reason: without it, the same proof would verify forever, and an
+observed proof would become a permanent credential. Call
+`verifyOwnershipProofWithoutReplayProtection` instead if that is deliberate for
+a given proof.
 
 The wallet signs the digest it derived from the challenge, never a digest you
 hand it. You may send yours along as `hash`; it is checked, and a disagreement

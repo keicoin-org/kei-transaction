@@ -24,6 +24,7 @@ import {
   signHash,
   utf8,
   verifyOwnershipProof,
+  verifyOwnershipProofWithoutReplayProtection,
   type MockNode,
   type OwnershipChallenge,
   type StateBlockBody,
@@ -98,14 +99,14 @@ describe('domain separation', () => {
       // still not a proof of anything here, because it covers other bytes.
       const signature = await signHash(ALICE.privateKey, blockHash)
       const proof = { address: ALICE.address, signature, challenge: CHALLENGE }
-      expect(await verifyOwnershipProof(proof, CHALLENGE)).toBe(false)
+      expect((await verifyOwnershipProofWithoutReplayProtection(proof, CHALLENGE)).verified).toBe(false)
     }
   })
 
   test('an ownership proof is not a signature over any block this wallet could publish', async () => {
     const kei = await player()
     const proof = await kei.wallet.signOwnershipChallenge(CHALLENGE)
-    expect(await verifyOwnershipProof(proof, CHALLENGE)).toBe(true)
+    expect((await verifyOwnershipProofWithoutReplayProtection(proof, CHALLENGE)).verified).toBe(true)
 
     // The other direction of the same claim: what a server accepted cannot be
     // replayed at a node as the signature on a block.
@@ -122,7 +123,7 @@ describe('domain separation', () => {
     // preimage towards a block's.
     const other = { ...CHALLENGE, domain: 'other-game.example/v1' }
     expect(ownershipChallengeHash(other)).not.toBe(ownershipChallengeHash(CHALLENGE))
-    expect(await verifyOwnershipProof(proof, other)).toBe(false)
+    expect((await verifyOwnershipProofWithoutReplayProtection(proof, other)).verified).toBe(false)
   })
 
   test('no field can be smuggled through the boundary of the one beside it', () => {
@@ -148,8 +149,9 @@ describe('a game server checking a proof', () => {
 
     expect(proof.address).toBe(address)
     expect(Object.keys(proof).sort()).toEqual(['address', 'challenge', 'signature'])
-    expect(await verifyOwnershipProof(proof, { ...CHALLENGE, address })).toBe(true)
-    expect(await Kei.verifyOwnershipProof(proof, { ...CHALLENGE, address })).toBe(true)
+    const nonces = createNonceStore()
+    expect((await verifyOwnershipProof(proof, { ...CHALLENGE, address, nonces })).verified).toBe(true)
+    expect((await Kei.verifyOwnershipProof(proof, { ...CHALLENGE, address, nonces: createNonceStore() })).verified).toBe(true)
   })
 
   test('a replayed proof is refused by the nonce store, and the first is not', async () => {
@@ -157,15 +159,17 @@ describe('a game server checking a proof', () => {
     const nonces = createNonceStore()
     const proof = await kei.wallet.signOwnershipChallenge(CHALLENGE)
 
-    expect(await verifyOwnershipProof(proof, { ...CHALLENGE, nonces })).toBe(true)
-    expect(await verifyOwnershipProof(proof, { ...CHALLENGE, nonces })).toBe(false)
+    expect((await verifyOwnershipProof(proof, { ...CHALLENGE, nonces })).verified).toBe(true)
+    const replay = await verifyOwnershipProof(proof, { ...CHALLENGE, nonces })
+    expect(replay.verified).toBe(false)
+    expect(!replay.verified && replay.code).toBe('nonce-replayed')
 
     // A fresh challenge for the same session is a fresh proof, and it passes.
     const again = { ...CHALLENGE, nonce: randomChallengeNonce() }
-    expect(await verifyOwnershipProof(
+    expect((await verifyOwnershipProof(
       await kei.wallet.signOwnershipChallenge(again),
       { ...again, nonces },
-    )).toBe(true)
+    )).verified).toBe(true)
   })
 
   test('a wrong signature does not burn the nonce an honest client still holds', async () => {
@@ -174,8 +178,8 @@ describe('a game server checking a proof', () => {
     const proof = await kei.wallet.signOwnershipChallenge(CHALLENGE)
 
     const forged = { ...proof, signature: 'F'.repeat(128) }
-    expect(await verifyOwnershipProof(forged, { ...CHALLENGE, nonces })).toBe(false)
-    expect(await verifyOwnershipProof(proof, { ...CHALLENGE, nonces })).toBe(true)
+    expect((await verifyOwnershipProof(forged, { ...CHALLENGE, nonces })).verified).toBe(false)
+    expect((await verifyOwnershipProof(proof, { ...CHALLENGE, nonces })).verified).toBe(true)
   })
 
   test('every field of the challenge is checked, and an unknown one is refused', async () => {
@@ -190,15 +194,17 @@ describe('a game server checking a proof', () => {
       { ...CHALLENGE, context: { roomId: 'socket-3', sessionId: 'room-7' } },
       { ...CHALLENGE, context: {} },
     ]
-    for (const expected of wrong) expect(await verifyOwnershipProof(proof, expected)).toBe(false)
+    for (const expected of wrong) {
+      expect((await verifyOwnershipProofWithoutReplayProtection(proof, expected)).verified).toBe(false)
+    }
 
     // A proof carrying a field the SDK does not know is not this proof format.
-    expect(await verifyOwnershipProof({ ...proof, expires: 1 }, CHALLENGE)).toBe(false)
-    expect(await verifyOwnershipProof({ ...proof, address: BOB.address }, CHALLENGE)).toBe(false)
-    expect(await verifyOwnershipProof(
+    expect((await verifyOwnershipProofWithoutReplayProtection({ ...proof, expires: 1 }, CHALLENGE)).verified).toBe(false)
+    expect((await verifyOwnershipProofWithoutReplayProtection({ ...proof, address: BOB.address }, CHALLENGE)).verified).toBe(false)
+    expect((await verifyOwnershipProofWithoutReplayProtection(
       { ...proof, challenge: { ...CHALLENGE, expires: 1 } },
       CHALLENGE,
-    )).toBe(false)
+    )).verified).toBe(false)
   })
 
   test('context key order is not part of the proof, because canonical JSON sorts it', async () => {
@@ -210,7 +216,7 @@ describe('a game server checking a proof', () => {
     }
     // Both sides build the challenge from their own object literal, so a
     // disagreement about insertion order must not read as a failed proof.
-    expect(await verifyOwnershipProof(proof, reordered)).toBe(true)
+    expect((await verifyOwnershipProofWithoutReplayProtection(proof, reordered)).verified).toBe(true)
   })
 
   test('another wallet\'s signature over the same challenge does not pass', async () => {
@@ -220,17 +226,52 @@ describe('a game server checking a proof', () => {
       ...proof,
       signature: await signHash(BOB.privateKey, ownershipChallengeHash(CHALLENGE)),
     }
-    expect(await verifyOwnershipProof(impostor, CHALLENGE)).toBe(false)
+    const result = await verifyOwnershipProofWithoutReplayProtection(impostor, CHALLENGE)
+    expect(result.verified).toBe(false)
+    expect(!result.verified && result.code).toBe('bad-signature')
   })
 
   test('nothing a client can send throws; a malformed expectation does', async () => {
     for (const junk of [null, undefined, 'proof', 42, [], {}, { signature: 'F'.repeat(128) }]) {
-      expect(await verifyOwnershipProof(junk, CHALLENGE)).toBe(false)
+      expect((await verifyOwnershipProofWithoutReplayProtection(junk, CHALLENGE)).verified).toBe(false)
     }
-    await expect(verifyOwnershipProof({}, { ...CHALLENGE, nonce: 'nope' })).rejects.toThrow(
+    await expect(verifyOwnershipProofWithoutReplayProtection({}, { ...CHALLENGE, nonce: 'nope' })).rejects.toThrow(
       /randomChallengeNonce/,
     )
     expect(() => createNonceStore({ limit: 0 })).toThrow(/whole number of nonces/)
+  })
+
+  // #160: nonces used to be optional, so `await verifyOwnershipProof(proof, expected)`
+  // with no `nonces` type-checked, read as complete, and accepted the same
+  // proof forever. It is now a caller bug the function refuses to run under,
+  // the same way it already refused a malformed challenge.
+  test('refuses to run without a nonce store, naming the fix', async () => {
+    const kei = await player()
+    const proof = await kei.wallet.signOwnershipChallenge(CHALLENGE)
+
+    await expect(verifyOwnershipProof(proof, CHALLENGE)).rejects.toThrow(/expected\.nonces/)
+    await expect(verifyOwnershipProof(proof, CHALLENGE)).rejects.toThrow(
+      /verifyOwnershipProofWithoutReplayProtection/,
+    )
+  })
+
+  test('the escape hatch verifies the same proof twice, deliberately', async () => {
+    const kei = await player()
+    const proof = await kei.wallet.signOwnershipChallenge(CHALLENGE)
+
+    expect((await verifyOwnershipProofWithoutReplayProtection(proof, CHALLENGE)).verified).toBe(true)
+    // No replay protection was asked for, so presenting it again still passes
+    // — the whole point of naming the skip at the call site.
+    expect((await verifyOwnershipProofWithoutReplayProtection(proof, CHALLENGE)).verified).toBe(true)
+  })
+
+  test('the escape hatch still enforces a nonce store that was passed anyway', async () => {
+    const kei = await player()
+    const nonces = createNonceStore()
+    const proof = await kei.wallet.signOwnershipChallenge(CHALLENGE)
+
+    expect((await verifyOwnershipProofWithoutReplayProtection(proof, { ...CHALLENGE, nonces })).verified).toBe(true)
+    expect((await verifyOwnershipProofWithoutReplayProtection(proof, { ...CHALLENGE, nonces })).verified).toBe(false)
   })
 
   test('a store with a limit forgets its oldest nonce, and says so in the docs', () => {
@@ -276,7 +317,7 @@ describe('what the wallet will and will not sign', () => {
     await expect(kei.wallet.signOwnershipChallenge(oracle)).rejects.toThrow(/not safe to sign/)
     // And nothing was signed on the way to refusing.
     const forged = { address: ALICE.address, signature: hashBlock(SEND), challenge: CHALLENGE }
-    expect(await verifyOwnershipProof(forged, CHALLENGE)).toBe(false)
+    expect((await verifyOwnershipProofWithoutReplayProtection(forged, CHALLENGE)).verified).toBe(false)
   })
 
   test('a challenge naming another wallet is refused, with a sentence', async () => {
@@ -327,7 +368,7 @@ describe('the seed is irrelevant to it (SPEC §6.6)', () => {
     expect(() => kei.seed).toThrow(/cannot be read/)
 
     const proof = await kei.wallet.signOwnershipChallenge(CHALLENGE)
-    expect(await verifyOwnershipProof(proof, CHALLENGE)).toBe(true)
+    expect((await verifyOwnershipProofWithoutReplayProtection(proof, CHALLENGE)).verified).toBe(true)
   })
 
   test('no proof and no refusal carries the seed', async () => {
@@ -366,6 +407,7 @@ describe('reachable from the package root', () => {
     // The server half. A game server checking a proof has no wallet and no
     // seed, and needs these by name.
     expect(typeof root.verifyOwnershipProof).toBe('function')
+    expect(typeof root.verifyOwnershipProofWithoutReplayProtection).toBe('function')
     expect(typeof root.createNonceStore).toBe('function')
     expect(typeof root.randomChallengeNonce).toBe('function')
     expect(typeof root.ownershipChallengeHash).toBe('function')
@@ -384,10 +426,10 @@ describe('reachable from the package root', () => {
     const proof = await kei.wallet.signOwnershipChallenge(challenge)
     const nonces = root.createNonceStore()
 
-    expect(await root.verifyOwnershipProof(proof, { ...challenge, nonces })).toBe(true)
+    expect((await root.verifyOwnershipProof(proof, { ...challenge, nonces })).verified).toBe(true)
     // The second presentation of one proof is a replay, and the store is where
     // that is caught — so a server wiring this up from the root alone gets the
     // protection too, not just the signature check.
-    expect(await root.verifyOwnershipProof(proof, { ...challenge, nonces })).toBe(false)
+    expect((await root.verifyOwnershipProof(proof, { ...challenge, nonces })).verified).toBe(false)
   })
 })
