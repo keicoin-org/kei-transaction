@@ -376,6 +376,72 @@ describe('pending and reconciliation', () => {
     expect(report.gone[0]?.reason).toContain(bob.address)
     // And the gold arrived, because sync signed for it before it read.
     expect(report.funds.confirmed).toBe(600)
+    // A healthy round has nothing left unresolved.
+    expect(report.unresolved).toEqual([])
+    expect(report.unknown).toEqual([])
+  })
+
+  // #189: sync() rebuilt `watching` from `live` and `stale` only, so a listing
+  // whose one re-read threw was dropped from the set that tracks it. It was
+  // then permanently untracked: not open (it was sold), not watched, never
+  // asked about again — so a sale behind a flaky read was never reported, not
+  // on that poll or any later one.
+  test('a listing whose re-read fails stays tracked, and is reported once the node answers again', async () => {
+    const state = { down: false }
+    let watchedHash = ''
+    // Fails exactly one hash's swap_offer read, on demand, and answers
+    // everything else (including other listings' reads) normally.
+    const flaky = new Proxy(node, {
+      get: (target, property, receiver) => {
+        if (property === 'swapOffer') {
+          return async (hash: string) => {
+            if (state.down && hash === watchedHash) {
+              throw new Error('The node at https://testnet.example/rpc did not answer "swap_offer" (502).')
+            }
+            return (target as MockNode).swapOffer(hash)
+          }
+        }
+        return Reflect.get(target, property, receiver)
+      },
+    }) as unknown as MockNode
+
+    const seller = await Kei.start({
+      node: flaky, seed: randomSeed(), autoCancelExpired: false, autoReceive: false, shop: world(),
+    })
+    const buyer = await Kei.start({
+      node, seed: randomSeed(), autoCancelExpired: false, autoReceive: false, shop: world(),
+    })
+    opened.push(seller, buyer)
+    await game.send(seller.address, 100)
+    await game.send(buyer.address, 100)
+    await gold.mint(buyer.address, 500)
+    const swords = await game.items.token(sword.id)
+    await swords.mint(seller.address, 1)
+    await seller.sync()
+    await buyer.sync()
+
+    const listing = await seller.shop.list({ item: 'sword', each: 100 })
+    watchedHash = listing.hash
+    await buyer.shop.buy(listing)
+
+    state.down = true
+    const duringOutage = await seller.shop.sync()
+    // Not reported as sold — a read that could not be answered must not read
+    // as "gone" — and, the fix under test, not dropped either.
+    expect(duringOutage.gone).toHaveLength(0)
+    expect(duringOutage.unresolved.map((entry) => entry.hash)).toContain(listing.hash)
+
+    // Every later sync while the node stays down: still not lost.
+    const stillDown = await seller.shop.sync()
+    expect(stillDown.gone).toHaveLength(0)
+    expect(stillDown.unresolved.map((entry) => entry.hash)).toContain(listing.hash)
+
+    state.down = false
+    const afterRecovery = await seller.shop.sync()
+    expect(afterRecovery.gone).toHaveLength(1)
+    expect(afterRecovery.gone[0]?.hash).toBe(listing.hash)
+    expect(afterRecovery.gone[0]?.life).toBe('taken')
+    expect(afterRecovery.unresolved).toHaveLength(0)
   })
 
   test('incoming is real, owed, and not spendable until it is signed for', async () => {
