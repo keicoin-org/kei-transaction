@@ -20,6 +20,7 @@ export type {
   ShopSetup,
   StartOptions,
   TokenNamespace,
+  TopUpFailure,
   TopUpOptions,
 } from './kei.js'
 export {

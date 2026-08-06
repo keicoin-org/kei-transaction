@@ -25,6 +25,7 @@ import {
   HttpNode,
   KEI_DECIMALS,
   KeiClient,
+  KeiError,
   MockNode,
   formatRaw,
   fail,
@@ -183,6 +184,21 @@ export interface Receipt {
   memo?: string
 }
 
+/**
+ * A top-up whose Kei was received but whose mint did not complete. The Kei is
+ * not returned automatically — this is what lets a game settle it by hand, or
+ * durably, instead of the only trace being a message on the `error` event
+ * (#164).
+ */
+export interface TopUpFailure {
+  /** The payment that could not be fully honoured. `payment.raw` is exact. */
+  payment: PaymentEvent
+  /** What should have been minted, in the token's own decimal units. */
+  owed: string
+  /** Why the mint did not happen — usually the error `token.mint()` threw. */
+  error: unknown
+}
+
 export interface TopUpOptions {
   token: IssuerToken
   /**
@@ -193,6 +209,19 @@ export interface TopUpOptions {
   rate: number | string
   /** Ignore payments below this many Kei. */
   minimum?: number | string
+  /**
+   * Called when a payment was accepted — its Kei already received and
+   * unreturnable — but minting what it owed failed: a node timeout, a supply
+   * cap, anything `token.mint()` can throw. Carries the payer, the exact raw
+   * amount, the receive hash, and the units owed, which is what SPEC §6.7
+   * promises a game does not have to reconstruct from an error string by hand.
+   *
+   * Without this, the failure still reaches the client's `error` event with
+   * that same information folded into the message (#164's minimum guarantee:
+   * a failed mint is never silent). A throw or rejection from this callback
+   * itself still reaches `error`.
+   */
+  onSettlementFailure?: (failure: TopUpFailure) => void | Promise<void>
 }
 
 /**
@@ -504,7 +533,24 @@ export class Kei {
       if (paidRaw <= 0n || paidRaw < minimumRaw) return
       const units = multiplyFloor(paidRaw, KEI_DECIMALS, rate, token.decimals)
       if (units <= 0n) return
-      await token.mint(payment.from, formatRaw(units, token.decimals))
+      const owed = formatRaw(units, token.decimals)
+      try {
+        await token.mint(payment.from, owed)
+      } catch (error) {
+        // The Kei is already received and cannot be un-received (SPEC §6.7):
+        // this payment now owes tokens nobody has minted, and that must not
+        // be lost the way a bare rethrow into 'error' would lose it (#164).
+        if (options.onSettlementFailure) {
+          await options.onSettlementFailure({ payment, owed, error })
+          return
+        }
+        throw new KeiError(
+          error instanceof KeiError ? error.code : 'topup-not-settled',
+          `A top-up from ${payment.from} for ${owed} ${token.symbol} (paid ${payment.raw} raw Kei, receive block ${payment.hash}) could not be settled: ${
+            error instanceof Error ? error.message : String(error)
+          }. The Kei has already been received and is not returned automatically — settle by hand, or pass acceptTopUps({ onSettlementFailure }) to handle this without relying on the generic 'error' event.`,
+        )
+      }
     })
   }
 
