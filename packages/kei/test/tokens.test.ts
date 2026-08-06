@@ -12,6 +12,7 @@ import {
   type MockNode,
   type TopUpFailure,
 } from 'kei-transaction'
+import { wrapIssuerToken } from '@keicoin/tokens'
 
 const GAME_SEED = 'C'.repeat(64)
 
@@ -564,6 +565,7 @@ describe('purchases', () => {
       })
 
       await player.faucet(1)
+      const before = await player.balance()
       await player.pay({ to: game.address, amount: 1 })
 
       await waitFor(async () => failures.length > 0)
@@ -575,12 +577,16 @@ describe('purchases', () => {
       expect(failure?.owed).toBe('100')
       expect(String(failure?.error)).toMatch(/maximum supply/)
 
-      // The Kei was already received and is not returned automatically —
-      // acceptTopUps reports the shortfall, it does not invent a refund.
-      expect(await game.balance()).toBeGreaterThan(0)
+      // #182: refunded by default — the player is not left down 1 Kei with
+      // nothing to show for it.
+      expect(failure?.refund && 'hash' in failure.refund ? failure.refund.hash : undefined).toMatch(
+        /^[0-9A-F]{64}$/,
+      )
+      await player.sync()
+      expect(await player.balance()).toBe(before) // paid 1, refunded 1
     })
 
-    test('without onSettlementFailure, the error event still names the payer and the owed units', async () => {
+    test('without onSettlementFailure, the error event names the payer, the owed units, and that the Kei was refunded', async () => {
       const gems = await game.token.issue({
         name: 'Gems', symbol: 'GEM', decimals: 0, maxSupply: 1_000, swap: 'one-way',
       })
@@ -591,13 +597,129 @@ describe('purchases', () => {
       game.acceptTopUps({ token: gems, rate: 100 })
 
       await player.faucet(1)
+      const before = await player.balance()
       await player.pay({ to: game.address, amount: 1 })
 
       await waitFor(async () => errors.length > 0)
       const [error] = errors
       expect(error?.message).toContain(player.address)
       expect(error?.message).toContain('100 GEM')
-      expect(error?.message).toMatch(/not returned automatically/)
+      expect(error?.message).toMatch(/The Kei was refunded/)
+
+      await player.sync()
+      expect(await player.balance()).toBe(before)
+    })
+
+    // #182: swap: 'one-way' is an on-chain promise this token can be bought.
+    // Keeping the Kei while refusing to honour either side of that promise —
+    // no tokens, and no Kei back — is the one thing accepting top-ups must
+    // not do by default.
+    test('acceptTopUps refunds the Kei automatically when the mint it owed fails', async () => {
+      const gems = await game.token.issue({
+        name: 'Gems', symbol: 'GEM', decimals: 0, maxSupply: 1_000, swap: 'one-way',
+      })
+      await gems.mint(game.address, 1_000) // no headroom left at all
+      game.acceptTopUps({ token: gems, rate: 100 })
+
+      await player.faucet(1)
+      const before = await player.balance()
+      await player.pay({ to: game.address, amount: 1 })
+
+      await waitFor(async () => (await player.balance()) === before)
+      await player.sync()
+      expect(await gems.balanceOf(player.address)).toBe(0)
+      expect(await player.balance()).toBe(before)
+    })
+
+    test('{ refund: false } keeps the Kei and settles by hand instead', async () => {
+      const gems = await game.token.issue({
+        name: 'Gems', symbol: 'GEM', decimals: 0, maxSupply: 1_000, swap: 'one-way',
+      })
+      await gems.mint(game.address, 995)
+
+      const failures: TopUpFailure[] = []
+      game.acceptTopUps({
+        token: gems,
+        rate: 100,
+        refund: false,
+        onSettlementFailure: (failure) => {
+          failures.push(failure)
+        },
+      })
+
+      await player.faucet(1)
+      const before = await player.balance()
+      await player.pay({ to: game.address, amount: 1 })
+
+      await waitFor(async () => failures.length > 0)
+      expect(failures[0]?.refund).toBeUndefined()
+
+      // A whole second passes with nothing arriving back — refund: false
+      // means exactly that, not "eventually".
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      await player.sync()
+      expect(await player.balance()).toBe(before - 1)
+    })
+
+    test('when the refund attempt itself fails, the failure says so and does not claim the Kei went back', async () => {
+      const gems = await game.token.issue({
+        name: 'Gems', symbol: 'GEM', decimals: 0, maxSupply: 1_000, swap: 'one-way',
+      })
+      await gems.mint(game.address, 1_000) // guarantees the mint fails
+
+      // Three blocks happen in order once the payment arrives: (1) flakyGame's
+      // own receive block, (2) the mint — left alone, so the real ledger
+      // rejects it over-cap the way it always would — and (3) the refund
+      // send, which is the one made to fail here.
+      let processCalls = 0
+      const flakyNode = new Proxy(node, {
+        get: (target, property, receiver) => {
+          if (property === 'process') {
+            return async (block: unknown) => {
+              processCalls += 1
+              if (processCalls === 3) {
+                throw new Error('The node at https://testnet.example/rpc did not answer (502).')
+              }
+              return (target as MockNode).process(block as never)
+            }
+          }
+          return Reflect.get(target, property, receiver)
+        },
+      }) as unknown as MockNode
+      // `game` is still subscribed to this same address — left open, it would
+      // race flakyGame to receive the payment and win, since it talks to the
+      // real node directly. This test is about what flakyGame does with it.
+      game.close()
+      const flakyGame = await Kei.server({ seed: GAME_SEED, node: flakyNode })
+      const flakyInfo = await flakyGame.client.node.assetInfo(gems.id)
+      if (!flakyInfo) throw new Error('GEM should exist — it was just issued')
+      const flakyGems = wrapIssuerToken(flakyGame.client, flakyInfo)
+
+      const failures: TopUpFailure[] = []
+      flakyGame.acceptTopUps({
+        token: flakyGems,
+        rate: 100,
+        onSettlementFailure: (failure) => {
+          failures.push(failure)
+        },
+      })
+
+      await player.faucet(1)
+      const before = await player.balance()
+      await player.pay({ to: flakyGame.address, amount: 1 })
+
+      await waitFor(async () => failures.length > 0)
+      const [failure] = failures
+      expect(failure?.refund && 'failed' in failure.refund ? String(failure.refund.failed) : undefined).toMatch(
+        /did not answer/,
+      )
+
+      // Left down 1 Kei, honestly — not silently, and not claimed as refunded.
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      await player.sync()
+      expect(await player.balance()).toBe(before - 1)
+
+      flakyGame.close()
     })
 
     test('a settled top-up is not redelivered to a fresh client restarted against the same seed and node', async () => {

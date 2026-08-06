@@ -185,10 +185,13 @@ export interface Receipt {
 }
 
 /**
- * A top-up whose Kei was received but whose mint did not complete. The Kei is
- * not returned automatically — this is what lets a game settle it by hand, or
- * durably, instead of the only trace being a message on the `error` event
- * (#164).
+ * A top-up whose Kei was received but whose mint did not complete.
+ *
+ * `refund` says what happened next, so a payment reaching this ends in one of
+ * three states the game can see: minted (no `TopUpFailure` at all), Kei
+ * returned (`refund.hash`), or genuinely stuck (`refund.failed`, or
+ * `refund` absent because `{ refund: false }` was passed) — never just an
+ * error string with the Kei quietly kept (#182).
  */
 export interface TopUpFailure {
   /** The payment that could not be fully honoured. `payment.raw` is exact. */
@@ -197,6 +200,13 @@ export interface TopUpFailure {
   owed: string
   /** Why the mint did not happen — usually the error `token.mint()` threw. */
   error: unknown
+  /**
+   * Present whenever a refund was attempted (the default). `hash` is the send
+   * that returned the Kei; `failed` is why a refund attempt itself did not
+   * complete — a payment can end up here if the node was already unreachable
+   * for the mint. Absent only when `{ refund: false }` was passed.
+   */
+  refund?: { hash: string } | { failed: unknown }
 }
 
 export interface TopUpOptions {
@@ -211,17 +221,27 @@ export interface TopUpOptions {
   minimum?: number | string
   /**
    * Called when a payment was accepted — its Kei already received and
-   * unreturnable — but minting what it owed failed: a node timeout, a supply
-   * cap, anything `token.mint()` can throw. Carries the payer, the exact raw
-   * amount, the receive hash, and the units owed, which is what SPEC §6.7
-   * promises a game does not have to reconstruct from an error string by hand.
+   * unreturnable by the SDK's own action — but minting what it owed failed: a
+   * node timeout, a supply cap, anything `token.mint()` can throw. Carries the
+   * payer, the exact raw amount, the receive hash, the units owed, and what
+   * the automatic refund (below) did — which is what SPEC §6.7 promises a
+   * game does not have to reconstruct from an error string by hand.
    *
    * Without this, the failure still reaches the client's `error` event with
-   * that same information folded into the message (#164's minimum guarantee:
-   * a failed mint is never silent). A throw or rejection from this callback
+   * the same information folded into the message (#164's minimum guarantee: a
+   * failed mint is never silent). A throw or rejection from this callback
    * itself still reaches `error`.
    */
   onSettlementFailure?: (failure: TopUpFailure) => void | Promise<void>
+  /**
+   * Send the Kei back when the mint it was paying for fails. Default `true`:
+   * `swap: 'one-way'` is an on-chain promise that this token can be bought,
+   * and keeping payment while refusing to honour either side of that promise
+   * is the one thing accepting top-ups must not do (#182). Pass `false` to
+   * keep the Kei and settle by hand instead — for example, a game with its own
+   * durable ledger that would rather retry the mint than refund it.
+   */
+  refund?: boolean
 }
 
 /**
@@ -537,18 +557,40 @@ export class Kei {
       try {
         await token.mint(payment.from, owed)
       } catch (error) {
-        // The Kei is already received and cannot be un-received (SPEC §6.7):
-        // this payment now owes tokens nobody has minted, and that must not
-        // be lost the way a bare rethrow into 'error' would lose it (#164).
+        // The Kei is already received and cannot be un-received by anything
+        // other than a second, explicit block: this payment now owes tokens
+        // nobody has minted, and that must not be lost the way a bare rethrow
+        // into 'error' would lose it (#164). swap: 'one-way' is an on-chain
+        // promise that this token can be bought, so by default the Kei goes
+        // back rather than being kept against a promise the game just failed
+        // to keep (#182).
+        let refund: TopUpFailure['refund']
+        if (options.refund !== false) {
+          try {
+            const receipt = await this.client.send(payment.from, formatRaw(paidRaw, KEI_DECIMALS))
+            refund = { hash: receipt.hash }
+          } catch (refundError) {
+            refund = { failed: refundError }
+          }
+        }
+
         if (options.onSettlementFailure) {
-          await options.onSettlementFailure({ payment, owed, error })
+          await options.onSettlementFailure({ payment, owed, error, ...(refund ? { refund } : {}) })
           return
         }
+        const mintReason = error instanceof Error ? error.message : String(error)
+        const refunded = refund && 'hash' in refund
         throw new KeiError(
           error instanceof KeiError ? error.code : 'topup-not-settled',
-          `A top-up from ${payment.from} for ${owed} ${token.symbol} (paid ${payment.raw} raw Kei, receive block ${payment.hash}) could not be settled: ${
-            error instanceof Error ? error.message : String(error)
-          }. The Kei has already been received and is not returned automatically — settle by hand, or pass acceptTopUps({ onSettlementFailure }) to handle this without relying on the generic 'error' event.`,
+          `A top-up from ${payment.from} for ${owed} ${token.symbol} (paid ${payment.raw} raw Kei, receive block ${payment.hash}) could not be settled: ${mintReason}. ${
+            refunded
+              ? `The Kei was refunded (send ${(refund as { hash: string }).hash}).`
+              : refund && 'failed' in refund
+                ? `The Kei has NOT been returned — a refund was attempted and it also failed: ${
+                    refund.failed instanceof Error ? refund.failed.message : String(refund.failed)
+                  }. Settle by hand.`
+                : 'The Kei has NOT been returned — refund: false was passed. Settle by hand.'
+          } Pass acceptTopUps({ onSettlementFailure }) to handle this without relying on the generic 'error' event.`,
         )
       }
     })
