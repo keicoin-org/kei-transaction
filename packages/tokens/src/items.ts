@@ -12,6 +12,7 @@
 
 import type { AssetId, AssetInfo, AssetRecord, KeiClient, TransferPolicy } from '@keicoin/core'
 import {
+  KeiError,
   MAX_ASSETS_PER_ACCOUNT,
   assertAddress,
   assetCacheFor,
@@ -194,6 +195,30 @@ function assertOneLeafPerRecipient(info: AssetInfo, list: readonly { to: string 
     }
     seen.add(entry.to)
   }
+}
+
+/**
+ * Wrap a mid-batch `commit()` failure so it names what already landed.
+ *
+ * `@keicoin/economy` solved this for `publishDrop()` and `economy.stock()`
+ * (`stoppedPartway()` in `packages/economy/src/batch.ts`); this is the same
+ * shape for the third multi-block publisher in the SDK (#181). A settled
+ * block cannot be taken back, so the roots already on the issuer's chain have
+ * to travel with the error — a caller who only sees "node timed out" has no
+ * way to avoid re-committing them, and a rerun of an identical batch is not
+ * caught by the ledger's duplicate-root refusal: `buildCommit` salts with
+ * `randomSalt()` when none is passed, so the rerun produces a different root.
+ */
+function stoppedPartway(published: ReadonlyArray<BuiltCommit & { hash: string }>, error: unknown): unknown {
+  if (published.length === 0) return error
+  const reason = error instanceof Error ? error.message : String(error)
+  const done = published
+    .map((root) => `${root.count} × ${root.asset} (${root.root}, ${root.recipients.length} recipients)`)
+    .join('; ')
+  return new KeiError(
+    error instanceof KeiError ? error.code : 'commit-stopped-partway',
+    `This items.commit() batch published ${published.length} of its roots before it stopped, and a settled block cannot be taken back. Standing, and claimable by the recipients under them: ${done}. Do not re-run this batch as given — buildCommit salts each root randomly, so a rerun produces a different root and mints every recipient above a second copy rather than being caught as a duplicate. Commit only the entries not already under those roots. It stopped because: ${reason}`,
+  )
 }
 
 export interface ItemsOptions {
@@ -386,13 +411,25 @@ export function createIssuerItems(client: KeiClient, options: ItemsOptions = {})
       const published: Array<BuiltCommit & { hash: string }> = []
       for (const [asset, list] of byAsset) {
         const built = buildCommit({ asset, decimals: 0, entries: list })
-        const { hash } = await client.submitAsset({
-          kind: 'commit',
-          root: built.root,
-          asset,
-          count: built.count,
-          total: built.total,
-        })
+        let hash: string
+        try {
+          ;({ hash } = await client.submitAsset({
+            kind: 'commit',
+            root: built.root,
+            asset,
+            count: built.count,
+            total: built.total,
+          }))
+        } catch (error) {
+          // Every root published before this one is already on the issuer's
+          // chain and cannot be taken back, so the error the caller sees has to
+          // name them — the raw node error names nothing, and the obvious
+          // recovery, re-running the same batch, mints every recipient of an
+          // already-published root a second copy (buildCommit salts randomly,
+          // so a rerun produces a different root and the ledger's duplicate-root
+          // refusal never fires) (#181).
+          throw stoppedPartway(published, error)
+        }
         published.push({ ...built, hash })
       }
       return published

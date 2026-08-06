@@ -10,11 +10,14 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import {
   DEFAULT_ASSET_CONCURRENCY,
   Kei,
+  KeiError,
   MockIpfsUploader,
   randomSeed,
   type AssetId,
+  type KeiClient,
   type MockNode,
 } from 'kei-transaction'
+import { createIssuerItems } from '@keicoin/tokens'
 
 /** Stand-in for the sword art. The bytes are the image; the path never was. */
 const SWORD_PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x73, 0x77, 0x6f, 0x72, 0x64])
@@ -175,6 +178,60 @@ describe('items', () => {
     ).rejects.toThrow(/Iron Sword/)
 
     expect(await issuerBlocks()).toBe(before)
+  })
+
+  // #181: a multi-asset commit that stops between roots used to discard every
+  // hash already on the issuer's chain and hand the caller a raw node error.
+  // The obvious recovery, re-running the batch, then minted the first asset's
+  // recipients a second copy, because buildCommit salts each root randomly and
+  // the ledger's duplicate-root refusal never fires on a rerun.
+  test('a commit that stops between roots names the ones already published, not just the raw error', async () => {
+    const sword = await game.items.create({ name: 'Iron Sword', supply: 100, transfer: 'open' })
+    const shield = await game.items.create({ name: 'Oak Shield', supply: 100, transfer: 'open' })
+
+    let calls = 0
+    const flakyClient = new Proxy(game.client, {
+      get(target, prop, receiver) {
+        if (prop === 'submitAsset') {
+          return async (...args: Parameters<KeiClient['submitAsset']>) => {
+            if (calls++ === 1) throw new Error('node timed out')
+            return target.submitAsset(...args)
+          }
+        }
+        return Reflect.get(target, prop, receiver) as unknown
+      },
+    }) as KeiClient
+    const flakyItems = createIssuerItems(flakyClient)
+
+    const thrown = await flakyItems
+      .commit([
+        { to: player.address, item: sword.id },
+        { to: other.address, item: shield.id },
+      ])
+      .then(
+        () => undefined,
+        (error: unknown) => error as KeiError,
+      )
+
+    expect(thrown).toBeInstanceOf(KeiError)
+    // The sword root published before the shield's submitAsset call threw, and
+    // the error names it — count, asset id, and root hash — rather than
+    // discarding it the way the raw node error would.
+    expect(thrown?.message).toContain('published 1 of its roots before it stopped')
+    expect(thrown?.message).toContain(String(sword.id))
+    expect(thrown?.message).toContain('node timed out')
+    expect(thrown?.message).toMatch(/do not re-run this batch/i)
+
+    // Recovery: the sword root the message names is really standing, claimable
+    // without re-committing it, and there is exactly one of it — not the two a
+    // blind retry would have produced.
+    const rootMatch = /\(([0-9A-F]{64}),/.exec(thrown?.message ?? '')
+    expect(rootMatch).not.toBeNull()
+    const root = rootMatch?.[1] ?? ''
+    const commit = await node.commitInfo(root)
+    expect(commit?.asset).toBe(sword.id)
+    expect(commit?.count).toBe(1)
+    expect(await node.hasClaimed(player.address, root)).toBe(false)
   })
 
   test('a commit inside the supply publishes, and all fifty recipients claim', async () => {
