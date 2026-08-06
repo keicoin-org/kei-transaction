@@ -79,6 +79,7 @@ export {
   scrub,
   toRaw,
   verifyOwnershipProof,
+  verifyOwnershipProofWithoutReplayProtection,
 } from '@keicoin/core'
 export type {
   AccountInfo,
@@ -99,6 +100,8 @@ export type {
   OwnershipChallengeMessage,
   OwnershipExpectation,
   OwnershipProof,
+  OwnershipVerificationFailureCode,
+  OwnershipVerificationResult,
   PaymentEvent,
   Receivable,
   RevealPolicy,

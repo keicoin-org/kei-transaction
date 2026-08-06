@@ -31,7 +31,7 @@
 
 import { isAddress, publicKeyFromAddress } from './address.js'
 import { blake2b, verifyHash } from './crypto.js'
-import { fail } from './errors.js'
+import { KeiError, fail } from './errors.js'
 import { canonicalJson } from './hash.js'
 import { bytesToHex, isHex, utf8 } from './hex.js'
 import { randomSalt } from './merkle.js'
@@ -165,39 +165,122 @@ export function parseOwnershipChallenge(value: unknown): OwnershipChallenge {
   return challenge
 }
 
+/** Why `verifyOwnershipProof` refused. Named so an operator can log the reason, not just the boolean. */
+export type OwnershipVerificationFailureCode =
+  | 'malformed-proof'
+  | 'address-mismatch'
+  | 'challenge-mismatch'
+  | 'bad-signature'
+  | 'nonce-replayed'
+
+export type OwnershipVerificationResult =
+  | { readonly verified: true }
+  | { readonly verified: false; readonly code: OwnershipVerificationFailureCode; readonly message: string }
+
 /**
  * Check a proof against the challenge you issued. Needs the address and no key.
  *
- * Returns `false` for anything an untrusted client could have sent — a bad
- * signature, a proof of some other challenge, a replay — and never puts the
- * proof in an error. It throws only when `expected` is itself malformed, which
- * is the calling server's own bug and the one case a sentence can fix.
+ * Refuses — `{ verified: false, code, message }` — for anything an untrusted
+ * client could have sent: a bad signature, a proof of some other challenge, a
+ * replay. Never throws for that, and never puts the proof in an error message.
+ * It throws only when `expected` is itself malformed, which is the calling
+ * server's own bug and the one case a sentence can fix — and `nonces` being
+ * missing is now one of those bugs (see below), not a silent downgrade.
+ *
+ * `expected.nonces` is required. Without it the same proof verifies forever,
+ * which for the two things this primitive exists for — binding a session,
+ * authorizing a mint endpoint — is not a weaker guarantee, it is no guarantee:
+ * an attacker who observes one proof holds a permanent credential. Pass
+ * `createNonceStore()` (or your own `NonceStore`). If replay genuinely does
+ * not matter for this proof, call `verifyOwnershipProofWithoutReplayProtection`
+ * instead — the skip is then explicit at the call site, in the function name,
+ * rather than in an argument it is easy to forget (#160).
  */
 export async function verifyOwnershipProof(
   proof: unknown,
   expected: OwnershipExpectation,
-): Promise<boolean> {
+): Promise<OwnershipVerificationResult> {
+  // Parsed first, so a malformed `expected` is always reported as that — a bad
+  // domain or nonce shape, not a policy complaint about a field it never got
+  // to check.
   const challenge = parseOwnershipChallenge(stripStore(expected))
+  if (expected.nonces === undefined) {
+    fail(
+      'ownership-nonces-required',
+      'verifyOwnershipProof() needs expected.nonces, or the same proof verifies forever and an observed proof becomes a permanent credential. Pass createNonceStore() (or your own NonceStore) as `nonces`. If replay genuinely does not matter for this proof, call verifyOwnershipProofWithoutReplayProtection() instead — that choice belongs at the call site, not in an omitted argument.',
+    )
+  }
+  return verifyProofAgainstChallenge(proof, expected, challenge)
+}
+
+/**
+ * `verifyOwnershipProof` without the `nonces` requirement, for the deliberate
+ * case where this proof does not need replay protection — for example, it is
+ * checked once and discarded, and nothing about holding onto it and replaying
+ * it later would gain an attacker anything. The skip is explicit here, in the
+ * name you called, rather than in an omitted argument (#160).
+ *
+ * If `expected.nonces` is set anyway, it is still honoured — this only lifts
+ * the requirement, not the mechanism.
+ */
+export async function verifyOwnershipProofWithoutReplayProtection(
+  proof: unknown,
+  expected: OwnershipExpectation,
+): Promise<OwnershipVerificationResult> {
+  const challenge = parseOwnershipChallenge(stripStore(expected))
+  return verifyProofAgainstChallenge(proof, expected, challenge)
+}
+
+async function verifyProofAgainstChallenge(
+  proof: unknown,
+  expected: OwnershipExpectation,
+  challenge: OwnershipChallenge,
+): Promise<OwnershipVerificationResult> {
+  const refuse = (code: OwnershipVerificationFailureCode, message: string): OwnershipVerificationResult => ({
+    verified: false,
+    code,
+    message,
+  })
+
   const digest = digestOf(challenge)
 
   let signature: string
   try {
     const source = plainObject(proof, 'ownership proof')
     for (const key of Object.keys(source)) {
-      if (!PROOF_FIELDS.includes(key)) return false
+      if (!PROOF_FIELDS.includes(key)) {
+        return refuse('malformed-proof', `An ownership proof carries address, signature, and challenge — "${key}" is not one of them.`)
+      }
     }
-    if (source.address !== challenge.address) return false
-    if (digestOf(parseOwnershipChallenge(source.challenge)) !== digest) return false
-    if (typeof source.signature !== 'string' || !SIGNATURE.test(source.signature)) return false
+    if (source.address !== challenge.address) {
+      return refuse(
+        'address-mismatch',
+        `The proof names ${label(String(source.address))}, not the address this challenge was issued for (${challenge.address}).`,
+      )
+    }
+    if (digestOf(parseOwnershipChallenge(source.challenge)) !== digest) {
+      return refuse(
+        'challenge-mismatch',
+        'The challenge inside the proof does not match the one you issued — the wallet signed a different domain, address, nonce, or context.',
+      )
+    }
+    if (typeof source.signature !== 'string' || !SIGNATURE.test(source.signature)) {
+      return refuse('malformed-proof', 'The proof signature is not 64 bytes of hex.')
+    }
     signature = source.signature
-  } catch {
-    return false
+  } catch (error) {
+    return refuse('malformed-proof', error instanceof KeiError ? error.message : 'That ownership proof is not shaped correctly.')
   }
 
-  if (!(await verifyHash(digest, signature, publicKeyFromAddress(challenge.address)))) return false
+  if (!(await verifyHash(digest, signature, publicKeyFromAddress(challenge.address)))) {
+    return refuse('bad-signature', 'The signature does not verify against this challenge and address.')
+  }
   // Last, and only once the signature is good: a wrong guess must not burn the
   // nonce an honest client is still holding.
-  return expected.nonces === undefined ? true : expected.nonces.use(challenge.nonce)
+  if (expected.nonces !== undefined && !expected.nonces.use(challenge.nonce)) {
+    return refuse('nonce-replayed', `Nonce ${challenge.nonce} has already been used — this proof has already been presented once.`)
+  }
+  return { verified: true }
 }
 
 /**
