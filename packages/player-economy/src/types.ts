@@ -164,6 +164,20 @@ export interface Reconciled {
   gone: readonly { hash: string; life: OfferLife; reason: string }[]
   /** Listings past their advisory expiry that the sweep has not cancelled yet. */
   stale: Listing[]
+  /**
+   * Tracked listings whose re-read failed this round — a node timeout, not a
+   * sale. Still tracked and retried on the next `sync()`, so a listing here
+   * stays on display rather than reading as gone (SPEC: a poll that treats an
+   * unreachable node as "sold" removes a player's own stall from their
+   * screen). Empty on a healthy round.
+   */
+  unresolved: readonly { hash: string; reason: string }[]
+  /**
+   * Tracked hashes the node has never heard of — a typo, or a different
+   * network — and are therefore dropped from tracking rather than retried.
+   * Reported so the drop is visible instead of silent; ordinarily empty.
+   */
+  unknown: readonly string[]
   /** The shop's currency, after everything above. */
   funds: import('./funds.js').Funds
 }

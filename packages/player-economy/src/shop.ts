@@ -747,12 +747,22 @@ export function createPlayerEconomy(
     // view learns to ignore.
     watching.clear()
     for (const offer of [...reconciliation.live, ...reconciliation.stale]) watching.add(offer.hash)
+    // A listing whose re-read failed has not been shown to have moved — leave
+    // it in `watching` and ask again next round, rather than letting the
+    // rebuild above silently drop it the way an unreachable node would read as
+    // "sold" (#189; `reconcileOffers`' own contract for `failed`).
+    for (const failure of reconciliation.failed) watching.add(failure.hash)
+    // Hashes the node has never heard of are not retried — asking again does
+    // not fix a typo or a different network — but the drop is deliberate and
+    // reported below, not silent.
 
     const report: Reconciled = {
       received,
       mine: asListings(reconciliation.live),
       gone: reconciliation.gone,
       stale: asListings(reconciliation.stale),
+      unresolved: reconciliation.failed.map((failure) => ({ hash: failure.hash, reason: failure.reason })),
+      unknown: reconciliation.unknown,
       funds: await funds(money.asset),
     }
     events.emit('change', { pending: [...inFlight] })
