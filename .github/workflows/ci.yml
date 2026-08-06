@@ -12,9 +12,16 @@ on:
 permissions:
   contents: read
 
+# Supersede the previous run on a branch, where only the newest commit matters
+# — but never on `master`, where every commit is a released state that has to
+# be proven on its own. `github.ref` is `refs/heads/master` for every merge, so
+# a plain ref-keyed group made each merge cancel the one before it. Keying the
+# group by the commit on `master` gives each merge its own; `cancel-in-progress:
+# false` alone would not, because a group holds at most one pending run and a
+# third merge would cancel the second. See keicoin-org/kei-node#64.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.ref }}${{ github.ref == 'refs/heads/master' && format('-{0}', github.sha) || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
   check:
