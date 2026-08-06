@@ -30,6 +30,7 @@ import {
   keyPairFromSeed,
   normalizeSeed,
   randomSeed,
+  toRaw,
   verifyOwnershipProof,
 } from '@keicoin/core'
 import { createClaims, type ClaimStore, type DurableClaimsApi } from '@keicoin/claims'
@@ -183,10 +184,14 @@ export interface Receipt {
 
 export interface TopUpOptions {
   token: IssuerToken
-  /** Units per Kei. Issuer configuration; never written to the chain (SPEC §5.4). */
-  rate: number
+  /**
+   * Units per Kei. Issuer configuration; never written to the chain
+   * (SPEC §5.4). A decimal string is exact where a `number` above 2^53 or
+   * with many fractional digits is not — the same reason `minimum` takes one.
+   */
+  rate: number | string
   /** Ignore payments below this many Kei. */
-  minimum?: number
+  minimum?: number | string
 }
 
 /**
@@ -472,7 +477,11 @@ export class Kei {
       )
     }
     const { token, rate } = options
-    if (!token || typeof rate !== 'number' || !(rate > 0)) {
+    if (!token || (typeof rate !== 'number' && typeof rate !== 'string')) {
+      fail('bad-rate', 'acceptTopUps needs { token, rate } with a rate above zero, for example { token: gems, rate: 100 }.')
+    }
+    const rateDecimal = toDecimal(rate, 'Top-up rate')
+    if (rateDecimal.coefficient <= 0n) {
       fail('bad-rate', 'acceptTopUps needs { token, rate } with a rate above zero, for example { token: gems, rate: 100 }.')
     }
     if (token.swap === 'off') {
@@ -481,11 +490,14 @@ export class Kei {
         `${token.symbol} was issued with swap: 'off', which tells players it cannot be bought at all (SPEC §5.4). That is on-chain and immutable, so accepting top-ups for it would break the promise it makes. Issue a token with swap: 'one-way' instead.`,
       )
     }
-    const minimum = options.minimum ?? 0
+    // Compared against the exact raw amount, not `payment.amount` — a double
+    // that has already lost precision above ~0.009 Kei (#175).
+    const minimumRaw = toRaw(options.minimum ?? 0, KEI_DECIMALS, 'Minimum top-up amount')
 
     return this.onPayment(async (payment) => {
-      if (payment.amount < minimum || payment.amount <= 0) return
-      const units = multiplyFloor(payment.amount, rate, token.decimals)
+      const paidRaw = BigInt(payment.raw)
+      if (paidRaw <= 0n || paidRaw < minimumRaw) return
+      const units = multiplyFloor(paidRaw, KEI_DECIMALS, rate, token.decimals)
       if (units <= 0n) return
       await token.mint(payment.from, formatRaw(units, token.decimals))
     })
@@ -505,12 +517,18 @@ function issuerOnly(method: string): never {
   )
 }
 
-/** Round down to what the token can actually represent. */
-function multiplyFloor(value: number, multiplier: number, decimals: number): bigint {
-  const amount = toDecimal(value, 'Top-up payment')
+/**
+ * Round down to what the token can actually represent.
+ *
+ * `paidRaw` is the exact integer amount paid, in `paidDecimals` units — never a
+ * double, because the input to a floor has to be exact for the floor to mean
+ * anything (#175: `payment.amount` had already been rounded by the time the
+ * old version of this function saw it, so it could round *up* the mint).
+ */
+function multiplyFloor(paidRaw: bigint, paidDecimals: number, multiplier: number | string, decimals: number): bigint {
   const rate = toDecimal(multiplier, 'Top-up rate')
-  const numerator = amount.coefficient * rate.coefficient
-  const scaleDelta = amount.decimals + rate.decimals - decimals
+  const numerator = paidRaw * rate.coefficient
+  const scaleDelta = paidDecimals + rate.decimals - decimals
 
   if (scaleDelta <= 0) {
     return numerator * 10n ** BigInt(-scaleDelta)
@@ -518,12 +536,12 @@ function multiplyFloor(value: number, multiplier: number, decimals: number): big
   return numerator / 10n ** BigInt(scaleDelta)
 }
 
-/** Parse a decimal number into integer digits plus the number of scaled places. */
-function toDecimal(value: number, label: string): { coefficient: bigint; decimals: number } {
-  if (!Number.isFinite(value)) {
+/** Parse a decimal number or string into integer digits plus the number of scaled places. */
+function toDecimal(value: number | string, label: string): { coefficient: bigint; decimals: number } {
+  if (typeof value === 'number' && !Number.isFinite(value)) {
     fail('bad-amount', `${label} must be a finite number - got ${String(value)}.`)
   }
-  const text = decimalString(value)
+  const text = typeof value === 'string' ? value.trim() : decimalString(value)
   if (text.startsWith('-')) {
     fail('bad-amount', `${label} cannot be negative - got ${text}.`)
   }
