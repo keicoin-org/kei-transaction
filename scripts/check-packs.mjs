@@ -34,9 +34,14 @@ const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 
 const argv = process.argv.slice(2)
 let packDestination = ''
+let compareRegistry = false
 for (const argument of argv) {
   if (argument.startsWith('--pack-destination=')) {
     packDestination = argument.slice('--pack-destination='.length)
+    continue
+  }
+  if (argument === '--compare-registry') {
+    compareRegistry = true
     continue
   }
   throw new Error(`unknown option: ${argument}`)
@@ -46,13 +51,17 @@ for (const argument of argv) {
 // fails outright with EINVAL. Under a shell Node does not quote for us, so every
 // argument is quoted here — the temp directories this passes around are under
 // paths like C:\Users\... that routinely contain spaces.
-function run(command, args, options = {}) {
+function attempt(command, args, options = {}) {
   const shell = process.platform === 'win32' && command.endsWith('.cmd')
-  const result = spawnSync(command, shell ? args.map((a) => `"${a}"`) : args, {
+  return spawnSync(command, shell ? args.map((a) => `"${a}"`) : args, {
     encoding: 'utf8',
     shell,
     ...options,
   })
+}
+
+function run(command, args, options = {}) {
+  const result = attempt(command, args, options)
   if (result.error) throw result.error
   if (result.status !== 0) {
     throw new Error(
@@ -183,3 +192,65 @@ run(process.execPath, [join(repositoryRoot, 'scripts', 'smoke-pack-install.mjs')
 })
 
 console.log(`Packs valid: ${ordered.length} tarballs built by prepack, installed together and imported.`)
+
+// The gap #157 asked to close. release:check compares manifests to the lockfile
+// and cannot see that a range selects a *published* version missing symbols the
+// tree re-exports — which is exactly how `@keicoin/core@0.6.0` was burnt: #141
+// added three exports and the version number stayed put, so the number on the
+// registry stopped describing the tree. publish.sh already refuses on this, but
+// only at release time, which is after the damage. Comparing here surfaces the
+// divergence on the push that introduces it.
+//
+// A version that is not on the registry yet is the normal case between releases
+// and is not a finding.
+if (compareRegistry) {
+  console.log('==> Comparing packed artifacts against the registry')
+  const diverged = []
+
+  for (const entry of ordered) {
+    const { name, version } = entry.manifest
+    const specifier = `${name}@${version}`
+    const view = attempt(
+      npm,
+      // --prefer-online: a 404 cached from before a package's first publish is
+      // the one stale answer that would make this report a false all-clear.
+      ['view', specifier, 'dist.integrity', '--json', '--prefer-online',
+        `--registry=${NPM_REGISTRY}`, `--@keicoin:registry=${NPM_REGISTRY}`],
+      { cwd: repositoryRoot },
+    )
+
+    if (view.status !== 0) {
+      if (/E404/.test(`${view.stdout ?? ''}${view.stderr ?? ''}`)) {
+        console.log(`    ${specifier}: not published yet`)
+        continue
+      }
+      throw new Error(`could not determine registry state for ${specifier}:\n${view.stderr ?? ''}`)
+    }
+
+    const registryIntegrity = JSON.parse(view.stdout.replace(/^\uFEFF/, ''))
+    const report = JSON.parse(
+      await readFile(join(destination, `${entry.directory}.json`), 'utf8'),
+    )
+    const localIntegrity = report[0].integrity
+
+    if (registryIntegrity === localIntegrity) {
+      console.log(`    ${specifier}: published, and the artifact matches`)
+      continue
+    }
+
+    diverged.push(specifier)
+    console.log(`    ${specifier}: PUBLISHED WITH DIFFERENT CONTENT`)
+    console.log(`      registry ${String(registryIntegrity)}`)
+    console.log(`      local    ${String(localIntegrity)}`)
+  }
+
+  if (diverged.length > 0) {
+    throw new Error(
+      `${diverged.join(', ')} already exist on the registry with different content. ` +
+        'A published version cannot be replaced, so the version in the tree has to move ' +
+        'before the next release, and every dependent range with it.',
+    )
+  }
+
+  console.log('Registry agrees with every packed artifact whose version it already serves.')
+}
