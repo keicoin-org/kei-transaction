@@ -439,6 +439,79 @@ describe('purchases', () => {
     expect(await gems.balanceOf(player.address)).toBe(0.33)
   })
 
+  // #175: PaymentEvent.amount is fromRaw(raw, 18) — a double, which loses
+  // precision above ~0.009 Kei. Feeding it back into the mint could create
+  // raw units nobody paid for. acceptTopUps now computes from payment.raw,
+  // the exact bigint, so this asserts against the raw circulating supply
+  // rather than through balanceOf() — also a double, and unable to represent
+  // the one- or two-unit differences this bug produced.
+  test('acceptTopUps mints exactly the raw amount paid, even where a double cannot represent it (#175)', async () => {
+    const shards = await game.token.issue({ name: 'Precise Shards', symbol: 'PSHARD', decimals: 18, swap: 'one-way' })
+    game.acceptTopUps({ token: shards, rate: 1 })
+
+    await player.faucet(1)
+    // Sent as a string so toRaw() parses it exactly; the bug was entirely on
+    // the receiving side, in how the received PaymentEvent got turned back
+    // into a mint quantity.
+    await player.pay({ to: game.address, amount: '0.123456789012345678' })
+
+    await waitFor(async () => (await game.client.node.assetInfo(shards.id))?.circulating !== '0')
+    await player.sync()
+
+    const info = await game.client.node.assetInfo(shards.id)
+    // Old behaviour minted 123456789012345680 — two raw units more than paid.
+    expect(info?.circulating).toBe('123456789012345678')
+  })
+
+  test('acceptTopUps never mints more than floor(paid_raw * rate), across a range of awkward amounts', async () => {
+    const shards = await game.token.issue({ name: 'Range Shards', symbol: 'RSHARD', decimals: 18, swap: 'one-way' })
+    game.acceptTopUps({ token: shards, rate: 1 })
+
+    const amounts = [
+      '0.000000000000000001',
+      '0.100000000000000001',
+      '0.999999999999999999',
+      '1.234567890123456789',
+    ]
+    let mintedSoFar = 0n
+    for (const amount of amounts) {
+      await player.faucet(2)
+      await player.pay({ to: game.address, amount })
+      const paidRaw = BigInt(amount.replace('.', ''))
+      const expected = mintedSoFar + paidRaw
+      await waitFor(async () => (await game.client.node.assetInfo(shards.id))?.circulating === expected.toString())
+      mintedSoFar = expected
+    }
+    await player.sync()
+    expect((await game.client.node.assetInfo(shards.id))?.circulating).toBe(mintedSoFar.toString())
+  })
+
+  test('acceptTopUps honours minimum exactly at the raw boundary, not a double approximation of it', async () => {
+    const gems = await game.token.issue({ name: 'Boundary Gems', symbol: 'BGEM', decimals: 0, swap: 'one-way' })
+    game.acceptTopUps({ token: gems, rate: 100, minimum: 0.05 })
+
+    await player.faucet(1)
+    // Exactly at the boundary: must be accepted, not excluded by a `<` that
+    // compares two doubles that do not agree on where the boundary is.
+    await player.pay({ to: game.address, amount: '0.05' })
+
+    await waitFor(async () => (await gems.balanceOf(player.address)) === 5)
+    await player.sync()
+    expect(await gems.balanceOf(player.address)).toBe(5)
+  })
+
+  test('acceptTopUps accepts a decimal-string rate, exactly', async () => {
+    const shards = await game.token.issue({ name: 'String Rate Shards', symbol: 'SRSHARD', decimals: 6, swap: 'one-way' })
+    game.acceptTopUps({ token: shards, rate: '0.333333' })
+
+    await player.faucet(2)
+    await player.pay({ to: game.address, amount: 1 })
+
+    await waitFor(async () => (await game.client.node.assetInfo(shards.id))?.circulating !== '0')
+    await player.sync()
+    expect((await game.client.node.assetInfo(shards.id))?.circulating).toBe('333333')
+  })
+
   test('acceptTopUps refuses a token whose own policy says it cannot be bought', async () => {
     const earned = await game.token.issue({ name: 'Glory', symbol: 'GLORY', swap: 'off' })
     expect(() => game.acceptTopUps({ token: earned, rate: 10 })).toThrow(/swap: 'off'/)

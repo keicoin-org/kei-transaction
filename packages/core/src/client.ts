@@ -32,7 +32,18 @@ export type Role = 'player' | 'issuer'
 
 export interface PaymentEvent {
   from: string
+  /**
+   * Display value only — `fromRaw(raw, KEI_DECIMALS)`, a double. Above about
+   * 0.009 Kei this loses precision, so never feed it back into a mint or
+   * anything else the ledger has to agree with. Use `raw` for that.
+   */
   amount: number
+  /**
+   * The exact amount paid, in raw KEI_DECIMALS units. Authoritative:
+   * `BigInt(raw)` round-trips the receivable's amount exactly, which `amount`
+   * cannot promise once it has been through a double.
+   */
+  raw: string
   /**
    * The receive block this account just wrote. It lives on the payee's own
    * chain, so the payer has never seen it.
@@ -48,11 +59,13 @@ export interface PaymentEvent {
 
 export interface ClientEvents extends Record<string, unknown> {
   received: PaymentEvent
-  sent: { to: string; amount: number; hash: string; memo?: string }
+  sent: { to: string; amount: number; raw: string; hash: string; memo?: string }
   'asset-received': {
     asset: AssetId
     symbol: string
     amount: number
+    /** The exact amount received, in the asset's own raw decimal units. */
+    raw: string
     from: string
     /** The receive block this account wrote. */
     hash: string
@@ -285,7 +298,7 @@ export class KeiClient {
       }
     })
 
-    const sent = { to, amount: fromRaw(raw, KEI_DECIMALS), hash }
+    const sent = { to, amount: fromRaw(raw, KEI_DECIMALS), raw: raw.toString(), hash }
     this.emitter.emit('sent', sent)
     return { hash, amount: sent.amount, to }
   }
@@ -367,6 +380,7 @@ export class KeiClient {
       this.emitter.emit('received', {
         from: receivable.from,
         amount: fromRaw(amount, KEI_DECIMALS),
+        raw: amount.toString(),
         hash,
         sendHash: receivable.hash,
         ...(receivable.memo === undefined ? {} : { memo: receivable.memo }),
@@ -375,11 +389,13 @@ export class KeiClient {
     }
 
     const meta = await this.assetMetaFor(receivable.asset)
+    const assetRaw = BigInt(receivable.amount)
     const { hash } = await this.submitAsset({ kind: 'asset_receive', link: receivable.hash })
     this.emitter.emit('asset-received', {
       asset: receivable.asset,
       symbol: meta.symbol,
-      amount: fromRaw(BigInt(receivable.amount), meta.decimals),
+      amount: fromRaw(assetRaw, meta.decimals),
+      raw: assetRaw.toString(),
       from: receivable.from,
       hash,
       sendHash: receivable.hash,
