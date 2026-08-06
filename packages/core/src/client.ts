@@ -236,10 +236,20 @@ export class KeiClient {
     this.emitter.off(event, listener)
   }
 
-  /** React to incoming Kei. The issuer half of a purchase (SPEC §6.7). */
+  /**
+   * React to incoming Kei. The issuer half of a purchase (SPEC §6.7).
+   *
+   * The receive block has already landed by the time `handler` runs — the Kei
+   * cannot be un-received — so a failure in here has to be reported, not lost.
+   * `handler` is called inside an async function rather than invoked directly,
+   * so a *synchronous* throw becomes a rejected promise before it can reach
+   * `Emitter.emit`'s own blanket catch (`events.ts`, right for `update`, wrong
+   * for money): either way, `handler`'s failure reaches `reportError` and
+   * emits `error` (#164).
+   */
   onPayment(handler: (payment: PaymentEvent) => void | Promise<void>): () => void {
     return this.on('received', (payment) => {
-      void Promise.resolve(handler(payment)).catch((error: unknown) => this.reportError(error))
+      void (async () => handler(payment))().catch((error: unknown) => this.reportError(error))
     })
   }
 

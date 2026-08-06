@@ -3,7 +3,15 @@
  */
 
 import { beforeEach, describe, expect, test } from 'bun:test'
-import { Kei, randomSeed, type IssueOptions, type IssuerToken, type MockNode } from 'kei-transaction'
+import {
+  Kei,
+  KeiError,
+  randomSeed,
+  type IssueOptions,
+  type IssuerToken,
+  type MockNode,
+  type TopUpFailure,
+} from 'kei-transaction'
 
 const GAME_SEED = 'C'.repeat(64)
 
@@ -515,6 +523,106 @@ describe('purchases', () => {
   test('acceptTopUps refuses a token whose own policy says it cannot be bought', async () => {
     const earned = await game.token.issue({ name: 'Glory', symbol: 'GLORY', swap: 'off' })
     expect(() => game.acceptTopUps({ token: earned, rate: 10 })).toThrow(/swap: 'off'/)
+  })
+
+  // #164: onPayment fires after the Kei is already received and irreversible,
+  // so a handler's failure has to be reported rather than lost. Three ways it
+  // used to be lost: a synchronous throw never reaching `reportError`, a
+  // rejected mint inside acceptTopUps naming nothing a game could act on, and
+  // nothing surviving past the in-memory emitter.
+  describe('onPayment and acceptTopUps do not lose a failure (#164)', () => {
+    test('a synchronous throw in a handler reaches the error event, not nothing', async () => {
+      const errors: KeiError[] = []
+      game.client.on('error', (error) => errors.push(error))
+      // The obvious way to write a handler — no async, no try/catch — used to
+      // propagate straight into Emitter.emit's blanket swallow and vanish.
+      game.onPayment(() => {
+        throw new Error('boom')
+      })
+
+      await player.faucet(1)
+      await player.pay({ to: game.address, amount: 0.01 })
+
+      await waitFor(async () => errors.length > 0)
+      expect(errors).toHaveLength(1)
+      expect(errors[0]?.message).toContain('boom')
+    })
+
+    test('acceptTopUps reports a failed mint through onSettlementFailure, naming the payer, the raw amount, and what was owed', async () => {
+      const gems = await game.token.issue({
+        name: 'Gems', symbol: 'GEM', decimals: 0, maxSupply: 1_000, swap: 'one-way',
+      })
+      await gems.mint(game.address, 995) // 5 left under the cap
+
+      const failures: TopUpFailure[] = []
+      game.acceptTopUps({
+        token: gems,
+        rate: 100, // 1 Kei asks for 100 GEM — more than the 5 remaining
+        onSettlementFailure: (failure) => {
+          failures.push(failure)
+        },
+      })
+
+      await player.faucet(1)
+      await player.pay({ to: game.address, amount: 1 })
+
+      await waitFor(async () => failures.length > 0)
+      expect(failures).toHaveLength(1)
+      const [failure] = failures
+      expect(failure?.payment.from).toBe(player.address)
+      // The exact raw amount (#175), not a re-derived double.
+      expect(failure?.payment.raw).toBe('1000000000000000000')
+      expect(failure?.owed).toBe('100')
+      expect(String(failure?.error)).toMatch(/maximum supply/)
+
+      // The Kei was already received and is not returned automatically —
+      // acceptTopUps reports the shortfall, it does not invent a refund.
+      expect(await game.balance()).toBeGreaterThan(0)
+    })
+
+    test('without onSettlementFailure, the error event still names the payer and the owed units', async () => {
+      const gems = await game.token.issue({
+        name: 'Gems', symbol: 'GEM', decimals: 0, maxSupply: 1_000, swap: 'one-way',
+      })
+      await gems.mint(game.address, 995)
+
+      const errors: KeiError[] = []
+      game.client.on('error', (error) => errors.push(error))
+      game.acceptTopUps({ token: gems, rate: 100 })
+
+      await player.faucet(1)
+      await player.pay({ to: game.address, amount: 1 })
+
+      await waitFor(async () => errors.length > 0)
+      const [error] = errors
+      expect(error?.message).toContain(player.address)
+      expect(error?.message).toContain('100 GEM')
+      expect(error?.message).toMatch(/not returned automatically/)
+    })
+
+    test('a settled top-up is not redelivered to a fresh client restarted against the same seed and node', async () => {
+      const gems = await game.token.issue({ name: 'Gems', symbol: 'GEM', decimals: 0, swap: 'one-way' })
+      game.acceptTopUps({ token: gems, rate: 100 })
+
+      await player.faucet(1)
+      await player.pay({ to: game.address, amount: 0.5 })
+      await waitFor(async () => (await gems.balanceOf(player.address)) === 50)
+
+      // The closest this test suite can come to "the server restarted": a
+      // fresh Kei.server() against the identical seed and node, so it is a
+      // different in-memory client over the same on-chain state.
+      game.close()
+      const restarted = await fundedGame()
+      let redelivered = false
+      restarted.onPayment(() => {
+        redelivered = true
+      })
+      await restarted.sync()
+
+      expect(redelivered).toBe(false)
+      expect(await gems.balanceOf(player.address)).toBe(50)
+      restarted.close()
+    })
   })
 
   test('there is no charge(someoneElse) — a game cannot sign for a player', () => {
